@@ -1,26 +1,37 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --ink: #151917;
+  --muted: #6f746f;
+  --line: #e4e6e2;
+  --paper: #f5f6f2;
+  --panel: #ffffff;
+  --acid: #dfff37;
+  --violet: #705cf6;
+  --red: #ee6b64;
+  --amber: #e8aa42;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+* { box-sizing: border-box; }
+html { background: var(--paper); }
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  background:
+    radial-gradient(circle at 78% 0%, rgba(223, 255, 55, .11), transparent 24rem),
+    var(--paper);
+  color: var(--ink);
+  font-family: "Avenir Next", Avenir, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+button, a { font: inherit; }
+button { cursor: pointer; }
+code, .font-mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+::selection { background: var(--acid); color: var(--ink); }
+
+@keyframes pulse-dot { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
+@keyframes draw { from { width: 0 } }
+.pulse-dot { animation: pulse-dot 1.8s ease-in-out infinite; }
+.draw-bar { animation: draw .65s ease-out both; }
+
+@media (max-width: 900px) {
+  .desktop-only { display: none !important; }
 }

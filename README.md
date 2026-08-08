@@ -1,36 +1,66 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Ternary
 
-## Getting Started
+An internal pull-request review agent: GitHub sends a signed webhook, Ternary checks out and tests the change in an isolated runner, asks an AI model to review the diff plus test evidence, and posts a GitHub Check and PR comment.
 
-First, run the development server:
+## What is included
+
+- A Vercel-ready Next.js 16 dashboard
+- GitHub App JWT authentication with short-lived installation tokens
+- HMAC verification for pull request webhooks
+- Check Runs and review comments posted back to GitHub
+- Native Vercel Sandbox Firecracker microVMs with time, compute, and network limits
+- Structured AI output with blocking, warning, and suggestion findings
+- Demo mode when AI or sandbox credentials are not configured
+- Three dashboard design directions at `/prototype/dashboard?variant=A`, `B`, or `C` in development
+
+## Run locally
 
 ```bash
+cp .env.example .env.local
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000). The dashboard works with sample data immediately. `GET /api/health` shows which production integrations are configured.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## GitHub App setup
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Create a GitHub App owned by your organization and use these settings:
 
-## Learn More
+- Webhook URL: `https://YOUR_DOMAIN/api/github/webhook`
+- Webhook secret: the same value as `GITHUB_WEBHOOK_SECRET`
+- Subscribe to: **Pull request**
+- Repository permissions: **Checks: read & write**, **Contents: read**, **Issues: read & write**, **Pull requests: read**
 
-To learn more about Next.js, take a look at the following resources:
+Install the app only on repositories Ternary should review. Copy the App ID and private key into Vercel environment variables. The webhook runs for `opened`, `reopened`, `synchronize`, and `ready_for_review`; draft PRs are ignored.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Sandbox execution
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Each review creates a fresh Vercel Sandbox microVM using `@vercel/sandbox`. The short-lived GitHub installation token is used by the Sandbox control plane only to clone the exact head SHA. Dependency installation can reach package registries; Ternary then switches the sandbox firewall to `deny-all` before linting, testing, or building repository code. Output is capped and the microVM is always destroyed in a `finally` block. The default 240-second sandbox lifetime fits Vercel Hobby's 300-second function ceiling.
 
-## Deploy on Vercel
+On Vercel, authentication is automatic through `VERCEL_OIDC_TOKEN`. For local Sandbox calls, link the project and run `vercel env pull` to obtain a temporary development OIDC token.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Deploy to Vercel
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. Push this folder to a private GitHub repository.
+2. Import it in Vercel as a Next.js project.
+3. Add the GitHub and OpenAI variables from `.env.example` to the Vercel project. Sandbox authentication is automatic.
+4. Deploy, update the GitHub App webhook URL, and install the app on a test repository.
+5. Open a PR and confirm the `Ternary review` check appears.
+
+The webhook uses Next.js `after()` so GitHub receives a fast `202`. For higher volume, replace `after()` with a durable queue/workflow and store review runs in Postgres. Production hardening should also add delivery-id idempotency, organization allowlists, per-repository commands, log redaction, and a retention policy.
+
+## Architecture
+
+```text
+GitHub App webhook
+      │ signed event
+      ▼
+Vercel /api/github/webhook ──► short-lived GitHub token
+      │                              │
+      ├────► isolated sandbox ───────┤
+      │      tests + logs            │
+      └────► AI review ◄──────── diff┘
+                   │
+                   ▼
+          Check Run + PR comment
+```
