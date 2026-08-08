@@ -70,6 +70,13 @@ export type DashboardData = {
   fetchedAt: string;
 };
 
+export type RepositoryDashboardData = {
+  installUrl: string;
+  installations: Array<{ id: number; account: string; manageUrl: string }>;
+  repositories: DashboardRepository[];
+  fetchedAt: string;
+};
+
 type InstallationRepository = {
   installation: GitHubInstallation;
   repository: GitHubRepository;
@@ -142,8 +149,8 @@ function parseCheck(checkRun: GitHubCheckRun | undefined): DashboardCheck {
   };
 }
 
-async function getInstallationRepositories(): Promise<InstallationRepository[]> {
-  const installations = await listAppInstallations();
+async function getInstallationRepositories(providedInstallations?: GitHubInstallation[]): Promise<InstallationRepository[]> {
+  const installations = providedInstallations ?? await listAppInstallations();
   const groups = await Promise.all(installations.map(async (installation) => {
     const token = await createInstallationToken(installation.id);
     const result = await listInstallationRepositories(token);
@@ -152,8 +159,10 @@ async function getInstallationRepositories(): Promise<InstallationRepository[]> 
   return groups.flat();
 }
 
-export async function getDashboardData(requestedRepository?: string): Promise<DashboardData> {
-  const [app, installedRepositories] = await Promise.all([getGitHubApp(), getInstallationRepositories()]);
+async function getRepositoryCatalog() {
+  const appPromise = getGitHubApp();
+  const installations = await listAppInstallations();
+  const [app, installedRepositories] = await Promise.all([appPromise, getInstallationRepositories(installations)]);
   const repositories = installedRepositories.map(({ installation, repository }) => ({
     id: repository.id,
     installationId: installation.id,
@@ -166,6 +175,25 @@ export async function getDashboardData(requestedRepository?: string): Promise<Da
     account: installation.account.login,
     manageUrl: installationManageUrl(installation),
   })).sort((a, b) => a.fullName.localeCompare(b.fullName));
+  return { app, installations, installedRepositories, repositories };
+}
+
+export async function getRepositoryDashboardData(): Promise<RepositoryDashboardData> {
+  const { app, installations, repositories } = await getRepositoryCatalog();
+  return {
+    installUrl: `${app.html_url}/installations/new`,
+    installations: installations.map((installation) => ({
+      id: installation.id,
+      account: installation.account.login,
+      manageUrl: installationManageUrl(installation),
+    })),
+    repositories,
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
+export async function getDashboardData(requestedRepository?: string): Promise<DashboardData> {
+  const { app, installedRepositories, repositories } = await getRepositoryCatalog();
 
   const selectedRepository = repositories.find((repository) => repository.fullName === requestedRepository) ?? repositories[0] ?? null;
   const selectedRecord = selectedRepository

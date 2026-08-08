@@ -8,6 +8,8 @@ export type LoginState = { error: string | null };
 
 export async function loginAction(_state: LoginState, formData: FormData): Promise<LoginState> {
   const token = String(formData.get("token") ?? "");
+  const requestedRedirect = String(formData.get("redirectTo") ?? "/");
+  const redirectTo = requestedRedirect === "/repositories" ? "/repositories" : "/";
   if (!isValidDashboardToken(token)) return { error: "That access token is not valid." };
   (await cookies()).set(DASHBOARD_COOKIE, dashboardSessionValue(), {
     httpOnly: true,
@@ -16,7 +18,7 @@ export async function loginAction(_state: LoginState, formData: FormData): Promi
     path: "/",
     maxAge: 60 * 60 * 24 * 30,
   });
-  redirect("/");
+  redirect(redirectTo);
 }
 
 export async function logoutAction() {

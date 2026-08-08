@@ -31,7 +31,7 @@ Create a GitHub App owned by your organization and use these settings:
 - Subscribe to: **Pull request**
 - Repository permissions: **Checks: read & write**, **Contents: read**, **Issues: read & write**, **Pull requests: read & write**
 
-Install the app only on repositories Ternary should review. Copy the App ID and private key into Vercel environment variables. The webhook runs for `opened`, `reopened`, `synchronize`, and `ready_for_review`; draft PRs are ignored. From the dashboard, **Add repositories** opens the installation settings and **Run review** starts the same sandbox and AI pipeline manually.
+Install the app only on repositories Ternary should review. Copy the App ID and private key into Vercel environment variables. The webhook runs for `opened`, `reopened`, `synchronize`, and `ready_for_review`; draft PRs are ignored. The dashboard's **Repositories** page shows the active watch list; use **Manage** there to add or remove repository access in GitHub. **Run review** starts the same sandbox and AI pipeline manually.
 
 ## Sandbox execution
 

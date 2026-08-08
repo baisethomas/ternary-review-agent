@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { logoutAction } from "@/app/actions";
+import { DashboardHeader } from "@/components/dashboard-header";
 import type { DashboardData, DashboardPullRequest } from "@/lib/dashboard-data";
 import type { ReviewFinding } from "@/lib/types";
 
@@ -74,24 +74,14 @@ export function ReviewDashboard({ data }: { data: DashboardData }) {
 
   return (
     <div className="min-h-screen">
-      <header className="flex min-h-16 items-center justify-between border-b border-[var(--line)] bg-white/85 px-5 py-3 backdrop-blur-xl lg:px-7">
-        <div className="flex items-center gap-8">
-          <Link href="/" className="flex items-center gap-2.5 font-bold tracking-[-.03em]"><span className="grid size-8 place-items-center rounded-[10px] bg-[#171a18] text-sm text-[var(--acid)]">⌁</span><span>Ternary</span></Link>
-          <nav className="desktop-only flex items-center gap-1 text-[13px] text-[var(--muted)]"><a className="rounded-lg bg-[#f1f2ee] px-3 py-2 font-semibold text-[var(--ink)]" href="#reviews">Reviews</a><a className="rounded-lg px-3 py-2 hover:bg-[#f5f6f2]" href="#repositories">Repositories</a></nav>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="desktop-only flex items-center gap-2 text-xs text-[var(--muted)]"><span className="size-1.5 rounded-full bg-[#65a953]" />GitHub live</span>
-          <button onClick={() => router.refresh()} className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-xs font-semibold shadow-sm">↻ Refresh</button>
-          <form action={logoutAction}><button className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-xs font-semibold shadow-sm">Log out</button></form>
-        </div>
-      </header>
+      <DashboardHeader active="reviews" />
 
       <main className="mx-auto max-w-[1500px] p-4 lg:p-6" id="reviews">
         <section className="mb-5 flex flex-wrap items-end justify-between gap-4">
           <div><div className="mb-1 flex items-center gap-2 text-xs font-medium text-[var(--muted)]"><span>GitHub</span><span>›</span><span className="text-[var(--ink)]">{data.account ?? "No installation"}</span></div><h1 className="text-[26px] font-semibold tracking-[-.045em]">Live code reviews</h1></div>
-          <div className="flex flex-wrap items-center gap-2" id="repositories">
+          <div className="flex flex-wrap items-center gap-2">
             {data.repositories.length > 0 && <select aria-label="Repository" value={data.selectedRepository?.fullName ?? ""} onChange={(event) => router.push(`/?repo=${encodeURIComponent(event.target.value)}`)} className="rounded-xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-xs font-semibold shadow-sm">{data.repositories.map((repository) => <option key={repository.id} value={repository.fullName}>{repository.fullName}{repository.private ? " · private" : ""}</option>)}</select>}
-            <a href={data.selectedRepository?.manageUrl ?? data.installUrl} target="_blank" rel="noreferrer" className="rounded-xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-xs font-semibold shadow-sm">+ Manage repositories ↗</a>
+            <Link href="/repositories" className="rounded-xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-xs font-semibold shadow-sm">Manage repositories</Link>
             {data.selectedRepository && <a href={data.installUrl} target="_blank" rel="noreferrer" className="desktop-only rounded-xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-xs font-semibold shadow-sm">Install another account ↗</a>}
             {selected && <button disabled={selectedRunning || selected.draft} onClick={() => runReview(selected)} className="rounded-xl bg-[#171a18] px-4 py-2.5 text-xs font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50">{selectedRunning ? "Running sandbox…" : selected.draft ? "Draft PR" : "Run review"}</button>}
           </div>
