@@ -37,6 +37,7 @@ function createAppJwt() {
 async function githubFetch<T>(path: string, token: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${githubApi}${path}`, {
     ...init,
+    cache: "no-store",
     headers: {
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${token}`,
@@ -47,6 +48,88 @@ async function githubFetch<T>(path: string, token: string, init: RequestInit = {
   });
   if (!response.ok) throw new Error(`GitHub API ${response.status}: ${await response.text()}`);
   return response.json() as Promise<T>;
+}
+
+export type GitHubApp = {
+  slug: string;
+  html_url: string;
+  name: string;
+};
+
+export type GitHubInstallation = {
+  id: number;
+  html_url: string;
+  target_type: "User" | "Organization";
+  account: { login: string; avatar_url: string; type: string };
+};
+
+export type GitHubRepository = {
+  id: number;
+  name: string;
+  full_name: string;
+  private: boolean;
+  html_url: string;
+  clone_url: string;
+  default_branch: string;
+  owner: { login: string };
+};
+
+export type GitHubPullRequest = {
+  number: number;
+  title: string;
+  html_url: string;
+  draft: boolean;
+  updated_at: string;
+  additions: number;
+  deletions: number;
+  changed_files: number;
+  user: { login: string; avatar_url: string };
+  head: { ref: string; sha: string };
+  base: { ref: string };
+};
+
+export type GitHubCheckRun = {
+  id: number;
+  name: string;
+  status: "queued" | "in_progress" | "completed";
+  conclusion: "success" | "failure" | "neutral" | "cancelled" | "skipped" | "timed_out" | "action_required" | null;
+  started_at: string | null;
+  completed_at: string | null;
+  html_url: string | null;
+  output: { title: string | null; summary: string | null };
+};
+
+export function getGitHubApp() {
+  return githubFetch<GitHubApp>("/app", createAppJwt());
+}
+
+export function listAppInstallations() {
+  return githubFetch<GitHubInstallation[]>("/app/installations?per_page=100", createAppJwt());
+}
+
+export function listInstallationRepositories(token: string) {
+  return githubFetch<{ total_count: number; repositories: GitHubRepository[] }>("/installation/repositories?per_page=100", token);
+}
+
+export function listOpenPullRequests(owner: string, repo: string, token: string) {
+  return githubFetch<Array<Omit<GitHubPullRequest, "additions" | "deletions" | "changed_files">>>(
+    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=open&sort=updated&direction=desc&per_page=30`,
+    token,
+  );
+}
+
+export function getPullRequest(owner: string, repo: string, pullNumber: number, token: string) {
+  return githubFetch<GitHubPullRequest>(
+    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}`,
+    token,
+  );
+}
+
+export function listTernaryCheckRuns(owner: string, repo: string, headSha: string, token: string) {
+  return githubFetch<{ total_count: number; check_runs: GitHubCheckRun[] }>(
+    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(headSha)}/check-runs?check_name=${encodeURIComponent("Ternary review")}&per_page=20`,
+    token,
+  );
 }
 
 export async function createInstallationToken(installationId: number) {

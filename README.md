@@ -4,14 +4,14 @@ An internal pull-request review agent: GitHub sends a signed webhook, Ternary ch
 
 ## What is included
 
-- A Vercel-ready Next.js 16 dashboard
+- A Vercel-ready Next.js 16 dashboard backed by live GitHub installation, repository, PR, and Check Run data
 - GitHub App JWT authentication with short-lived installation tokens
 - HMAC verification for pull request webhooks
 - Check Runs and review comments posted back to GitHub
 - Native Vercel Sandbox Firecracker microVMs with time, compute, and network limits
 - Structured AI output with blocking, warning, and suggestion findings
-- Demo mode when AI or sandbox credentials are not configured
-- Three dashboard design directions at `/prototype/dashboard?variant=A`, `B`, or `C` in development
+- Repository management through the GitHub App installation settings
+- Authenticated manual review runs from the dashboard
 
 ## Run locally
 
@@ -20,7 +20,7 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The dashboard works with sample data immediately. `GET /api/health` shows which production integrations are configured.
+Open [http://localhost:3000](http://localhost:3000) and sign in with `INTERNAL_API_TOKEN`. The dashboard reads live data from repositories installed for the GitHub App. `GET /api/health` shows which production integrations are configured.
 
 ## GitHub App setup
 
@@ -29,9 +29,9 @@ Create a GitHub App owned by your organization and use these settings:
 - Webhook URL: `https://YOUR_DOMAIN/api/github/webhook`
 - Webhook secret: the same value as `GITHUB_WEBHOOK_SECRET`
 - Subscribe to: **Pull request**
-- Repository permissions: **Checks: read & write**, **Contents: read**, **Issues: read & write**, **Pull requests: read**
+- Repository permissions: **Checks: read & write**, **Contents: read**, **Issues: read & write**, **Pull requests: read & write**
 
-Install the app only on repositories Ternary should review. Copy the App ID and private key into Vercel environment variables. The webhook runs for `opened`, `reopened`, `synchronize`, and `ready_for_review`; draft PRs are ignored.
+Install the app only on repositories Ternary should review. Copy the App ID and private key into Vercel environment variables. The webhook runs for `opened`, `reopened`, `synchronize`, and `ready_for_review`; draft PRs are ignored. From the dashboard, **Add repositories** opens the installation settings and **Run review** starts the same sandbox and AI pipeline manually.
 
 ## Sandbox execution
 

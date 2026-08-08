@@ -1,17 +1,5 @@
-import { Suspense } from "react";
-import { ReviewDashboard } from "@/components/review-dashboard";
-import { PrototypeSwitcher } from "@/components/prototype-switcher";
+import { redirect } from "next/navigation";
 
-// Three structurally different dashboard directions, switchable via ?variant=.
-export default async function DashboardPrototype({ searchParams }: PageProps<"/prototype/dashboard">) {
-  const variant = ((await searchParams).variant as string | undefined)?.toUpperCase() ?? "A";
-  return <>{variant === "B" ? <QueueFirst /> : variant === "C" ? <TerminalView /> : <ReviewDashboard />}<Suspense><PrototypeSwitcher /></Suspense></>;
-}
-
-function QueueFirst() {
-  return <main className="min-h-screen bg-[#f4f5f1] p-6"><header className="mx-auto mb-16 flex max-w-6xl items-center justify-between"><div className="flex items-center gap-3 font-bold"><span className="grid size-8 place-items-center rounded-lg bg-black text-[var(--acid)]">⌁</span>Ternary</div><button className="rounded-full bg-black px-4 py-2 text-xs font-semibold text-white">Connect repository</button></header><section className="mx-auto max-w-3xl"><p className="mb-2 text-xs font-semibold uppercase tracking-[.12em] text-[#737873]">Review queue</p><h1 className="mb-10 text-5xl font-semibold tracking-[-.06em]">What needs attention.</h1><div className="space-y-3">{["Race condition can double-submit payment", "Expired reservation is never released", "Retry failed webhook deliveries"].map((title, index) => <article key={title} className="flex items-center gap-5 rounded-2xl border border-[#e1e3de] bg-white p-5 shadow-sm"><span className={`grid size-11 place-items-center rounded-full text-sm font-bold ${index === 0 ? "bg-[#ffebe8] text-[#c94d45]" : "bg-[#eef0e9]"}`}>{index + 1}</span><div className="min-w-0 flex-1"><h2 className="font-semibold">{title}</h2><p className="mt-1 text-xs text-[#727772]">acme/api · PR #{842 - index * 71} · {index + 1} finding{index ? "s" : ""}</p></div><span className="text-xl">→</span></article>)}</div></section></main>;
-}
-
-function TerminalView() {
-  return <main className="min-h-screen bg-[#111411] p-5 font-mono text-[#cdd4ca]"><header className="mb-5 flex items-center justify-between border-b border-[#30352f] pb-4"><div><span className="text-[var(--acid)]">ternary</span><span className="text-[#697068]"> / review-console</span></div><span className="text-xs text-[#697068]">github: connected ●</span></header><div className="grid gap-4 lg:grid-cols-[280px_1fr]"><aside className="rounded-lg border border-[#30352f] p-3"><p className="mb-4 text-[10px] uppercase tracking-[.12em] text-[#687067]">Active runs</p>{["api#842", "web#1204", "worker#391"].map((item, index) => <div key={item} className={`mb-1 rounded p-3 text-xs ${index === 0 ? "bg-[var(--acid)] text-[#111411]" : "text-[#99a098] hover:bg-[#1c211c]"}`}>{index === 0 ? "▶" : "✓"} {item}</div>)}</aside><section className="overflow-hidden rounded-lg border border-[#30352f]"><div className="border-b border-[#30352f] px-4 py-3 text-xs"><span className="text-[var(--acid)]">$</span> ternary review acme/api#842 --sandbox</div><div className="space-y-3 p-5 text-xs leading-6"><p className="text-[#687067]">[00:00:03] checkout feat/payment-idempotency</p><p className="text-[#687067]">[00:00:27] dependencies installed</p><p className="text-[#75bc66]">[00:01:42] ✓ 12 tests passed</p><p className="mt-8 text-white">FINDING 1 / BLOCKING</p><p className="text-[#ff8178]">src/payments/charge.ts:118</p><p className="max-w-3xl">Race condition can double-submit payment. The idempotency record is written after the provider call, allowing concurrent requests to pass the lookup.</p><div className="mt-4 border-l-2 border-[var(--acid)] bg-[#1b201b] p-4 text-[#aeb5ac]">suggested: reserve the key atomically before calling the provider</div><p className="pulse-dot mt-10 text-[var(--acid)]">▮ waiting for reviewer action</p></div></section></div></main>;
+export default function DashboardPrototype() {
+  redirect("/");
 }
