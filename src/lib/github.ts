@@ -96,26 +96,43 @@ export type GitHubCheckRun = {
   started_at: string | null;
   completed_at: string | null;
   html_url: string | null;
-  output: { title: string | null; summary: string | null };
+  output: { title: string | null; summary: string | null; text: string | null };
 };
 
 export function getGitHubApp() {
   return githubFetch<GitHubApp>("/app", createAppJwt());
 }
 
-export function listAppInstallations() {
-  return githubFetch<GitHubInstallation[]>("/app/installations?per_page=100", createAppJwt());
+export async function listAppInstallations() {
+  const installations: GitHubInstallation[] = [];
+  for (let page = 1; ; page += 1) {
+    const batch = await githubFetch<GitHubInstallation[]>(`/app/installations?per_page=100&page=${page}`, createAppJwt());
+    installations.push(...batch);
+    if (batch.length < 100) return installations;
+  }
 }
 
-export function listInstallationRepositories(token: string) {
-  return githubFetch<{ total_count: number; repositories: GitHubRepository[] }>("/installation/repositories?per_page=100", token);
+export async function listInstallationRepositories(token: string) {
+  const repositories: GitHubRepository[] = [];
+  for (let page = 1; ; page += 1) {
+    const batch = await githubFetch<{ total_count: number; repositories: GitHubRepository[] }>(`/installation/repositories?per_page=100&page=${page}`, token);
+    repositories.push(...batch.repositories);
+    if (repositories.length >= batch.total_count || batch.repositories.length < 100) {
+      return { total_count: batch.total_count, repositories };
+    }
+  }
 }
 
-export function listOpenPullRequests(owner: string, repo: string, token: string) {
-  return githubFetch<Array<Omit<GitHubPullRequest, "additions" | "deletions" | "changed_files">>>(
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=open&sort=updated&direction=desc&per_page=30`,
-    token,
-  );
+export async function listOpenPullRequests(owner: string, repo: string, token: string) {
+  const pullRequests: Array<Omit<GitHubPullRequest, "additions" | "deletions" | "changed_files">> = [];
+  for (let page = 1; ; page += 1) {
+    const batch = await githubFetch<Array<Omit<GitHubPullRequest, "additions" | "deletions" | "changed_files">>>(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=open&sort=updated&direction=desc&per_page=100&page=${page}`,
+      token,
+    );
+    pullRequests.push(...batch);
+    if (batch.length < 100) return pullRequests;
+  }
 }
 
 export function getPullRequest(owner: string, repo: string, pullNumber: number, token: string) {
@@ -161,10 +178,10 @@ export async function createCheckRun(owner: string, repo: string, headSha: strin
   });
 }
 
-export async function finishCheckRun(owner: string, repo: string, checkId: number, token: string, conclusion: "success" | "failure" | "neutral", title: string, summary: string) {
+export async function finishCheckRun(owner: string, repo: string, checkId: number, token: string, conclusion: "success" | "failure" | "neutral", title: string, summary: string, details?: string) {
   return githubFetch(`/repos/${owner}/${repo}/check-runs/${checkId}`, token, {
     method: "PATCH",
-    body: JSON.stringify({ status: "completed", conclusion, completed_at: new Date().toISOString(), output: { title, summary: summary.slice(0, 65000) } }),
+    body: JSON.stringify({ status: "completed", conclusion, completed_at: new Date().toISOString(), output: { title, summary: summary.slice(0, 65000), text: details?.slice(0, 65000) } }),
   });
 }
 

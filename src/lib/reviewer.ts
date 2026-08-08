@@ -79,7 +79,7 @@ export async function runReview(request: ReviewRequest) {
     const markdown = formatReview(result);
     await Promise.all([
       postPullRequestComment(request.owner, request.repo, request.pullNumber, token, markdown),
-      finishCheckRun(request.owner, request.repo, check.id, token, result.verdict === "approve" ? "success" : result.verdict === "request_changes" ? "failure" : "neutral", "Review complete", markdown),
+      finishCheckRun(request.owner, request.repo, check.id, token, result.verdict === "approve" ? "success" : result.verdict === "request_changes" ? "failure" : "neutral", "Review complete", markdown, JSON.stringify(result)),
     ]);
     return result;
   } catch (error) {

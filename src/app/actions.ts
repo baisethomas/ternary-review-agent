@@ -2,7 +2,7 @@
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { DASHBOARD_COOKIE, dashboardSessionValue, isValidDashboardToken } from "@/lib/dashboard-auth";
+import { DASHBOARD_COOKIE, dashboardSessionValue, isDashboardAuthenticated, isValidDashboardToken } from "@/lib/dashboard-auth";
 
 export type LoginState = { error: string | null };
 
@@ -20,6 +20,7 @@ export async function loginAction(_state: LoginState, formData: FormData): Promi
 }
 
 export async function logoutAction() {
+  if (!await isDashboardAuthenticated()) redirect("/");
   (await cookies()).delete(DASHBOARD_COOKIE);
   redirect("/");
 }

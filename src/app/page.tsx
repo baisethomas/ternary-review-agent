@@ -3,8 +3,6 @@ import { ReviewDashboard } from "@/components/review-dashboard";
 import { isDashboardAuthenticated } from "@/lib/dashboard-auth";
 import { getDashboardData, type DashboardData } from "@/lib/dashboard-data";
 
-export const dynamic = "force-dynamic";
-
 export default async function Home({ searchParams }: { searchParams: Promise<{ repo?: string | string[] }> }) {
   if (!await isDashboardAuthenticated()) return <AccessGate />;
   const params = await searchParams;

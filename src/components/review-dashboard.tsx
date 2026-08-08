@@ -5,15 +5,17 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { logoutAction } from "@/app/actions";
 import type { DashboardData, DashboardPullRequest } from "@/lib/dashboard-data";
+import type { ReviewFinding } from "@/lib/types";
 
 type ReviewStatus = DashboardPullRequest["check"]["status"];
-type Finding = { severity: string; title: string; location: string; explanation: string; suggestedFix: string | null };
 
 const statusStyles: Record<ReviewStatus, [string, string]> = {
   not_reviewed: ["Not reviewed", "bg-[#f0f1ed] text-[#666c66]"],
   reviewing: ["Reviewing", "bg-[#fff7dd] text-[#9a6813]"],
   changes: ["Changes requested", "bg-[#fff0ed] text-[#c74b42]"],
   passed: ["Passed", "bg-[#edf8e9] text-[#417d31]"],
+  reviewed: ["Reviewed", "bg-[#eeeafd] text-[#6754d8]"],
+  failed: ["Review failed", "bg-[#fff0ed] text-[#c74b42]"],
 };
 
 function StatusBadge({ status }: { status: ReviewStatus }) {
@@ -27,21 +29,6 @@ function formatUtc(value: string) {
 
 function initials(login: string) {
   return login.split(/[-_.]/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
-}
-
-function parseFindings(summary: string): Finding[] {
-  const matches = summary.matchAll(/### \d+\. (.+?)(?: — `([^`]+)`)?\n\n\*\*(blocking|warning|suggestion)\*\* · ([\s\S]*?)(?=\n\n### \d+\.|\n\n<details>)/g);
-  return Array.from(matches).map((match) => {
-    const [explanation, suggestedFix] = match[4].split("\n\n**Suggested fix:** ");
-    return { title: match[1], location: match[2] ?? "", severity: match[3], explanation, suggestedFix: suggestedFix ?? null };
-  });
-}
-
-function summaryLead(summary: string) {
-  return summary
-    .replace(/^##[^\n]*\n+/, "")
-    .split(/\n\n(?:### \d+\.|No material findings\.|<details>)/)[0]
-    .trim();
 }
 
 export function ReviewDashboard({ data }: { data: DashboardData }) {
@@ -66,7 +53,7 @@ export function ReviewDashboard({ data }: { data: DashboardData }) {
   const visible = useMemo(() => filter === "all" ? data.pullRequests : data.pullRequests.filter((pull) => pull.check.status === filter), [data.pullRequests, filter]);
   const selected = data.pullRequests.find((pull) => pull.key === selectedKey) ?? visible[0] ?? data.pullRequests[0] ?? null;
   const selectedRunning = Boolean(selected && (selected.check.status === "reviewing" || activePending?.key === selected.key));
-  const findings = selected ? parseFindings(selected.check.summary) : [];
+  const findings = selected?.check.findings ?? [];
 
   async function runReview(pull: DashboardPullRequest) {
     setError(null);
@@ -104,7 +91,8 @@ export function ReviewDashboard({ data }: { data: DashboardData }) {
           <div><div className="mb-1 flex items-center gap-2 text-xs font-medium text-[var(--muted)]"><span>GitHub</span><span>›</span><span className="text-[var(--ink)]">{data.account ?? "No installation"}</span></div><h1 className="text-[26px] font-semibold tracking-[-.045em]">Live code reviews</h1></div>
           <div className="flex flex-wrap items-center gap-2" id="repositories">
             {data.repositories.length > 0 && <select aria-label="Repository" value={data.selectedRepository?.fullName ?? ""} onChange={(event) => router.push(`/?repo=${encodeURIComponent(event.target.value)}`)} className="rounded-xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-xs font-semibold shadow-sm">{data.repositories.map((repository) => <option key={repository.id} value={repository.fullName}>{repository.fullName}{repository.private ? " · private" : ""}</option>)}</select>}
-            <a href={data.selectedRepository?.manageUrl ?? data.installUrl} target="_blank" rel="noreferrer" className="rounded-xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-xs font-semibold shadow-sm">+ Add repositories ↗</a>
+            <a href={data.selectedRepository?.manageUrl ?? data.installUrl} target="_blank" rel="noreferrer" className="rounded-xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-xs font-semibold shadow-sm">+ Manage repositories ↗</a>
+            {data.selectedRepository && <a href={data.installUrl} target="_blank" rel="noreferrer" className="desktop-only rounded-xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-xs font-semibold shadow-sm">Install another account ↗</a>}
             {selected && <button disabled={selectedRunning || selected.draft} onClick={() => runReview(selected)} className="rounded-xl bg-[#171a18] px-4 py-2.5 text-xs font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50">{selectedRunning ? "Running sandbox…" : selected.draft ? "Draft PR" : "Run review"}</button>}
           </div>
         </section>
@@ -120,7 +108,7 @@ export function ReviewDashboard({ data }: { data: DashboardData }) {
 
             {selected && <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--line)] bg-white shadow-[0_1px_2px_rgba(0,0,0,.025)]">
               <div className="border-b border-[var(--line)] px-5 py-5 lg:px-6"><div className="mb-4 flex flex-wrap items-start justify-between gap-4"><div><div className="mb-1.5 flex items-center gap-2 text-[11px] font-medium text-[var(--muted)]"><span>{selected.repository}</span><span>›</span><span>Pull request #{selected.number}</span></div><h2 className="text-xl font-semibold tracking-[-.035em]">{selected.title}</h2><div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-[var(--muted)]"><code className="rounded bg-[#f1f2ee] px-2 py-1 font-mono text-[10px] text-[#4b504b]">{selected.headBranch}</code><span>→</span><code className="font-mono text-[10px]">{selected.baseBranch}</code><span>·</span><span>{selected.files} files</span><span className="text-[#4d9a43]">+{selected.additions}</span><span className="text-[#ce5e57]">−{selected.deletions}</span></div></div><div className="flex items-center gap-2"><StatusBadge status={selectedRunning ? "reviewing" : selected.check.status} /><button disabled={selectedRunning || selected.draft} onClick={() => runReview(selected)} className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[11px] font-semibold shadow-sm disabled:opacity-50">↻ Re-review</button><a href={selected.url} target="_blank" rel="noreferrer" className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[11px] font-semibold shadow-sm">View on GitHub ↗</a></div></div>
-                <div className="grid gap-3 sm:grid-cols-3"><Metric label="Verdict" value={selectedRunning ? "Review in progress" : statusStyles[selected.check.status][0]} detail={selected.check.findings ? `${selected.check.findings} material finding${selected.check.findings === 1 ? "" : "s"}` : "No material findings recorded"} /><Metric label="Sandbox" value={selectedRunning ? "Running" : selected.check.sandboxSteps.length ? `${selected.check.sandboxSteps.filter((step) => step.passed).length} / ${selected.check.sandboxSteps.length} passed` : "Not run"} detail={selected.check.sandboxDurationSeconds ? `Isolated · ${selected.check.sandboxDurationSeconds}s` : "Fresh Firecracker microVM per review"} /><Metric label="Repository" value={data.selectedRepository?.private ? "Private" : "Public"} detail={`${data.selectedRepository?.defaultBranch} · ${selected.headSha.slice(0, 7)}`} /></div>
+                <div className="grid gap-3 sm:grid-cols-3"><Metric label="Verdict" value={selectedRunning ? "Review in progress" : statusStyles[selected.check.status][0]} detail={selected.check.findings.length ? `${selected.check.findings.length} material finding${selected.check.findings.length === 1 ? "" : "s"}` : "No material findings recorded"} /><Metric label="Sandbox" value={selectedRunning ? "Running" : selected.check.sandboxSteps.length ? `${selected.check.sandboxSteps.filter((step) => step.passed).length} / ${selected.check.sandboxSteps.length} passed` : "Not run"} detail={selected.check.sandboxDurationSeconds ? `Isolated · ${selected.check.sandboxDurationSeconds}s` : "Fresh Firecracker microVM per review"} /><Metric label="Repository" value={data.selectedRepository?.private ? "Private" : "Public"} detail={`${data.selectedRepository?.defaultBranch} · ${selected.headSha.slice(0, 7)}`} /></div>
               </div>
               <div className="border-b border-[var(--line)] px-5 lg:px-6"><div className="flex gap-6 text-xs font-semibold"><button onClick={() => setTab("findings")} className={`border-b-2 py-4 ${tab === "findings" ? "border-[var(--ink)] text-[var(--ink)]" : "border-transparent text-[var(--muted)]"}`}>Review <span className="ml-1 rounded-full bg-[#f0f1ed] px-1.5 py-0.5 text-[9px]">{findings.length}</span></button><button onClick={() => setTab("sandbox")} className={`border-b-2 py-4 ${tab === "sandbox" ? "border-[var(--ink)] text-[var(--ink)]" : "border-transparent text-[var(--muted)]"}`}>Sandbox run</button></div></div>
               <div className="p-4 lg:p-6">{tab === "findings" ? <ReviewPanel pull={selected} findings={findings} running={selectedRunning} onRun={() => runReview(selected)} /> : <SandboxPanel pull={selected} running={selectedRunning} />}</div>
@@ -141,10 +129,10 @@ function EmptyState({ title, body, actionHref, action }: { title: string; body: 
   return <section className="grid min-h-[460px] place-items-center rounded-2xl border border-dashed border-[#d9dcd5] bg-white p-8 text-center"><div className="max-w-md"><span className="mx-auto mb-5 grid size-12 place-items-center rounded-2xl bg-[#171a18] text-xl text-[var(--acid)]">⌁</span><h2 className="text-xl font-semibold tracking-[-.03em]">{title}</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">{body}</p><a href={actionHref} target="_blank" rel="noreferrer" className="mt-6 inline-block rounded-xl bg-[#171a18] px-4 py-2.5 text-xs font-semibold text-white">{action} ↗</a></div></section>;
 }
 
-function ReviewPanel({ pull, findings, running, onRun }: { pull: DashboardPullRequest; findings: Finding[]; running: boolean; onRun: () => void }) {
+function ReviewPanel({ pull, findings, running, onRun }: { pull: DashboardPullRequest; findings: ReviewFinding[]; running: boolean; onRun: () => void }) {
   if (running) return <div className="rounded-xl border border-[#eadcae] bg-[#fffaf0] p-5"><div className="flex items-center gap-3"><span className="pulse-dot size-2.5 rounded-full bg-[var(--amber)]"/><div><h3 className="text-sm font-semibold">Ternary is reviewing this pull request</h3><p className="mt-1 text-xs text-[var(--muted)]">The dashboard refreshes automatically while the sandbox and model are running.</p></div></div></div>;
   if (pull.check.status === "not_reviewed") return <div className="rounded-xl border border-dashed border-[#d9dcd5] p-8 text-center"><h3 className="text-sm font-semibold">No Ternary review yet</h3><p className="mt-2 text-xs text-[var(--muted)]">Run the real sandbox and AI review for commit {pull.headSha.slice(0, 7)}.</p><button onClick={onRun} className="mt-5 rounded-lg bg-[#171a18] px-4 py-2.5 text-xs font-semibold text-white">Run review</button></div>;
-  return <div className="space-y-3"><div className="rounded-xl border border-[#e2e4df] bg-[#fafbf8] p-4"><h3 className="text-sm font-semibold">{pull.check.title}</h3><p className="mt-2 text-xs leading-6 text-[#555b56]">{summaryLead(pull.check.summary)}</p></div>{findings.length === 0 ? <div className="rounded-xl border border-[#dce8d7] bg-[#f3faf0] p-4 text-xs leading-6 text-[#476a40]">No material findings were reported for this commit.</div> : findings.map((finding) => <article key={`${finding.title}-${finding.location}`} className="rounded-xl border border-[#e2e4df] bg-white p-4"><div className="flex items-start justify-between gap-3"><div><h3 className="text-[13px] font-semibold">{finding.title}</h3>{finding.location && <a className="mt-1.5 block font-mono text-[10px] text-[var(--violet)]" href={`${pull.url}/files`}>{finding.location}</a>}</div><span className="rounded-full bg-[#fff0ed] px-2 py-1 text-[9px] font-bold uppercase tracking-[.08em] text-[#b64a42]">{finding.severity}</span></div><p className="mt-3 text-[11px] leading-[1.65] text-[#555b56]">{finding.explanation}</p>{finding.suggestedFix && <div className="mt-3 rounded-lg bg-[#f7f8f5] p-3 text-[10px] leading-5 text-[#5a605b]"><strong>Suggested fix:</strong> {finding.suggestedFix}</div>}</article>)}</div>;
+  return <div className="space-y-3"><div className="rounded-xl border border-[#e2e4df] bg-[#fafbf8] p-4"><h3 className="text-sm font-semibold">{pull.check.title}</h3><p className="mt-2 text-xs leading-6 text-[#555b56]">{pull.check.summary}</p></div>{findings.length === 0 ? <div className="rounded-xl border border-[#dce8d7] bg-[#f3faf0] p-4 text-xs leading-6 text-[#476a40]">No material findings were reported for this commit.</div> : findings.map((finding) => { const location = finding.file ? `${finding.file}${finding.line ? `:${finding.line}` : ""}` : ""; return <article key={`${finding.title}-${location}`} className="rounded-xl border border-[#e2e4df] bg-white p-4"><div className="flex items-start justify-between gap-3"><div><h3 className="text-[13px] font-semibold">{finding.title}</h3>{location && <a className="mt-1.5 block font-mono text-[10px] text-[var(--violet)]" href={`${pull.url}/files`}>{location}</a>}</div><span className="rounded-full bg-[#fff0ed] px-2 py-1 text-[9px] font-bold uppercase tracking-[.08em] text-[#b64a42]">{finding.severity}</span></div><p className="mt-3 text-[11px] leading-[1.65] text-[#555b56]">{finding.explanation}</p>{finding.suggestedFix && <div className="mt-3 rounded-lg bg-[#f7f8f5] p-3 text-[10px] leading-5 text-[#5a605b]"><strong>Suggested fix:</strong> {finding.suggestedFix}</div>}</article>; })}</div>;
 }
 
 function SandboxPanel({ pull, running }: { pull: DashboardPullRequest; running: boolean }) {

@@ -10,7 +10,7 @@ import {
   type GitHubInstallation,
   type GitHubRepository,
 } from "./github";
-import type { ReviewRequest } from "./types";
+import type { ReviewFinding, ReviewRequest, ReviewResult } from "./types";
 
 export type DashboardRepository = {
   id: number;
@@ -26,14 +26,14 @@ export type DashboardRepository = {
 };
 
 export type DashboardCheck = {
-  status: "not_reviewed" | "reviewing" | "passed" | "changes";
+  status: "not_reviewed" | "reviewing" | "passed" | "reviewed" | "changes" | "failed";
   conclusion: GitHubCheckRun["conclusion"];
   title: string;
   summary: string;
   startedAt: string | null;
   completedAt: string | null;
   detailsUrl: string | null;
-  findings: number;
+  findings: ReviewFinding[];
   sandboxSteps: Array<{ command: string; passed: boolean }>;
   sandboxId: string | null;
   sandboxDurationSeconds: number | null;
@@ -93,38 +93,52 @@ function parseCheck(checkRun: GitHubCheckRun | undefined): DashboardCheck {
       startedAt: null,
       completedAt: null,
       detailsUrl: null,
-      findings: 0,
+      findings: [],
       sandboxSteps: [],
       sandboxId: null,
       sandboxDurationSeconds: null,
     };
   }
 
-  const summary = checkRun.output.summary ?? "Ternary is preparing the review.";
-  const sandboxSteps = Array.from(summary.matchAll(/- (✅|❌) `([^`]+)`/g)).map((match) => ({
-    command: match[2],
-    passed: match[1] === "✅",
-  }));
-  const sandboxMatch = summary.match(/Sandbox: `([^`]+)` · (\d+)s/);
-  const findings = summary.includes("No material findings.") ? 0 : Array.from(summary.matchAll(/^### \d+\./gm)).length;
-  const status = checkRun.status !== "completed"
+  const markdown = checkRun.output.summary ?? "Ternary is preparing the review.";
+  let review: ReviewResult | null = null;
+  try {
+    review = checkRun.output.text ? JSON.parse(checkRun.output.text) as ReviewResult : null;
+  } catch {
+    review = null;
+  }
+  const sandboxSteps = review
+    ? review.sandbox.commands.map((command) => ({ command: command.command, passed: command.exitCode === 0 }))
+    : Array.from(markdown.matchAll(/- (✅|❌) `([^`]+)`/g)).map((match) => ({ command: match[2], passed: match[1] === "✅" }));
+  const sandboxMatch = markdown.match(/Sandbox: `([^`]+)` · (\d+)s/);
+  const legacyFindings = Array.from(markdown.matchAll(/### \d+\. (.+?)(?: — `([^`]+)`)?\n\n\*\*(blocking|warning|suggestion)\*\* · ([\s\S]*?)(?=\n\n### \d+\.|\n\n<details>)/g)).map((match) => {
+    const [explanation, suggestedFix] = match[4].split("\n\n**Suggested fix:** ");
+    const [file, line] = (match[2] ?? "").split(":");
+    return { severity: match[3], title: match[1], file, line: line ? Number(line) : undefined, explanation, suggestedFix } as ReviewFinding;
+  });
+  const findings = review?.findings ?? legacyFindings;
+  const status: DashboardCheck["status"] = checkRun.status !== "completed"
     ? "reviewing"
-    : checkRun.conclusion === "failure"
-      ? "changes"
-      : "passed";
+    : checkRun.output.title === "Review failed" || ["cancelled", "timed_out", "action_required"].includes(checkRun.conclusion ?? "")
+      ? "failed"
+      : checkRun.conclusion === "failure"
+        ? "changes"
+        : checkRun.conclusion === "success"
+          ? "passed"
+          : "reviewed";
 
   return {
     status,
     conclusion: checkRun.conclusion,
     title: checkRun.output.title ?? (status === "reviewing" ? "Reviewing" : "Review complete"),
-    summary,
+    summary: review?.summary ?? markdown.replace(/^##[^\n]*\n+/, "").split(/\n\n(?:### \d+\.|No material findings\.|<details>)/)[0].trim(),
     startedAt: checkRun.started_at,
     completedAt: checkRun.completed_at,
     detailsUrl: checkRun.html_url,
     findings,
     sandboxSteps,
-    sandboxId: sandboxMatch?.[1] ?? null,
-    sandboxDurationSeconds: sandboxMatch ? Number(sandboxMatch[2]) : null,
+    sandboxId: review?.sandbox.sandboxId ?? sandboxMatch?.[1] ?? null,
+    sandboxDurationSeconds: review ? Math.round(review.sandbox.durationMs / 1000) : sandboxMatch ? Number(sandboxMatch[2]) : null,
   };
 }
 
