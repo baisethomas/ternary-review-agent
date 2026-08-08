@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Sandbox, type NetworkPolicy } from "@vercel/sandbox";
 import type { ReviewRequest, SandboxResult } from "./types";
 
@@ -47,9 +48,13 @@ function commandPlan() {
 
 export async function runInSandbox(request: ReviewRequest, githubToken: string): Promise<SandboxResult> {
   const startedAt = Date.now();
+  const sandboxBaseName = `ternary-${request.owner}-${request.repo}-${request.pullNumber}-${request.headSha.slice(0, 7)}`
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-");
+  const sandboxName = `${sandboxBaseName.slice(0, 54)}-${randomUUID().slice(0, 8)}`;
   const sandbox = await Sandbox.create({
     ...credentials(),
-    name: `ternary-${request.owner}-${request.repo}-${request.pullNumber}-${request.headSha.slice(0, 7)}`.toLowerCase().replace(/[^a-z0-9-]/g, "-"),
+    name: sandboxName,
     source: {
       type: "git",
       url: request.cloneUrl,
