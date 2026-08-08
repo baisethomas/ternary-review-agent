@@ -27,7 +27,10 @@ function createAppJwt() {
   const unsigned = `${header}.${payload}`;
   const signer = createSign("RSA-SHA256");
   signer.update(unsigned);
-  const privateKey = requireEnv("GITHUB_PRIVATE_KEY").replace(/\\n/g, "\n");
+  const configuredKey = requireEnv("GITHUB_PRIVATE_KEY").replace(/\\n/g, "\n");
+  const privateKey = configuredKey.startsWith("-----BEGIN")
+    ? configuredKey
+    : Buffer.from(configuredKey, "base64").toString("utf8");
   return `${unsigned}.${signer.sign(privateKey, "base64url")}`;
 }
 
