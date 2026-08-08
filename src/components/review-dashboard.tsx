@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { DashboardHeader } from "@/components/dashboard-header";
+import { RepositoryWatchStatus } from "@/components/repository-watch-control";
 import type { DashboardData, DashboardPullRequest } from "@/lib/dashboard-data";
 import type { ReviewFinding } from "@/lib/types";
 
@@ -80,7 +81,8 @@ export function ReviewDashboard({ data }: { data: DashboardData }) {
         <section className="mb-5 flex flex-wrap items-end justify-between gap-4">
           <div><div className="mb-1 flex items-center gap-2 text-xs font-medium text-[var(--muted)]"><span>GitHub</span><span>›</span><span className="text-[var(--ink)]">{data.account ?? "No installation"}</span></div><h1 className="text-[26px] font-semibold tracking-[-.045em]">Live code reviews</h1></div>
           <div className="flex flex-wrap items-center gap-2">
-            {data.repositories.length > 0 && <select aria-label="Repository" value={data.selectedRepository?.fullName ?? ""} onChange={(event) => router.push(`/?repo=${encodeURIComponent(event.target.value)}`)} className="rounded-xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-xs font-semibold shadow-sm">{data.repositories.map((repository) => <option key={repository.id} value={repository.fullName}>{repository.fullName}{repository.private ? " · private" : ""}</option>)}</select>}
+            {data.repositories.length > 0 && <select aria-label="Repository" value={data.selectedRepository?.fullName ?? ""} onChange={(event) => router.push(`/?repo=${encodeURIComponent(event.target.value)}`)} className="rounded-xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-xs font-semibold shadow-sm">{data.repositories.map((repository) => <option key={repository.id} value={repository.fullName}>{repository.fullName}{repository.private ? " · private" : ""} · {repository.watched ? "watching" : "paused"}</option>)}</select>}
+            {data.selectedRepository && <RepositoryWatchStatus watched={data.selectedRepository.watched}/>}
             <Link href="/repositories" className="rounded-xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-xs font-semibold shadow-sm">Manage repositories</Link>
             {data.selectedRepository && <a href={data.installUrl} target="_blank" rel="noreferrer" className="desktop-only rounded-xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-xs font-semibold shadow-sm">Install another account ↗</a>}
             {selected && <button disabled={selectedRunning || selected.draft} onClick={() => runReview(selected)} className="rounded-xl bg-[#171a18] px-4 py-2.5 text-xs font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50">{selectedRunning ? "Running sandbox…" : selected.draft ? "Draft PR" : "Run review"}</button>}

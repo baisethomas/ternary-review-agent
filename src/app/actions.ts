@@ -1,10 +1,14 @@
 "use server";
 
 import { cookies } from "next/headers";
+import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { DASHBOARD_COOKIE, dashboardSessionValue, isDashboardAuthenticated, isValidDashboardToken } from "@/lib/dashboard-auth";
+import { isInstalledRepository } from "@/lib/dashboard-data";
+import { setRepositoryWatched } from "@/lib/repository-watch";
 
 export type LoginState = { error: string | null };
+export type WatchState = { error: string | null };
 
 export async function loginAction(_state: LoginState, formData: FormData): Promise<LoginState> {
   const token = String(formData.get("token") ?? "");
@@ -25,4 +29,25 @@ export async function logoutAction() {
   if (!await isDashboardAuthenticated()) redirect("/");
   (await cookies()).delete(DASHBOARD_COOKIE);
   redirect("/");
+}
+
+export async function setRepositoryWatchAction(_state: WatchState, formData: FormData): Promise<WatchState> {
+  if (!await isDashboardAuthenticated()) return { error: "Your session expired. Refresh and sign in again." };
+  const repository = String(formData.get("repository") ?? "");
+  const watched = String(formData.get("watched") ?? "") === "true";
+  if (!/^[^/\s]+\/[^/\s]+$/.test(repository)) {
+    return { error: "That repository is not available to this GitHub App." };
+  }
+  try {
+    if (!await isInstalledRepository(repository)) {
+      return { error: "That repository is not available to this GitHub App." };
+    }
+    await setRepositoryWatched(repository, watched);
+    revalidatePath("/repositories");
+    revalidatePath("/");
+    return { error: null };
+  } catch (error) {
+    console.error("Unable to update repository watch state", error);
+    return { error: "GitHub access could not be verified or the setting could not be saved. Please try again." };
+  }
 }

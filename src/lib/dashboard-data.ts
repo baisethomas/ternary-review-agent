@@ -11,6 +11,7 @@ import {
   type GitHubRepository,
 } from "./github";
 import type { ReviewFinding, ReviewRequest, ReviewResult } from "./types";
+import { getWatchedRepositories, normalizeRepositoryName } from "./repository-watch";
 
 export type DashboardRepository = {
   id: number;
@@ -23,6 +24,7 @@ export type DashboardRepository = {
   defaultBranch: string;
   account: string;
   manageUrl: string;
+  watched: boolean;
 };
 
 export type DashboardCheck = {
@@ -161,8 +163,9 @@ async function getInstallationRepositories(providedInstallations?: GitHubInstall
 
 async function getRepositoryCatalog() {
   const appPromise = getGitHubApp();
+  const watchedPromise = getWatchedRepositories();
   const installations = await listAppInstallations();
-  const [app, installedRepositories] = await Promise.all([appPromise, getInstallationRepositories(installations)]);
+  const [app, installedRepositories, watchedRepositories] = await Promise.all([appPromise, getInstallationRepositories(installations), watchedPromise]);
   const repositories = installedRepositories.map(({ installation, repository }) => ({
     id: repository.id,
     installationId: installation.id,
@@ -174,8 +177,15 @@ async function getRepositoryCatalog() {
     defaultBranch: repository.default_branch,
     account: installation.account.login,
     manageUrl: installationManageUrl(installation),
+    watched: watchedRepositories.has(normalizeRepositoryName(repository.full_name)),
   })).sort((a, b) => a.fullName.localeCompare(b.fullName));
   return { app, installations, installedRepositories, repositories };
+}
+
+export async function isInstalledRepository(fullName: string) {
+  const installedRepositories = await getInstallationRepositories();
+  const normalized = normalizeRepositoryName(fullName);
+  return installedRepositories.some(({ repository }) => normalizeRepositoryName(repository.full_name) === normalized);
 }
 
 export async function getRepositoryDashboardData(): Promise<RepositoryDashboardData> {
