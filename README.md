@@ -12,6 +12,7 @@ An internal pull-request review agent: GitHub sends a signed webhook, Ternary ch
 - Structured AI output with blocking, warning, and suggestion findings
 - Repository management through the GitHub App installation settings
 - Authenticated manual review runs from the dashboard
+- A Redis-backed durable review queue with leases, bounded per-installation and per-repository concurrency, retries, and crash recovery
 
 ## Run locally
 
@@ -47,7 +48,13 @@ On Vercel, authentication is automatic through `VERCEL_OIDC_TOKEN`. For local Sa
 4. Deploy, update the GitHub App webhook URL, and install the app on a test repository.
 5. Open a PR and confirm the `Ternary review` check appears.
 
-The webhook uses Next.js `after()` so GitHub receives a fast `202`. For higher volume, replace `after()` with a durable queue/workflow and store review runs in Postgres. Production hardening should also add delivery-id idempotency, organization allowlists, per-repository commands, log redaction, and a retention policy.
+The webhook persists work in Upstash Redis before GitHub receives a `202`, then QStash durably dispatches a worker outside the webhook request lifetime. Jobs use renewable leases, exponential retries, and per-installation and per-repository locks. QStash continues draining available work, while a protected daily Vercel Cron remains as a Hobby-compatible recovery backstop. Production teams on Vercel Pro can change the cron to `* * * * *` for additional minute-level recovery. Terminal job records expire after 30 days, and the recent-jobs index is pruned without deleting active or scheduled work. Operators can inspect recent job state through authenticated `GET /api/reviews/jobs`.
+
+Authenticated callers of `POST /api/reviews/run` must send an `Idempotency-Key` header containing a unique token for each intentional review. Retrying the same request with the same token reuses the queued job; sending a new token starts a deliberate rerun, even when the head SHA has not changed. If immediate QStash dispatch is unavailable, manual endpoints still return the accepted persisted job so the recovery worker can drain it.
+
+Set `QSTASH_TOKEN`, `TERNARY_BASE_URL`, and `CRON_SECRET` in Vercel. QStash and manual worker invocations authenticate with `Authorization: Bearer $INTERNAL_API_TOKEN`; QStash redacts that header from its logs.
+
+Run `npm test` for the queue policy suite. To exercise the production Redis Lua scripts against an isolated namespace, provide test Redis credentials and run `npm run test:redis`; the integration test removes its temporary keys afterward.
 
 ## Architecture
 

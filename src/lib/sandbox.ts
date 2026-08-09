@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { Sandbox, type NetworkPolicy } from "@vercel/sandbox";
+import { APIError, Sandbox, type NetworkPolicy } from "@vercel/sandbox";
+import { isRetryableHttpStatus, NonRetryableReviewError } from "./review-errors";
 import type { ReviewRequest, SandboxResult } from "./types";
 
 const INSTALL_NETWORK: NetworkPolicy = {
@@ -17,6 +18,10 @@ const OUTPUT_LIMIT = 24_000;
 const COMMAND_TIMEOUT = 55_000;
 
 function credentials() {
+  const explicit = [process.env.VERCEL_TOKEN, process.env.VERCEL_TEAM_ID, process.env.VERCEL_PROJECT_ID];
+  if (explicit.some(Boolean) && !explicit.every(Boolean)) {
+    throw new NonRetryableReviewError("VERCEL_TOKEN, VERCEL_TEAM_ID, and VERCEL_PROJECT_ID must be configured together");
+  }
   if (process.env.VERCEL_TOKEN && process.env.VERCEL_TEAM_ID && process.env.VERCEL_PROJECT_ID) {
     return {
       token: process.env.VERCEL_TOKEN,
@@ -25,6 +30,13 @@ function credentials() {
     };
   }
   return {};
+}
+
+function classifySandboxError(error: unknown) {
+  if (error instanceof APIError && !isRetryableHttpStatus(error.response.status)) {
+    return new NonRetryableReviewError(`Vercel Sandbox ${error.response.status}: ${error.message}`, { cause: error });
+  }
+  return error;
 }
 
 function trimOutput(output: string) {
@@ -52,24 +64,29 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string):
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, "-");
   const sandboxName = `${sandboxBaseName.slice(0, 54)}-${randomUUID().slice(0, 8)}`;
-  const sandbox = await Sandbox.create({
-    ...credentials(),
-    name: sandboxName,
-    source: {
-      type: "git",
-      url: request.cloneUrl,
-      username: "x-access-token",
-      password: githubToken,
-      revision: request.headSha,
-      depth: 1,
-    },
-    image: "vercel/sandbox/node:24",
-    resources: { vcpus: 2 },
-    timeout: 240_000,
-    persistent: false,
-    networkPolicy: INSTALL_NETWORK,
-    tags: { service: "ternary", repository: `${request.owner}-${request.repo}`.slice(0, 63), pr: String(request.pullNumber) },
-  });
+  let sandbox: Awaited<ReturnType<typeof Sandbox.create>>;
+  try {
+    sandbox = await Sandbox.create({
+      ...credentials(),
+      name: sandboxName,
+      source: {
+        type: "git",
+        url: request.cloneUrl,
+        username: "x-access-token",
+        password: githubToken,
+        revision: request.headSha,
+        depth: 1,
+      },
+      image: "vercel/sandbox/node:24",
+      resources: { vcpus: 2 },
+      timeout: 240_000,
+      persistent: false,
+      networkPolicy: INSTALL_NETWORK,
+      tags: { service: "ternary", repository: `${request.owner}-${request.repo}`.slice(0, 63), pr: String(request.pullNumber) },
+    });
+  } catch (error) {
+    throw classifySandboxError(error);
+  }
 
   const commands: SandboxResult["commands"] = [];
   try {
@@ -94,6 +111,8 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string):
       durationMs: Date.now() - startedAt,
       commands,
     };
+  } catch (error) {
+    throw classifySandboxError(error);
   } finally {
     await sandbox.stop().catch((error) => console.error("Unable to stop sandbox", error));
   }
