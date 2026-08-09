@@ -32,6 +32,8 @@ describe.skipIf(!enabled || !redis)("RedisReviewQueueStore", () => {
       `${prefix}:all`,
       `${prefix}:job:redis-job-1`,
       `${prefix}:job:redis-job-2`,
+      `${prefix}:job:redis-job-3`,
+      `${prefix}:idempotency:github-delivery:test`,
       `${prefix}:lock:installation:${request.installationId}`,
       `${prefix}:lock:repository:${request.owner}/${request.repo}`,
     );
@@ -52,7 +54,9 @@ describe.skipIf(!enabled || !redis)("RedisReviewQueueStore", () => {
       run: async () => { runCount += 1; if (runCount === 1) throw new Error("temporary outage"); },
     });
 
-    await queue.enqueue(request);
+    await queue.enqueue(request, "github-delivery:test");
+    const duplicate = await queue.enqueue(request, "github-delivery:test");
+    expect(duplicate.id).toBe("redis-job-1");
     await queue.processNext();
     await expect(queue.get("redis-job-1")).resolves.toMatchObject({ status: "retrying", attempts: 1, availableAt: startedAt + 10 });
 
@@ -62,15 +66,15 @@ describe.skipIf(!enabled || !redis)("RedisReviewQueueStore", () => {
 
     await queue.enqueue({ ...request, pullNumber: 2, headSha: "second-sha" });
     const abandoned = await store.claim(now, 5_000, "abandoned-lease");
-    expect(abandoned).toMatchObject({ id: "redis-job-2", status: "running" });
+    expect(abandoned).toMatchObject({ id: "redis-job-3", status: "running" });
     expect(await store.claim(now, 5_000, "competing-lease")).toBeNull();
     const renewedUntil = startedAt + 10_000;
-    expect(await store.renew("redis-job-2", "abandoned-lease", renewedUntil)).toBe(true);
+    expect(await store.renew("redis-job-3", "abandoned-lease", renewedUntil)).toBe(true);
     now = startedAt + 5_001;
     expect(await store.claim(now, 5_000, "premature-recovery")).toBeNull();
     now = renewedUntil + 1;
 
     await queue.processNext();
-    await expect(queue.get("redis-job-2")).resolves.toMatchObject({ status: "completed", attempts: 2, lastError: "Worker lease expired" });
+    await expect(queue.get("redis-job-3")).resolves.toMatchObject({ status: "completed", attempts: 2, lastError: "Worker lease expired" });
   }, 20_000);
 });

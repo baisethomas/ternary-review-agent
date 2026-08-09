@@ -3,6 +3,28 @@ import { Redis } from "@upstash/redis";
 import type { ReviewJob, ReviewQueueStore } from "./review-queue";
 
 const defaultPrefix = "ternary:review-queue:v1";
+const idempotencyTtlSeconds = 7 * 24 * 60 * 60;
+
+const createScript = `
+if ARGV[6] ~= "" then
+  local existingId = redis.call("GET", ARGV[6])
+  if existingId then
+    local existing = redis.call("GET", ARGV[7] .. existingId)
+    if existing then return existing end
+    redis.call("DEL", ARGV[6])
+  end
+  local accepted = redis.call("SET", ARGV[6], ARGV[3], "NX", "EX", ARGV[8])
+  if not accepted then
+    local winnerId = redis.call("GET", ARGV[6])
+    local winner = winnerId and redis.call("GET", ARGV[7] .. winnerId)
+    if winner then return winner end
+  end
+end
+redis.call("SET", ARGV[1], ARGV[2])
+redis.call("ZADD", KEYS[1], ARGV[4], ARGV[3])
+redis.call("ZADD", KEYS[2], ARGV[5], ARGV[3])
+return ARGV[2]
+`;
 
 const claimScript = `
 local candidates = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", ARGV[1], "LIMIT", 0, 25)
@@ -124,14 +146,25 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
   private get allKey() { return `${this.prefix}:all`; }
   private get jobPrefix() { return `${this.prefix}:job:`; }
   private get lockPrefix() { return `${this.prefix}:lock:`; }
+  private get idempotencyPrefix() { return `${this.prefix}:idempotency:`; }
   private jobKey(id: string) { return `${this.jobPrefix}${id}`; }
 
-  async create(job: ReviewJob) {
-    await this.redis.multi()
-      .set(this.jobKey(job.id), job)
-      .zadd(this.scheduledKey, { score: job.availableAt, member: job.id })
-      .zadd(this.allKey, { score: job.createdAt, member: job.id })
-      .exec();
+  async create(job: ReviewJob, idempotencyKey?: string) {
+    const created = await this.redis.eval<[string, string, string, number, number, string, string, number], ReviewJob>(
+      createScript,
+      [this.scheduledKey, this.allKey],
+      [
+        this.jobKey(job.id),
+        JSON.stringify(job),
+        job.id,
+        job.availableAt,
+        job.createdAt,
+        idempotencyKey ? `${this.idempotencyPrefix}${idempotencyKey}` : "",
+        this.jobPrefix,
+        idempotencyTtlSeconds,
+      ],
+    );
+    return created;
   }
 
   async claim(now: number, leaseMs: number, leaseId: string) {

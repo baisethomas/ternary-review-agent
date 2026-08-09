@@ -4,6 +4,7 @@ import { RedisReviewQueueStore } from "./redis-review-queue-store";
 import { ReviewQueue } from "./review-queue";
 import { runReview } from "./reviewer";
 import { dispatchReviewWorker } from "./review-worker-dispatcher";
+import { submitReview } from "./review-submission";
 import type { ReviewRequest } from "./types";
 
 let queue: ReviewQueue | null = null;
@@ -21,14 +22,12 @@ function reviewQueue() {
   return queue;
 }
 
-export function enqueueReview(request: ReviewRequest) {
-  return reviewQueue().enqueue(request);
+export function enqueueReview(request: ReviewRequest, idempotencyKey?: string) {
+  return reviewQueue().enqueue(request, idempotencyKey);
 }
 
-export async function enqueueAndDispatchReview(request: ReviewRequest) {
-  const job = await enqueueReview(request);
-  await dispatchReviewWorker(job.availableAt);
-  return job;
+export function enqueueAndDispatchReview(request: ReviewRequest, idempotencyKey?: string) {
+  return submitReview(reviewQueue(), dispatchReviewWorker, request, idempotencyKey);
 }
 
 export async function processReviewQueue(maxJobs = 1) {

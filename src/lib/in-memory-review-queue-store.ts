@@ -5,9 +5,15 @@ type Lock = { jobId: string; expiresAt: number };
 export class InMemoryReviewQueueStore implements ReviewQueueStore {
   private readonly jobs = new Map<string, ReviewJob>();
   private readonly locks = new Map<string, Lock>();
+  private readonly idempotencyKeys = new Map<string, string>();
 
-  async create(job: ReviewJob) {
+  async create(job: ReviewJob, idempotencyKey?: string) {
+    const existingId = idempotencyKey ? this.idempotencyKeys.get(idempotencyKey) : undefined;
+    const existing = existingId ? this.jobs.get(existingId) : undefined;
+    if (existing) return structuredClone(existing);
     this.jobs.set(job.id, structuredClone(job));
+    if (idempotencyKey) this.idempotencyKeys.set(idempotencyKey, job.id);
+    return structuredClone(job);
   }
 
   async claim(now: number, leaseMs: number, leaseId: string) {

@@ -22,6 +22,8 @@ export async function POST(request: Request) {
   if (request.headers.get("x-github-event") !== "pull_request") {
     return Response.json({ accepted: false, reason: "Event ignored" });
   }
+  const deliveryId = request.headers.get("x-github-delivery");
+  if (!deliveryId) return Response.json({ error: "Missing GitHub delivery ID" }, { status: 400 });
 
   const payload = JSON.parse(rawBody) as PullRequestWebhook;
   if (!reviewActions.has(payload.action) || payload.pull_request.draft || !payload.installation?.id) {
@@ -39,6 +41,6 @@ export async function POST(request: Request) {
     headSha: payload.pull_request.head.sha,
     cloneUrl: payload.repository.clone_url,
   };
-  const job = await enqueueAndDispatchReview(review);
-  return Response.json({ accepted: true, delivery: request.headers.get("x-github-delivery"), jobId: job.id }, { status: 202 });
+  const job = await enqueueAndDispatchReview(review, `github-delivery:${deliveryId}`);
+  return Response.json({ accepted: true, delivery: deliveryId, jobId: job.id }, { status: 202 });
 }

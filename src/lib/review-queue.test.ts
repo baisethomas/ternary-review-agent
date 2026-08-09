@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { InMemoryReviewQueueStore } from "./in-memory-review-queue-store";
 import { ReviewQueue } from "./review-queue";
 import { NonRetryableReviewError } from "./review-errors";
+import { submitReview } from "./review-submission";
 import type { ReviewRequest } from "./types";
 
 const request: ReviewRequest = {
@@ -31,6 +32,24 @@ describe("ReviewQueue", () => {
 
     await queue.processNext();
     await expect(queue.get("job-1")).resolves.toMatchObject({ status: "completed", attempts: 1, completedAt: 1_000 });
+  });
+
+  test("returns the durable job when dispatch fails and GitHub redelivers", async () => {
+    let sequence = 0;
+    const queue = new ReviewQueue({
+      store: new InMemoryReviewQueueStore(),
+      run: async () => undefined,
+      now: () => 1_500,
+      id: () => `delivery-job-${++sequence}`,
+    });
+    const deliveryKey = "github-delivery:delivery-123";
+
+    await expect(submitReview(queue, async () => { throw new Error("QStash unavailable"); }, request, deliveryKey))
+      .rejects.toThrow("QStash unavailable");
+    const redelivery = await submitReview(queue, async () => undefined, request, deliveryKey);
+
+    expect(redelivery.id).toBe("delivery-job-1");
+    await expect(queue.list()).resolves.toHaveLength(1);
   });
 
   test("retries transient failures with exponential backoff", async () => {
