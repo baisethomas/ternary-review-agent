@@ -48,7 +48,9 @@ On Vercel, authentication is automatic through `VERCEL_OIDC_TOKEN`. For local Sa
 4. Deploy, update the GitHub App webhook URL, and install the app on a test repository.
 5. Open a PR and confirm the `Ternary review` check appears.
 
-The webhook persists work in Upstash Redis before GitHub receives a `202`, then QStash durably dispatches a worker outside the webhook request lifetime. Jobs use renewable leases, exponential retries, and per-installation and per-repository locks. QStash continues draining available work, while a protected daily Vercel Cron remains as a Hobby-compatible recovery backstop. Production teams on Vercel Pro can change the cron to `* * * * *` for additional minute-level recovery. Operators can inspect recent job state through authenticated `GET /api/reviews/jobs`.
+The webhook persists work in Upstash Redis before GitHub receives a `202`, then QStash durably dispatches a worker outside the webhook request lifetime. Jobs use renewable leases, exponential retries, and per-installation and per-repository locks. QStash continues draining available work, while a protected daily Vercel Cron remains as a Hobby-compatible recovery backstop. Production teams on Vercel Pro can change the cron to `* * * * *` for additional minute-level recovery. Terminal job records expire after 30 days, and the recent-jobs index is pruned without deleting active or scheduled work. Operators can inspect recent job state through authenticated `GET /api/reviews/jobs`.
+
+Authenticated callers of `POST /api/reviews/run` must send an `Idempotency-Key` header containing a unique token for each intentional review. Retrying the same request with the same token reuses the queued job; sending a new token starts a deliberate rerun, even when the head SHA has not changed. If immediate QStash dispatch is unavailable, manual endpoints still return the accepted persisted job so the recovery worker can drain it.
 
 Set `QSTASH_TOKEN`, `TERNARY_BASE_URL`, and `CRON_SECRET` in Vercel. QStash and manual worker invocations authenticate with `Authorization: Bearer $INTERNAL_API_TOKEN`; QStash redacts that header from its logs.
 

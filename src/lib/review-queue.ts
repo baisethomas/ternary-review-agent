@@ -1,5 +1,6 @@
 import type { ReviewRequest } from "./types";
 import { isRetryableReviewError, ReviewLeaseLostError } from "./review-errors";
+import { terminalJobRetentionMs } from "./review-retention";
 
 export type ReviewJobStatus = "queued" | "running" | "retrying" | "failed" | "completed";
 
@@ -24,6 +25,7 @@ export interface ReviewQueueStore {
   finish(job: ReviewJob): Promise<boolean>;
   renew(id: string, leaseId: string, leaseExpiresAt: number): Promise<boolean>;
   recoverExpired(now: number): Promise<number>;
+  pruneTerminal(completedBefore: number, limit: number): Promise<number>;
   get(id: string): Promise<ReviewJob | null>;
   list(limit: number): Promise<ReviewJob[]>;
   nextWakeAt(): Promise<number | null>;
@@ -38,6 +40,7 @@ type ReviewQueueOptions = {
   retryDelayMs?: number;
   leaseMs?: number;
   maxAttempts?: number;
+  terminalRetentionMs?: number;
 };
 
 export type ReviewLease = {
@@ -57,6 +60,7 @@ export class ReviewQueue {
   private readonly retryDelayMs: number;
   private readonly leaseMs: number;
   private readonly maxAttempts: number;
+  private readonly terminalRetentionMs: number;
 
   constructor(options: ReviewQueueOptions) {
     this.store = options.store;
@@ -67,6 +71,7 @@ export class ReviewQueue {
     this.retryDelayMs = options.retryDelayMs ?? 30_000;
     this.leaseMs = options.leaseMs ?? 6 * 60_000;
     this.maxAttempts = options.maxAttempts ?? 3;
+    this.terminalRetentionMs = options.terminalRetentionMs ?? terminalJobRetentionMs;
   }
 
   async enqueue(request: ReviewRequest, idempotencyKey?: string) {
@@ -140,5 +145,16 @@ export class ReviewQueue {
 
   nextWakeAt() {
     return this.store.nextWakeAt();
+  }
+
+  async pruneExpiredTerminalJobs(maxBatches = 20, batchSize = 250) {
+    let pruned = 0;
+    const completedBefore = this.now() - this.terminalRetentionMs;
+    for (let batch = 0; batch < maxBatches; batch += 1) {
+      const count = await this.store.pruneTerminal(completedBefore, batchSize);
+      pruned += count;
+      if (count < batchSize) break;
+    }
+    return pruned;
   }
 }

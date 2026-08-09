@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { tagReviewComment } from "./github";
-import { manualReviewIdempotencyKey } from "./review-submission";
+import { isValidInvocationId, manualReviewIdempotencyKey } from "./review-submission";
 import type { ReviewRequest } from "./types";
 
 const review: ReviewRequest = {
@@ -14,9 +14,16 @@ const review: ReviewRequest = {
 
 describe("review idempotency", () => {
   it("derives a stable key for retries of the same manual review", () => {
-    expect(manualReviewIdempotencyKey(review)).toBe("manual-review:ternary/agent#12:abc123");
-    expect(manualReviewIdempotencyKey({ ...review })).toBe(manualReviewIdempotencyKey(review));
-    expect(manualReviewIdempotencyKey({ ...review, headSha: "def456" })).not.toBe(manualReviewIdempotencyKey(review));
+    expect(manualReviewIdempotencyKey(review, "invocation-1")).toBe("manual-review:ternary/agent#12:abc123:invocation-1");
+    expect(manualReviewIdempotencyKey({ ...review }, "invocation-1")).toBe(manualReviewIdempotencyKey(review, "invocation-1"));
+    expect(manualReviewIdempotencyKey(review, "invocation-2")).not.toBe(manualReviewIdempotencyKey(review, "invocation-1"));
+  });
+
+  it("accepts bounded invocation tokens", () => {
+    expect(isValidInvocationId("550e8400-e29b-41d4-a716-446655440000")).toBe(true);
+    expect(isValidInvocationId("")).toBe(false);
+    expect(isValidInvocationId("x".repeat(129))).toBe(false);
+    expect(isValidInvocationId("contains spaces")).toBe(false);
   });
 
   it("tags review comments exactly once", () => {

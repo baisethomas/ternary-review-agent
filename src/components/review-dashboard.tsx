@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { DashboardHeader } from "@/components/dashboard-header";
 import { RepositoryWatchStatus } from "@/components/repository-watch-control";
 import type { DashboardData, DashboardPullRequest } from "@/lib/dashboard-data";
 import type { ReviewFinding } from "@/lib/types";
+import { ReviewInvocationTracker } from "@/lib/review-invocation";
 
 type ReviewStatus = DashboardPullRequest["check"]["status"];
 
@@ -39,6 +40,9 @@ export function ReviewDashboard({ data }: { data: DashboardData }) {
   const [filter, setFilter] = useState<"all" | ReviewStatus>("all");
   const [pending, setPending] = useState<{ key: string; startedAt: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const invocationTrackerRef = useRef<ReviewInvocationTracker | null>(null);
+  invocationTrackerRef.current ??= new ReviewInvocationTracker();
+  const invocationTracker = invocationTrackerRef.current;
 
   const pendingPull = pending ? data.pullRequests.find((pull) => pull.key === pending.key) : undefined;
   const pendingCheckStarted = pendingPull?.check.startedAt ? Date.parse(pendingPull.check.startedAt) : 0;
@@ -59,18 +63,25 @@ export function ReviewDashboard({ data }: { data: DashboardData }) {
   async function runReview(pull: DashboardPullRequest) {
     setError(null);
     setPending({ key: pull.key, startedAt: Date.now() });
-    const response = await fetch("/api/dashboard/reviews", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ owner: pull.owner, repo: pull.repo, pullNumber: pull.number }),
-    });
-    const result = await response.json() as { error?: string };
-    if (!response.ok) {
+    const invocationId = invocationTracker.current(pull.key);
+    try {
+      const response = await fetch("/api/dashboard/reviews", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ owner: pull.owner, repo: pull.repo, pullNumber: pull.number, invocationId }),
+      });
+      const result = await response.json() as { error?: string };
+      invocationTracker.confirm(pull.key);
+      if (!response.ok) {
+        setPending(null);
+        setError(result.error ?? "Unable to start review");
+        return;
+      }
+      router.refresh();
+    } catch {
       setPending(null);
-      setError(result.error ?? "Unable to start review");
-      return;
+      setError("The response was interrupted. Retry to check the same review request.");
     }
-    router.refresh();
   }
 
   return (

@@ -72,6 +72,7 @@ describe.skipIf(!enabled || !redis)("RedisReviewQueueStore", () => {
     now = startedAt + 10;
     await queue.processNext();
     await expect(queue.get(firstDelivery.id)).resolves.toMatchObject({ status: "completed", attempts: 2 });
+    expect(await redis!.ttl(`${prefix}:job:${firstDelivery.id}`)).toBeGreaterThan(0);
 
     await queue.enqueue({ ...request, pullNumber: 2, headSha: "second-sha" });
     const abandoned = await store.claim(now, 5_000, "abandoned-lease");
@@ -127,5 +128,25 @@ describe.skipIf(!enabled || !redis)("RedisReviewQueueStore", () => {
     expect(await store.claim(now, 30_000, "first-fairness-pass")).toBeNull();
     const runnable = await store.claim(now, 30_000, "independent-lease");
     expect(runnable).toMatchObject({ headSha: "independent", installationId: 88_000_002, status: "running" });
+
+    const oldQueued = queuedJob("old-still-visible", {
+      createdAt: now - 31 * 24 * 60 * 60 * 1_000,
+      updatedAt: now,
+      availableAt: now + 60_000,
+    });
+    const oldTerminal = { ...oldQueued, id: "old-terminal", status: "completed" as const, completedAt: oldQueued.createdAt };
+    await redis!.set(`${prefix}:job:${oldQueued.id}`, oldQueued);
+    await redis!.zadd(`${prefix}:scheduled`, { score: oldQueued.availableAt, member: oldQueued.id });
+    await redis!.zadd(`${prefix}:all`, { score: oldQueued.createdAt, member: oldQueued.id });
+    await redis!.set(`${prefix}:job:${oldTerminal.id}`, oldTerminal);
+    await redis!.zadd(`${prefix}:all`, { score: oldTerminal.createdAt, member: oldTerminal.id });
+    await redis!.zadd(`${prefix}:terminal`, { score: oldTerminal.completedAt, member: oldTerminal.id });
+    now += 31 * 24 * 60 * 60 * 1_000;
+    expect(await queue.pruneExpiredTerminalJobs()).toBeGreaterThan(0);
+    expect(await redis!.zscore(`${prefix}:all`, oldQueued.id)).toBe(oldQueued.createdAt);
+    await expect(store.get(oldQueued.id)).resolves.toMatchObject({ status: "queued" });
+    expect(await redis!.zscore(`${prefix}:scheduled`, oldQueued.id)).toBe(oldQueued.availableAt);
+    expect(await redis!.zscore(`${prefix}:all`, oldTerminal.id)).toBeNull();
+    await expect(store.get(oldTerminal.id)).resolves.toBeNull();
   }, 20_000);
 });

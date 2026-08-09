@@ -4,7 +4,7 @@ import { RedisReviewQueueStore } from "./redis-review-queue-store";
 import { ReviewQueue } from "./review-queue";
 import { runReview } from "./reviewer";
 import { dispatchReviewWorker } from "./review-worker-dispatcher";
-import { submitReview } from "./review-submission";
+import { submitReview, submitReviewBestEffort } from "./review-submission";
 import type { ReviewRequest } from "./types";
 
 let queue: ReviewQueue | null = null;
@@ -30,7 +30,14 @@ export function enqueueAndDispatchReview(request: ReviewRequest, idempotencyKey?
   return submitReview(reviewQueue(), dispatchReviewWorker, request, idempotencyKey);
 }
 
+export function enqueueAndTryDispatchReview(request: ReviewRequest, idempotencyKey: string) {
+  return submitReviewBestEffort(reviewQueue(), dispatchReviewWorker, request, idempotencyKey, (error, job) => {
+    console.error(`Review job ${job.id} was persisted but immediate dispatch failed`, error);
+  });
+}
+
 export async function processReviewQueue(maxJobs = 1) {
+  await reviewQueue().pruneExpiredTerminalJobs();
   const processed = [];
   for (let index = 0; index < maxJobs; index += 1) {
     const job = await reviewQueue().processNext();

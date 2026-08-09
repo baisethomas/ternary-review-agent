@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { InMemoryReviewQueueStore } from "./in-memory-review-queue-store";
 import { ReviewQueue } from "./review-queue";
 import { NonRetryableReviewError } from "./review-errors";
-import { submitReview } from "./review-submission";
+import { submitReview, submitReviewBestEffort } from "./review-submission";
 import { runReviewWorkerCycle } from "./review-worker-cycle";
 import type { ReviewRequest } from "./types";
 
@@ -50,6 +50,28 @@ describe("ReviewQueue", () => {
     const redelivery = await submitReview(queue, async () => undefined, request, deliveryKey);
 
     expect(redelivery.id).toBe("delivery-job-1");
+    await expect(queue.list()).resolves.toHaveLength(1);
+  });
+
+  test("accepts a persisted manual job when immediate dispatch fails", async () => {
+    const dispatchError = vi.fn();
+    const queue = new ReviewQueue({
+      store: new InMemoryReviewQueueStore(),
+      run: async () => undefined,
+      now: () => 1_750,
+      id: () => "manual-job-1",
+    });
+
+    const accepted = await submitReviewBestEffort(
+      queue,
+      async () => { throw new Error("QStash unavailable"); },
+      request,
+      "manual-invocation-1",
+      dispatchError,
+    );
+
+    expect(accepted).toMatchObject({ id: "manual-job-1", status: "queued" });
+    expect(dispatchError).toHaveBeenCalledOnce();
     await expect(queue.list()).resolves.toHaveLength(1);
   });
 
@@ -130,6 +152,27 @@ describe("ReviewQueue", () => {
     await queue.processNext();
 
     await expect(queue.get("job-5")).resolves.toMatchObject({ status: "failed", attempts: 2, lastError: "Sandbox failed", completedAt: 5_010 });
+  });
+
+  test("prunes expired terminal jobs without hiding old queued work", async () => {
+    let now = 5_500;
+    let sequence = 0;
+    const queue = new ReviewQueue({
+      store: new InMemoryReviewQueueStore(),
+      run: async () => undefined,
+      now: () => now,
+      id: () => `retention-job-${++sequence}`,
+      terminalRetentionMs: 100,
+    });
+
+    const completed = await queue.enqueue(request);
+    await queue.processNext();
+    now += 101;
+    const queued = await queue.enqueue({ ...request, pullNumber: 43, headSha: "queued-sha" });
+
+    expect(await queue.pruneExpiredTerminalJobs()).toBe(1);
+    await expect(queue.get(completed.id)).resolves.toBeNull();
+    await expect(queue.get(queued.id)).resolves.toMatchObject({ status: "queued" });
   });
 
   test("does not retry permanent review failures", async () => {

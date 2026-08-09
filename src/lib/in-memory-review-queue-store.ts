@@ -88,6 +88,14 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
     return job ? structuredClone(job) : null;
   }
 
+  async pruneTerminal(completedBefore: number, limit: number) {
+    const expired = [...this.jobs.entries()]
+      .filter(([, job]) => (job.status === "completed" || job.status === "failed") && (job.completedAt ?? Infinity) <= completedBefore)
+      .slice(0, limit);
+    for (const [id] of expired) this.jobs.delete(id);
+    return expired.length;
+  }
+
   async list(limit: number) {
     return [...this.jobs.values()]
       .sort((a, b) => b.createdAt - a.createdAt)

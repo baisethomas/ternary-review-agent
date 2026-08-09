@@ -1,6 +1,7 @@
 import "server-only";
 import { Redis } from "@upstash/redis";
 import type { ReviewJob, ReviewQueueStore } from "./review-queue";
+import { terminalJobRetentionSeconds } from "./review-retention";
 
 const defaultPrefix = "ternary:review-queue:v1";
 const idempotencyTtlSeconds = 7 * 24 * 60 * 60;
@@ -25,6 +26,16 @@ redis.call("SET", ARGV[1], ARGV[2])
 redis.call("ZADD", KEYS[1], ARGV[4], ARGV[3])
 redis.call("ZADD", KEYS[2], ARGV[5], ARGV[3])
 return ARGV[2]
+`;
+
+const pruneTerminalScript = `
+local ids = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", ARGV[1], "LIMIT", 0, ARGV[3])
+for _, id in ipairs(ids) do
+  redis.call("DEL", ARGV[2] .. id)
+  redis.call("ZREM", KEYS[2], id)
+  redis.call("ZREM", KEYS[1], id)
+end
+return #ids
 `;
 
 const claimScript = `
@@ -80,12 +91,14 @@ local installationLock = ARGV[3] .. "installation:" .. tostring(current.installa
 local repositoryLock = ARGV[3] .. "repository:" .. string.lower(current.owner) .. "/" .. string.lower(current.repo)
 proposed.leaseId = nil
 proposed.leaseExpiresAt = nil
-redis.call("SET", KEYS[1], cjson.encode(proposed))
 redis.call("ZREM", KEYS[3], ARGV[2])
 if proposed.status == "retrying" or proposed.status == "queued" then
+  redis.call("SET", KEYS[1], cjson.encode(proposed))
   redis.call("ZADD", KEYS[2], proposed.availableAt, ARGV[2])
 else
+  redis.call("SET", KEYS[1], cjson.encode(proposed), "EX", ARGV[4])
   redis.call("ZREM", KEYS[2], ARGV[2])
+  redis.call("ZADD", KEYS[4], proposed.completedAt, ARGV[2])
 end
 if redis.call("GET", installationLock) == ARGV[2] then redis.call("DEL", installationLock) end
 if redis.call("GET", repositoryLock) == ARGV[2] then redis.call("DEL", repositoryLock) end
@@ -115,7 +128,12 @@ for _, id in ipairs(expired) do
         job.availableAt = tonumber(ARGV[1])
         redis.call("ZADD", KEYS[2], job.availableAt, id)
       end
-      redis.call("SET", jobKey, cjson.encode(job))
+      if job.status == "failed" then
+        redis.call("SET", jobKey, cjson.encode(job), "EX", ARGV[4])
+        redis.call("ZADD", KEYS[3], job.completedAt, id)
+      else
+        redis.call("SET", jobKey, cjson.encode(job))
+      end
       if redis.call("GET", installationLock) == id then redis.call("DEL", installationLock) end
       if redis.call("GET", repositoryLock) == id then redis.call("DEL", repositoryLock) end
       recovered = recovered + 1
@@ -154,6 +172,7 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
   private get scheduledKey() { return `${this.prefix}:scheduled`; }
   private get activeKey() { return `${this.prefix}:active`; }
   private get allKey() { return `${this.prefix}:all`; }
+  private get terminalKey() { return `${this.prefix}:terminal`; }
   private get jobPrefix() { return `${this.prefix}:job:`; }
   private get lockPrefix() { return `${this.prefix}:lock:`; }
   private get idempotencyPrefix() { return `${this.prefix}:idempotency:`; }
@@ -187,10 +206,10 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
   }
 
   async finish(job: ReviewJob) {
-    const finished = await this.redis.eval<[string, string, string], number>(
+    const finished = await this.redis.eval<[string, string, string, number], number>(
       finishScript,
-      [this.jobKey(job.id), this.scheduledKey, this.activeKey],
-      [JSON.stringify(job), job.id, this.lockPrefix],
+      [this.jobKey(job.id), this.scheduledKey, this.activeKey, this.terminalKey],
+      [JSON.stringify(job), job.id, this.lockPrefix, terminalJobRetentionSeconds],
     );
     return finished === 1;
   }
@@ -205,10 +224,18 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
   }
 
   recoverExpired(now: number) {
-    return this.redis.eval<[number, string, string], number>(
+    return this.redis.eval<[number, string, string, number], number>(
       recoverScript,
-      [this.activeKey, this.scheduledKey],
-      [now, this.jobPrefix, this.lockPrefix],
+      [this.activeKey, this.scheduledKey, this.terminalKey],
+      [now, this.jobPrefix, this.lockPrefix, terminalJobRetentionSeconds],
+    );
+  }
+
+  pruneTerminal(completedBefore: number, limit: number) {
+    return this.redis.eval<[number, string, number], number>(
+      pruneTerminalScript,
+      [this.terminalKey, this.allKey],
+      [completedBefore, this.jobPrefix, limit],
     );
   }
 
