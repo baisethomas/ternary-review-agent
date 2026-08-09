@@ -7,12 +7,20 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
   private readonly locks = new Map<string, Lock>();
   private readonly idempotencyKeys = new Map<string, string>();
 
-  async create(job: ReviewJob, idempotencyKey?: string) {
-    const existingId = idempotencyKey ? this.idempotencyKeys.get(idempotencyKey) : undefined;
-    const existing = existingId ? this.jobs.get(existingId) : undefined;
-    if (existing) return structuredClone(existing);
+  async create(job: ReviewJob, idempotencyKeys: readonly string[] = []) {
+    for (const key of idempotencyKeys) {
+      const existingId = this.idempotencyKeys.get(key);
+      const existing = existingId ? this.jobs.get(existingId) : undefined;
+      if (existing) {
+        for (const alias of idempotencyKeys) {
+          if (!this.idempotencyKeys.has(alias)) this.idempotencyKeys.set(alias, existing.id);
+        }
+        return structuredClone(existing);
+      }
+      if (existingId) this.idempotencyKeys.delete(key);
+    }
     this.jobs.set(job.id, structuredClone(job));
-    if (idempotencyKey) this.idempotencyKeys.set(idempotencyKey, job.id);
+    for (const key of idempotencyKeys) this.idempotencyKeys.set(key, job.id);
     return structuredClone(job);
   }
 

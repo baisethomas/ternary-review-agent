@@ -22,12 +22,12 @@ function reviewQueue() {
   return queue;
 }
 
-export function enqueueReview(request: ReviewRequest, idempotencyKey?: string) {
-  return reviewQueue().enqueue(request, idempotencyKey);
+export function enqueueReview(request: ReviewRequest, idempotencyKeys?: string | readonly string[]) {
+  return reviewQueue().enqueue(request, idempotencyKeys);
 }
 
-export function enqueueAndDispatchReview(request: ReviewRequest, idempotencyKey?: string) {
-  return submitReview(reviewQueue(), dispatchReviewWorker, request, idempotencyKey);
+export function enqueueAndDispatchReview(request: ReviewRequest, idempotencyKeys?: string | readonly string[]) {
+  return submitReview(reviewQueue(), dispatchReviewWorker, request, idempotencyKeys);
 }
 
 export function enqueueAndTryDispatchReview(request: ReviewRequest, idempotencyKey: string) {

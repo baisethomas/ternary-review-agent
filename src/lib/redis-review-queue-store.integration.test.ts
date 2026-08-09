@@ -2,7 +2,7 @@ import { Redis } from "@upstash/redis";
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { RedisReviewQueueStore } from "./redis-review-queue-store";
 import { ReviewQueue, type ReviewJob } from "./review-queue";
-import { submitReview } from "./review-submission";
+import { submitReview, webhookReviewIdempotencyKeys } from "./review-submission";
 import type { ReviewRequest } from "./types";
 
 vi.mock("server-only", () => ({}));
@@ -54,17 +54,30 @@ describe.skipIf(!enabled || !redis)("RedisReviewQueueStore", () => {
       leaseId: () => "redis-race-lease",
       run: async () => undefined,
     });
+    const firstRequest = { ...request, webhookDeliveryId: "delivery-a" };
+    const simultaneousRequest = { ...request, webhookDeliveryId: "delivery-b" };
     const [firstDelivery, simultaneousRedelivery] = await Promise.all([
-      queue.enqueue(request, "github-delivery:test"),
-      competingQueue.enqueue(request, "github-delivery:test"),
+      queue.enqueue(firstRequest, webhookReviewIdempotencyKeys(firstRequest)),
+      competingQueue.enqueue(simultaneousRequest, webhookReviewIdempotencyKeys(simultaneousRequest)),
     ]);
     expect(simultaneousRedelivery.id).toBe(firstDelivery.id);
+    const storedDeliveryId = (firstDelivery as ReviewJob & { webhookDeliveryId: string }).webhookDeliveryId;
+    expect(["delivery-a", "delivery-b"]).toContain(storedDeliveryId);
+    const canonicalAlias = `${prefix}:idempotency:review:${request.owner}/${request.repo}#${request.pullNumber}:${request.headSha}`;
+    const deliveryAliases = ["delivery-a", "delivery-b"].map((delivery) => `${prefix}:idempotency:github-delivery:${delivery}`);
+    for (const alias of [canonicalAlias, ...deliveryAliases]) {
+      expect(await redis!.get(alias)).toBe(firstDelivery.id);
+      expect(await redis!.ttl(alias)).toBeGreaterThan(0);
+      expect(await redis!.ttl(alias)).toBeLessThanOrEqual(7 * 24 * 60 * 60);
+    }
     expect(await redis!.zcard(`${prefix}:scheduled`)).toBe(1);
     expect(await redis!.zcard(`${prefix}:all`)).toBe(1);
 
-    await expect(submitReview(queue, async () => { throw new Error("QStash unavailable"); }, request, "github-delivery:test"))
+    const redeliveryRequest = { ...request, webhookDeliveryId: "delivery-c" };
+    const redeliveryKeys = webhookReviewIdempotencyKeys(redeliveryRequest);
+    await expect(submitReview(queue, async () => { throw new Error("QStash unavailable"); }, redeliveryRequest, redeliveryKeys))
       .rejects.toThrow("QStash unavailable");
-    const dispatchedRedelivery = await submitReview(competingQueue, async () => undefined, request, "github-delivery:test");
+    const dispatchedRedelivery = await submitReview(competingQueue, async () => undefined, redeliveryRequest, redeliveryKeys);
     expect(dispatchedRedelivery.id).toBe(firstDelivery.id);
     await queue.processNext();
     await expect(queue.get(firstDelivery.id)).resolves.toMatchObject({ status: "retrying", attempts: 1, availableAt: startedAt + 10 });
@@ -74,7 +87,9 @@ describe.skipIf(!enabled || !redis)("RedisReviewQueueStore", () => {
     await expect(queue.get(firstDelivery.id)).resolves.toMatchObject({ status: "completed", attempts: 2 });
     expect(await redis!.ttl(`${prefix}:job:${firstDelivery.id}`)).toBeGreaterThan(0);
 
-    await queue.enqueue({ ...request, pullNumber: 2, headSha: "second-sha" });
+    const newHeadRequest = { ...request, headSha: "second-sha", webhookDeliveryId: "delivery-new-head" };
+    const newHead = await queue.enqueue(newHeadRequest, webhookReviewIdempotencyKeys(newHeadRequest));
+    expect(newHead.id).not.toBe(firstDelivery.id);
     const abandoned = await store.claim(now, 5_000, "abandoned-lease");
     expect(abandoned).toMatchObject({ status: "running", headSha: "second-sha" });
     const abandonedId = abandoned!.id;

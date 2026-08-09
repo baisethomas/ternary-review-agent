@@ -1,5 +1,5 @@
 import type { ReviewQueue, ReviewJob } from "./review-queue";
-import type { ReviewRequest } from "./types";
+import type { ReviewRequest, WebhookReviewRequest } from "./types";
 
 type DispatchReviewWorker = (availableAt: number) => Promise<unknown>;
 
@@ -11,13 +11,21 @@ export function manualReviewIdempotencyKey(request: ReviewRequest, invocationId:
   return `manual-review:${request.owner}/${request.repo}#${request.pullNumber}:${request.headSha}:${invocationId}`;
 }
 
+export function canonicalReviewIdempotencyKey(request: ReviewRequest) {
+  return `review:${request.owner.toLowerCase()}/${request.repo.toLowerCase()}#${request.pullNumber}:${request.headSha}`;
+}
+
+export function webhookReviewIdempotencyKeys(request: WebhookReviewRequest) {
+  return [canonicalReviewIdempotencyKey(request), `github-delivery:${request.webhookDeliveryId}`];
+}
+
 export async function submitReview(
   queue: ReviewQueue,
   dispatch: DispatchReviewWorker,
   request: ReviewRequest,
-  idempotencyKey?: string,
+  idempotencyKeys?: string | readonly string[],
 ): Promise<ReviewJob> {
-  const job = await queue.enqueue(request, idempotencyKey);
+  const job = await queue.enqueue(request, idempotencyKeys);
   await dispatch(job.availableAt);
   return job;
 }

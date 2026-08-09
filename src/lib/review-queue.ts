@@ -20,7 +20,7 @@ export type ReviewJob = ReviewRequest & {
 };
 
 export interface ReviewQueueStore {
-  create(job: ReviewJob, idempotencyKey?: string): Promise<ReviewJob>;
+  create(job: ReviewJob, idempotencyKeys?: readonly string[]): Promise<ReviewJob>;
   claim(now: number, leaseMs: number, leaseId: string): Promise<ReviewJob | null>;
   finish(job: ReviewJob): Promise<boolean>;
   renew(id: string, leaseId: string, leaseExpiresAt: number): Promise<boolean>;
@@ -74,7 +74,7 @@ export class ReviewQueue {
     this.terminalRetentionMs = options.terminalRetentionMs ?? terminalJobRetentionMs;
   }
 
-  async enqueue(request: ReviewRequest, idempotencyKey?: string) {
+  async enqueue(request: ReviewRequest, idempotencyKeys?: string | readonly string[]) {
     const now = this.now();
     const job: ReviewJob = {
       ...request,
@@ -86,7 +86,8 @@ export class ReviewQueue {
       updatedAt: now,
       availableAt: now,
     };
-    return this.store.create(job, idempotencyKey);
+    const keys = typeof idempotencyKeys === "string" ? [idempotencyKeys] : idempotencyKeys;
+    return this.store.create(job, keys);
   }
 
   async processNext() {

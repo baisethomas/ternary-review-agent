@@ -3,6 +3,7 @@ import { InMemoryReviewQueueStore } from "./in-memory-review-queue-store";
 import { ReviewQueue } from "./review-queue";
 import { NonRetryableReviewError } from "./review-errors";
 import { submitReview, submitReviewBestEffort } from "./review-submission";
+import { webhookReviewIdempotencyKeys } from "./review-submission";
 import { runReviewWorkerCycle } from "./review-worker-cycle";
 import type { ReviewRequest } from "./types";
 
@@ -51,6 +52,47 @@ describe("ReviewQueue", () => {
 
     expect(redelivery.id).toBe("delivery-job-1");
     await expect(queue.list()).resolves.toHaveLength(1);
+  });
+
+  test("collapses concurrent delivery IDs for the same pull request head", async () => {
+    let sequence = 0;
+    const queue = new ReviewQueue({
+      store: new InMemoryReviewQueueStore(),
+      run: async () => undefined,
+      now: () => 1_600,
+      id: () => `canonical-job-${++sequence}`,
+    });
+    const first = { ...request, webhookDeliveryId: "delivery-a" };
+    const second = { ...request, webhookDeliveryId: "delivery-b" };
+
+    const [firstDelivery, secondDelivery] = await Promise.all([
+      queue.enqueue(first, webhookReviewIdempotencyKeys(first)),
+      queue.enqueue(second, webhookReviewIdempotencyKeys(second)),
+    ]);
+
+    expect(secondDelivery.id).toBe(firstDelivery.id);
+    const conflictingReplay = { ...request, headSha: "unexpected-head", webhookDeliveryId: "delivery-b" };
+    const replayed = await queue.enqueue(conflictingReplay, webhookReviewIdempotencyKeys(conflictingReplay));
+    expect(replayed.id).toBe(firstDelivery.id);
+    await expect(queue.list()).resolves.toHaveLength(1);
+  });
+
+  test("creates a new review job for a legitimate new head SHA", async () => {
+    let sequence = 0;
+    const queue = new ReviewQueue({
+      store: new InMemoryReviewQueueStore(),
+      run: async () => undefined,
+      now: () => 1_650,
+      id: () => `head-job-${++sequence}`,
+    });
+    const first = { ...request, webhookDeliveryId: "delivery-a" };
+    const updated = { ...request, headSha: "new-head", webhookDeliveryId: "delivery-b" };
+
+    const firstJob = await queue.enqueue(first, webhookReviewIdempotencyKeys(first));
+    const updatedJob = await queue.enqueue(updated, webhookReviewIdempotencyKeys(updated));
+
+    expect(updatedJob.id).not.toBe(firstJob.id);
+    await expect(queue.list()).resolves.toHaveLength(2);
   });
 
   test("accepts a persisted manual job when immediate dispatch fails", async () => {

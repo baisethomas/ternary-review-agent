@@ -1,7 +1,8 @@
 import { verifyWebhookSignature } from "@/lib/github";
 import { isRepositoryWatched } from "@/lib/repository-watch";
 import { enqueueAndDispatchReview } from "@/lib/review-queue-service";
-import type { ReviewRequest } from "@/lib/types";
+import type { WebhookReviewRequest } from "@/lib/types";
+import { webhookReviewIdempotencyKeys } from "@/lib/review-submission";
 
 export const maxDuration = 300;
 
@@ -33,14 +34,15 @@ export async function POST(request: Request) {
   if (!await isRepositoryWatched(fullName)) {
     return Response.json({ accepted: false, reason: "Repository is paused in Ternary" }, { status: 202 });
   }
-  const review: ReviewRequest = {
+  const review: WebhookReviewRequest = {
     owner: payload.repository.owner.login,
     repo: payload.repository.name,
     pullNumber: payload.pull_request.number,
     installationId: payload.installation.id,
     headSha: payload.pull_request.head.sha,
     cloneUrl: payload.repository.clone_url,
+    webhookDeliveryId: deliveryId,
   };
-  const job = await enqueueAndDispatchReview(review, `github-delivery:${deliveryId}`);
+  const job = await enqueueAndDispatchReview(review, webhookReviewIdempotencyKeys(review));
   return Response.json({ accepted: true, delivery: deliveryId, jobId: job.id }, { status: 202 });
 }

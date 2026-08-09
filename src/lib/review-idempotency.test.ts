@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { tagReviewComment } from "./github";
-import { isValidInvocationId, manualReviewIdempotencyKey } from "./review-submission";
+import { canonicalReviewIdempotencyKey, isValidInvocationId, manualReviewIdempotencyKey, webhookReviewIdempotencyKeys } from "./review-submission";
 import type { ReviewRequest } from "./types";
 
 const review: ReviewRequest = {
@@ -30,5 +30,18 @@ describe("review idempotency", () => {
     const tagged = tagReviewComment("Review complete", "job-123");
     expect(tagged).toBe("Review complete\n\n<!-- ternary-review-job:job-123 -->");
     expect(tagReviewComment(tagged, "job-123")).toBe(tagged);
+  });
+
+  it("uses repository, pull request, and head SHA as the canonical review key", () => {
+    expect(canonicalReviewIdempotencyKey(review)).toBe("review:ternary/agent#12:abc123");
+    expect(canonicalReviewIdempotencyKey({ ...review, owner: "TERNARY", repo: "Agent" })).toBe(canonicalReviewIdempotencyKey(review));
+    expect(canonicalReviewIdempotencyKey({ ...review, headSha: "def456" })).not.toBe(canonicalReviewIdempotencyKey(review));
+  });
+
+  it("adds the GitHub delivery ID as a persisted alias", () => {
+    expect(webhookReviewIdempotencyKeys({ ...review, webhookDeliveryId: "delivery-123" })).toEqual([
+      "review:ternary/agent#12:abc123",
+      "github-delivery:delivery-123",
+    ]);
   });
 });
