@@ -8,19 +8,34 @@ const idempotencyTtlSeconds = 7 * 24 * 60 * 60;
 const lockContentionDelayMs = 5_000;
 
 const createScript = `
-if ARGV[6] ~= "" then
-  local existingId = redis.call("GET", ARGV[6])
+local idempotencyKeys = cjson.decode(ARGV[6])
+local function attachAliases(jobId)
+  for _, alias in ipairs(idempotencyKeys) do
+    local owner = redis.call("GET", alias)
+    if not owner or owner == jobId then
+      redis.call("SET", alias, jobId, "EX", ARGV[8])
+    end
+  end
+end
+for _, key in ipairs(idempotencyKeys) do
+  local existingId = redis.call("GET", key)
   if existingId then
     local existing = redis.call("GET", ARGV[7] .. existingId)
-    if existing then return existing end
-    redis.call("DEL", ARGV[6])
+    if existing then
+      attachAliases(existingId)
+      return existing
+    end
+    redis.call("DEL", key)
   end
-  local accepted = redis.call("SET", ARGV[6], ARGV[3], "NX", "EX", ARGV[8])
+end
+if #idempotencyKeys > 0 then
+  local accepted = redis.call("SET", idempotencyKeys[1], ARGV[3], "NX", "EX", ARGV[8])
   if not accepted then
-    local winnerId = redis.call("GET", ARGV[6])
+    local winnerId = redis.call("GET", idempotencyKeys[1])
     local winner = winnerId and redis.call("GET", ARGV[7] .. winnerId)
     if winner then return winner end
   end
+  attachAliases(ARGV[3])
 end
 redis.call("SET", ARGV[1], ARGV[2])
 redis.call("ZADD", KEYS[1], ARGV[4], ARGV[3])
@@ -178,7 +193,7 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
   private get idempotencyPrefix() { return `${this.prefix}:idempotency:`; }
   private jobKey(id: string) { return `${this.jobPrefix}${id}`; }
 
-  async create(job: ReviewJob, idempotencyKey?: string) {
+  async create(job: ReviewJob, idempotencyKeys: readonly string[] = []) {
     const created = await this.redis.eval<[string, string, string, number, number, string, string, number], ReviewJob>(
       createScript,
       [this.scheduledKey, this.allKey],
@@ -188,7 +203,7 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
         job.id,
         job.availableAt,
         job.createdAt,
-        idempotencyKey ? `${this.idempotencyPrefix}${idempotencyKey}` : "",
+        JSON.stringify(idempotencyKeys.map((key) => `${this.idempotencyPrefix}${key}`)),
         this.jobPrefix,
         idempotencyTtlSeconds,
       ],

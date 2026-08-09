@@ -7,6 +7,8 @@ export type ReviewRequest = {
   cloneUrl: string;
 };
 
+export type WebhookReviewRequest = ReviewRequest & { webhookDeliveryId: string };
+
 export type SandboxResult = {
   ok: boolean;
   commands: Array<{ command: string; exitCode: number; output: string }>;
