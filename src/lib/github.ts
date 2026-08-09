@@ -1,4 +1,5 @@
 import { createHmac, createSign, timingSafeEqual } from "node:crypto";
+import { isRetryableHttpStatus, NonRetryableReviewError } from "./review-errors";
 
 const githubApi = "https://api.github.com";
 
@@ -8,8 +9,15 @@ function base64url(value: string | Buffer) {
 
 function requireEnv(name: string) {
   const value = process.env[name];
-  if (!value) throw new Error(`Missing required environment variable: ${name}`);
+  if (!value) throw new NonRetryableReviewError(`Missing required environment variable: ${name}`);
   return value;
+}
+
+async function githubResponseError(response: Response, label = "GitHub API") {
+  const message = `${label} ${response.status}: ${await response.text()}`;
+  const rateLimited = response.status === 403 && (response.headers.get("x-ratelimit-remaining") === "0" || response.headers.has("retry-after"));
+  const retryable = rateLimited || isRetryableHttpStatus(response.status);
+  return retryable ? new Error(message) : new NonRetryableReviewError(message);
 }
 
 export function verifyWebhookSignature(rawBody: string, signature: string | null) {
@@ -46,7 +54,9 @@ async function githubFetch<T>(path: string, token: string, init: RequestInit = {
       ...init.headers,
     },
   });
-  if (!response.ok) throw new Error(`GitHub API ${response.status}: ${await response.text()}`);
+  if (!response.ok) {
+    throw await githubResponseError(response);
+  }
   return response.json() as Promise<T>;
 }
 
@@ -90,6 +100,7 @@ export type GitHubPullRequest = {
 
 export type GitHubCheckRun = {
   id: number;
+  external_id: string | null;
   name: string;
   status: "queued" | "in_progress" | "completed";
   conclusion: "success" | "failure" | "neutral" | "cancelled" | "skipped" | "timed_out" | "action_required" | null;
@@ -167,15 +178,28 @@ export async function getPullRequestDiff(owner: string, repo: string, pullNumber
       "User-Agent": "ternary-review-agent",
     },
   });
-  if (!response.ok) throw new Error(`Unable to fetch PR diff (${response.status})`);
+  if (!response.ok) throw await githubResponseError(response, "Unable to fetch PR diff");
   return response.text();
 }
 
 export async function createCheckRun(owner: string, repo: string, headSha: string, token: string) {
+  return createCheckRunForJob(owner, repo, headSha, token);
+}
+
+async function createCheckRunForJob(owner: string, repo: string, headSha: string, token: string, externalId?: string) {
   return githubFetch<{ id: number }>(`/repos/${owner}/${repo}/check-runs`, token, {
     method: "POST",
-    body: JSON.stringify({ name: "Ternary review", head_sha: headSha, status: "in_progress" }),
+    body: JSON.stringify({ name: "Ternary review", head_sha: headSha, status: "in_progress", external_id: externalId }),
   });
+}
+
+export async function getOrCreateCheckRun(owner: string, repo: string, headSha: string, token: string, externalId?: string) {
+  if (externalId) {
+    const existing = await listTernaryCheckRuns(owner, repo, headSha, token);
+    const match = existing.check_runs.find((check) => check.external_id === externalId);
+    if (match) return { id: match.id };
+  }
+  return createCheckRunForJob(owner, repo, headSha, token, externalId);
 }
 
 export async function finishCheckRun(owner: string, repo: string, checkId: number, token: string, conclusion: "success" | "failure" | "neutral", title: string, summary: string, details?: string) {
@@ -190,4 +214,24 @@ export async function postPullRequestComment(owner: string, repo: string, pullNu
     method: "POST",
     body: JSON.stringify({ body }),
   });
+}
+
+export async function upsertPullRequestComment(owner: string, repo: string, pullNumber: number, token: string, body: string, externalId?: string) {
+  if (!externalId) return postPullRequestComment(owner, repo, pullNumber, token, body);
+  const marker = `<!-- ternary-review-job:${externalId} -->`;
+  for (let page = 1; ; page += 1) {
+    const comments = await githubFetch<Array<{ id: number; body: string | null }>>(
+      `/repos/${owner}/${repo}/issues/${pullNumber}/comments?per_page=100&page=${page}`,
+      token,
+    );
+    const existing = comments.find((comment) => comment.body?.includes(marker));
+    if (existing) {
+      return githubFetch(`/repos/${owner}/${repo}/issues/comments/${existing.id}`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ body }),
+      });
+    }
+    if (comments.length < 100) break;
+  }
+  return postPullRequestComment(owner, repo, pullNumber, token, body);
 }

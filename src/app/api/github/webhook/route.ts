@@ -1,7 +1,6 @@
-import { after } from "next/server";
 import { verifyWebhookSignature } from "@/lib/github";
-import { runReview } from "@/lib/reviewer";
 import { isRepositoryWatched } from "@/lib/repository-watch";
+import { enqueueAndDispatchReview } from "@/lib/review-queue-service";
 import type { ReviewRequest } from "@/lib/types";
 
 export const maxDuration = 300;
@@ -40,6 +39,6 @@ export async function POST(request: Request) {
     headSha: payload.pull_request.head.sha,
     cloneUrl: payload.repository.clone_url,
   };
-  after(() => runReview(review).catch((error) => console.error("Ternary review failed", error)));
-  return Response.json({ accepted: true, delivery: request.headers.get("x-github-delivery") }, { status: 202 });
+  const job = await enqueueAndDispatchReview(review);
+  return Response.json({ accepted: true, delivery: request.headers.get("x-github-delivery"), jobId: job.id }, { status: 202 });
 }
