@@ -7,11 +7,11 @@ function formatUtc(value: string) {
   return `${value.slice(0, 10)} ${value.slice(11, 16)} UTC`;
 }
 
-export function RepositoryDashboard({ data }: { data: RepositoryDashboardData }) {
+export function RepositoryDashboard({ data, initialChangeCursor }: { data: RepositoryDashboardData; initialChangeCursor: number }) {
   const watchedCount = data.repositories.filter((repository) => repository.watched).length;
   return (
     <div className="min-h-screen">
-      <DashboardHeader active="repositories" />
+      <DashboardHeader active="repositories" initialChangeCursor={initialChangeCursor}/>
 
       <main className="mx-auto max-w-[1180px] p-4 lg:p-7">
         <section className="mb-6 flex flex-wrap items-end justify-between gap-4">

@@ -24,10 +24,11 @@ export interface ReviewQueueStore {
   claim(now: number, leaseMs: number, leaseId: string): Promise<ReviewJob | null>;
   finish(job: ReviewJob): Promise<boolean>;
   renew(id: string, leaseId: string, leaseExpiresAt: number): Promise<boolean>;
-  recoverExpired(now: number): Promise<number>;
+  recoverExpired(now: number): Promise<ReviewJob[]>;
   pruneTerminal(completedBefore: number, limit: number): Promise<number>;
   get(id: string): Promise<ReviewJob | null>;
   list(limit: number): Promise<ReviewJob[]>;
+  listActive(): Promise<ReviewJob[]>;
   nextWakeAt(): Promise<number | null>;
 }
 
@@ -41,6 +42,7 @@ type ReviewQueueOptions = {
   leaseMs?: number;
   maxAttempts?: number;
   terminalRetentionMs?: number;
+  onRecovered?: (jobs: ReviewJob[]) => Promise<void>;
 };
 
 export type ReviewLease = {
@@ -61,6 +63,7 @@ export class ReviewQueue {
   private readonly leaseMs: number;
   private readonly maxAttempts: number;
   private readonly terminalRetentionMs: number;
+  private readonly onRecovered: (jobs: ReviewJob[]) => Promise<void>;
 
   constructor(options: ReviewQueueOptions) {
     this.store = options.store;
@@ -72,6 +75,7 @@ export class ReviewQueue {
     this.leaseMs = options.leaseMs ?? 6 * 60_000;
     this.maxAttempts = options.maxAttempts ?? 3;
     this.terminalRetentionMs = options.terminalRetentionMs ?? terminalJobRetentionMs;
+    this.onRecovered = options.onRecovered ?? (async () => undefined);
   }
 
   async enqueue(request: ReviewRequest, idempotencyKeys?: string | readonly string[]) {
@@ -92,7 +96,8 @@ export class ReviewQueue {
 
   async processNext() {
     const now = this.now();
-    await this.store.recoverExpired(now);
+    const recovered = await this.store.recoverExpired(now);
+    if (recovered.length) await this.onRecovered(recovered);
     const job = await this.store.claim(now, this.leaseMs, this.leaseId());
     if (!job) return null;
 
@@ -142,6 +147,10 @@ export class ReviewQueue {
 
   list(limit = 100) {
     return this.store.list(limit);
+  }
+
+  listActive() {
+    return this.store.listActive();
   }
 
   nextWakeAt() {

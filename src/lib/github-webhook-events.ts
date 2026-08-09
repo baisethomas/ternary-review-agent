@@ -20,10 +20,10 @@ type PushWebhook = {
   repository: { name: string; default_branch: string; owner: { login: string } };
 };
 
-type InstallationRepository = { name: string; default_branch: string; owner: { login: string } };
+type InstallationRepository = { name: string; full_name?: string; default_branch: string; owner?: { login: string } };
 type InstallationRepositoriesWebhook = {
   action: string;
-  installation: { id: number; updated_at?: string };
+  installation: { id: number; updated_at?: string; account?: { login: string } };
   repositories_added?: InstallationRepository[];
   repositories_removed?: InstallationRepository[];
 };
@@ -31,6 +31,12 @@ type InstallationWebhook = { action: string; installation: { id: number; updated
 type WebhookHandler = (rawBody: string, deliveryId: string) => Promise<Response>;
 
 const reviewActions = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
+
+function installationRepositoryOwner(payload: InstallationRepositoriesWebhook, repository: InstallationRepository) {
+  const owner = repository.owner?.login ?? repository.full_name?.split("/")[0] ?? payload.installation.account?.login;
+  if (!owner) throw new Error(`Installation repository ${repository.name} did not include an owner`);
+  return owner;
+}
 
 const handlePush: WebhookHandler = async (rawBody, deliveryId) => {
   const payload = JSON.parse(rawBody) as PushWebhook;
@@ -46,12 +52,13 @@ const handleInstallationRepositories: WebhookHandler = async (rawBody, deliveryI
   const payload = JSON.parse(rawBody) as InstallationRepositoriesWebhook;
   const changedAt = payload.installation.updated_at ? Date.parse(payload.installation.updated_at) : Date.now();
   if (payload.action === "removed") {
-    await Promise.all((payload.repositories_removed ?? []).map((repository) => dispatchRepositoryIndexTask({ action: "deleteRepository", installationId: payload.installation.id, owner: repository.owner.login, repo: repository.name, changedAt })));
+    await Promise.all((payload.repositories_removed ?? []).map((repository) => dispatchRepositoryIndexTask({ action: "deleteRepository", installationId: payload.installation.id, owner: installationRepositoryOwner(payload, repository), repo: repository.name, changedAt })));
   } else if (payload.action === "added") {
     await Promise.all((payload.repositories_added ?? []).map(async (repository) => {
-      await dispatchRepositoryIndexTask({ action: "restoreRepository", installationId: payload.installation.id, owner: repository.owner.login, repo: repository.name, changedAt });
-      if (!await isRepositoryWatched(`${repository.owner.login}/${repository.name}`)) return;
-      await dispatchRepositoryIndexTask({ action: "updateDefaultBranch", installationId: payload.installation.id, owner: repository.owner.login, repo: repository.name, defaultBranch: repository.default_branch, changedAt });
+      const owner = installationRepositoryOwner(payload, repository);
+      await dispatchRepositoryIndexTask({ action: "restoreRepository", installationId: payload.installation.id, owner, repo: repository.name, changedAt });
+      if (!await isRepositoryWatched(`${owner}/${repository.name}`)) return;
+      await dispatchRepositoryIndexTask({ action: "updateDefaultBranch", installationId: payload.installation.id, owner, repo: repository.name, defaultBranch: repository.default_branch, changedAt });
     }));
   }
   return Response.json({ accepted: true, delivery: deliveryId }, { status: 202 });
@@ -81,7 +88,7 @@ const handlePullRequest: WebhookHandler = async (rawBody, deliveryId) => {
     cloneUrl: payload.repository.clone_url,
     webhookDeliveryId: deliveryId,
   };
-  const job = await enqueueAndDispatchReview(review, webhookReviewIdempotencyKeys(review));
+  const job = await enqueueAndDispatchReview(review, webhookReviewIdempotencyKeys(review), deliveryId);
   return Response.json({ accepted: true, delivery: deliveryId, jobId: job.id }, { status: 202 });
 };
 
@@ -92,7 +99,8 @@ const handlers: Record<string, WebhookHandler> = {
   pull_request: handlePullRequest,
 };
 
-export function handleGitHubWebhook(event: string | null, rawBody: string, deliveryId: string) {
+export async function handleGitHubWebhook(event: string | null, rawBody: string, deliveryId: string) {
   const handler = event ? handlers[event] : undefined;
-  return handler ? handler(rawBody, deliveryId) : Promise.resolve(Response.json({ accepted: false, reason: "Event ignored" }));
+  if (!handler) return Response.json({ accepted: false, reason: "Event ignored" });
+  return handler(rawBody, deliveryId);
 }

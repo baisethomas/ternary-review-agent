@@ -71,11 +71,11 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
   }
 
   async recoverExpired(now: number) {
-    let recovered = 0;
+    const recovered: ReviewJob[] = [];
     for (const [id, job] of this.jobs) {
       if (job.status !== "running" || !job.leaseExpiresAt || job.leaseExpiresAt > now) continue;
       const exhausted = job.attempts >= job.maxAttempts;
-      this.jobs.set(id, {
+      const recoveredJob: ReviewJob = {
         ...job,
         status: exhausted ? "failed" : "retrying",
         availableAt: now,
@@ -84,9 +84,10 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
         lastError: "Worker lease expired",
         leaseId: undefined,
         leaseExpiresAt: undefined,
-      });
+      };
+      this.jobs.set(id, recoveredJob);
       this.releaseLocks(id);
-      recovered += 1;
+      recovered.push(structuredClone(recoveredJob));
     }
     return recovered;
   }
@@ -108,6 +109,12 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
     return [...this.jobs.values()]
       .sort((a, b) => b.createdAt - a.createdAt)
       .slice(0, limit)
+      .map((job) => structuredClone(job));
+  }
+
+  async listActive() {
+    return [...this.jobs.values()]
+      .filter((job) => job.status === "queued" || job.status === "retrying" || job.status === "running")
       .map((job) => structuredClone(job));
   }
 
