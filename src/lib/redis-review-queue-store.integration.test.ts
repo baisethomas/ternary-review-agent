@@ -1,7 +1,7 @@
 import { Redis } from "@upstash/redis";
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { RedisReviewQueueStore } from "./redis-review-queue-store";
-import { ReviewQueue } from "./review-queue";
+import { ReviewQueue, type ReviewJob } from "./review-queue";
 import { submitReview } from "./review-submission";
 import type { ReviewRequest } from "./types";
 
@@ -93,23 +93,38 @@ describe.skipIf(!enabled || !redis)("RedisReviewQueueStore", () => {
     const blocker = await store.claim(now, 30_000, "blocking-lease");
     expect(blocker).toMatchObject({ headSha: "blocker", status: "running" });
 
-    await Promise.all([
-      ...Array.from({ length: 30 }, (_, index) => queue.enqueue({
-        ...request,
-        installationId: blockedInstallationId,
-        pullNumber: 101 + index,
-        headSha: `blocked-${index}`,
-      })),
-      queue.enqueue({
-        ...request,
-        owner: "independent-installation",
-        repo: "runnable-review",
-        installationId: 88_000_002,
-        pullNumber: 200,
-        headSha: "independent",
-      }),
-    ]);
+    const queuedJob = (id: string, overrides: Partial<ReviewJob>): ReviewJob => ({
+      ...request,
+      id,
+      status: "queued",
+      attempts: 0,
+      maxAttempts: 3,
+      createdAt: now,
+      updatedAt: now,
+      availableAt: now,
+      ...overrides,
+    });
+    const blockedJobs = Array.from({ length: 251 }, (_, index) => queuedJob(`blocked-${String(index).padStart(3, "0")}`, {
+      installationId: blockedInstallationId,
+      pullNumber: 101 + index,
+      headSha: `blocked-${index}`,
+    }));
+    const independentJob = queuedJob("zz-independent", {
+      owner: "independent-installation",
+      repo: "runnable-review",
+      installationId: 88_000_002,
+      pullNumber: 500,
+      headSha: "independent",
+    });
+    const seed = redis!.pipeline();
+    for (const job of [...blockedJobs, independentJob]) {
+      seed.set(`${prefix}:job:${job.id}`, job);
+      seed.zadd(`${prefix}:scheduled`, { score: job.availableAt, member: job.id });
+      seed.zadd(`${prefix}:all`, { score: job.createdAt, member: job.id });
+    }
+    await seed.exec();
 
+    expect(await store.claim(now, 30_000, "first-fairness-pass")).toBeNull();
     const runnable = await store.claim(now, 30_000, "independent-lease");
     expect(runnable).toMatchObject({ headSha: "independent", installationId: 88_000_002, status: "running" });
   }, 20_000);

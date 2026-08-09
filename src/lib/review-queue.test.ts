@@ -210,7 +210,7 @@ describe("ReviewQueue", () => {
       leaseMs: 10_000,
       run: async () => { effects += 1; },
     });
-    const process = async () => {
+    const processAvailableJobs = async () => {
       const job = await queue.processNext();
       return job ? [job] : [];
     };
@@ -218,13 +218,13 @@ describe("ReviewQueue", () => {
     await queue.enqueue(request);
     await store.claim(now, 10_000, "abandoned-worker");
     now = 13_000;
-    await runReviewWorkerCycle({ process, nextWakeAt: () => queue.nextWakeAt(), dispatch: async (at) => { dispatches.push(at); }, now: () => now });
+    await runReviewWorkerCycle({ processAvailableJobs, nextWakeAt: () => queue.nextWakeAt(), dispatch: async (at) => { dispatches.push(at); }, now: () => now });
 
     expect(dispatches).toEqual([22_000]);
     expect(effects).toBe(0);
 
     now = 22_001;
-    await runReviewWorkerCycle({ process, nextWakeAt: () => queue.nextWakeAt(), dispatch: async (at) => { dispatches.push(at); }, now: () => now });
+    await runReviewWorkerCycle({ processAvailableJobs, nextWakeAt: () => queue.nextWakeAt(), dispatch: async (at) => { dispatches.push(at); }, now: () => now });
     expect(effects).toBe(1);
     await expect(queue.get("job-9")).resolves.toMatchObject({ status: "completed", attempts: 2, lastError: "Worker lease expired" });
   });

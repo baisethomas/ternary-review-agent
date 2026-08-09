@@ -4,6 +4,7 @@ import type { ReviewJob, ReviewQueueStore } from "./review-queue";
 
 const defaultPrefix = "ternary:review-queue:v1";
 const idempotencyTtlSeconds = 7 * 24 * 60 * 60;
+const lockContentionDelayMs = 5_000;
 
 const createScript = `
 if ARGV[6] ~= "" then
@@ -27,6 +28,12 @@ return ARGV[2]
 `;
 
 const claimScript = `
+local function deferLockedJob(job, jobKey, id)
+  job.availableAt = tonumber(ARGV[1]) + tonumber(ARGV[6])
+  job.updatedAt = tonumber(ARGV[1])
+  redis.call("SET", jobKey, cjson.encode(job))
+  redis.call("ZADD", KEYS[1], job.availableAt, id)
+end
 local candidates = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", ARGV[1], "LIMIT", 0, 250)
 for _, id in ipairs(candidates) do
   local jobKey = ARGV[4] .. id
@@ -54,6 +61,9 @@ for _, id in ipairs(candidates) do
         return claimed
       end
       if redis.call("GET", installationLock) == id then redis.call("DEL", installationLock) end
+      deferLockedJob(job, jobKey, id)
+    else
+      deferLockedJob(job, jobKey, id)
     end
   end
 end
@@ -168,10 +178,10 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
   }
 
   async claim(now: number, leaseMs: number, leaseId: string) {
-    const claimed = await this.redis.eval<[number, number, string, string, string], ReviewJob | null>(
+    const claimed = await this.redis.eval<[number, number, string, string, string, number], ReviewJob | null>(
       claimScript,
       [this.scheduledKey, this.activeKey],
-      [now, leaseMs, leaseId, this.jobPrefix, this.lockPrefix],
+      [now, leaseMs, leaseId, this.jobPrefix, this.lockPrefix, lockContentionDelayMs],
     );
     return claimed;
   }

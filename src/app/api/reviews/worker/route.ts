@@ -12,7 +12,7 @@ function isAuthorized(request: Request) {
 async function runWorker(request: Request) {
   if (!isAuthorized(request)) return Response.json({ error: "Unauthorized" }, { status: 401 });
   const jobs = await runReviewWorkerCycle({
-    process: () => processReviewQueue(),
+    processAvailableJobs: () => processReviewQueue(),
     nextWakeAt: getNextReviewWakeAt,
     dispatch: dispatchReviewWorker,
   });
