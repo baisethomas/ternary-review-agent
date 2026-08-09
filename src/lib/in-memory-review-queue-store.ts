@@ -95,10 +95,13 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
       .map((job) => structuredClone(job));
   }
 
-  async nextAvailableAt() {
+  async nextWakeAt() {
     const available = [...this.jobs.values()]
-      .filter((job) => job.status === "queued" || job.status === "retrying")
-      .map((job) => job.availableAt);
+      .flatMap((job) => {
+        if (job.status === "queued" || job.status === "retrying") return [job.availableAt];
+        if (job.status === "running" && job.leaseExpiresAt) return [job.leaseExpiresAt];
+        return [];
+      });
     return available.length ? Math.min(...available) : null;
   }
 

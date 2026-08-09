@@ -48,6 +48,6 @@ export function getReviewJob(id: string) {
   return reviewQueue().get(id);
 }
 
-export function getNextReviewAvailableAt() {
-  return reviewQueue().nextAvailableAt();
+export function getNextReviewWakeAt() {
+  return reviewQueue().nextWakeAt();
 }

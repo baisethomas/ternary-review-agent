@@ -3,6 +3,7 @@ import { InMemoryReviewQueueStore } from "./in-memory-review-queue-store";
 import { ReviewQueue } from "./review-queue";
 import { NonRetryableReviewError } from "./review-errors";
 import { submitReview } from "./review-submission";
+import { runReviewWorkerCycle } from "./review-worker-cycle";
 import type { ReviewRequest } from "./types";
 
 const request: ReviewRequest = {
@@ -194,5 +195,37 @@ describe("ReviewQueue", () => {
 
     expect(publishedEffects).toBe(1);
     await expect(queue.get("job-8")).resolves.toMatchObject({ status: "completed", attempts: 2 });
+  });
+
+  test("schedules recovery at an abandoned worker's lease expiry", async () => {
+    let now = 12_000;
+    let effects = 0;
+    const dispatches: number[] = [];
+    const store = new InMemoryReviewQueueStore();
+    const queue = new ReviewQueue({
+      store,
+      now: () => now,
+      id: () => "job-9",
+      leaseId: () => "recovery-lease",
+      leaseMs: 10_000,
+      run: async () => { effects += 1; },
+    });
+    const process = async () => {
+      const job = await queue.processNext();
+      return job ? [job] : [];
+    };
+
+    await queue.enqueue(request);
+    await store.claim(now, 10_000, "abandoned-worker");
+    now = 13_000;
+    await runReviewWorkerCycle({ process, nextWakeAt: () => queue.nextWakeAt(), dispatch: async (at) => { dispatches.push(at); }, now: () => now });
+
+    expect(dispatches).toEqual([22_000]);
+    expect(effects).toBe(0);
+
+    now = 22_001;
+    await runReviewWorkerCycle({ process, nextWakeAt: () => queue.nextWakeAt(), dispatch: async (at) => { dispatches.push(at); }, now: () => now });
+    expect(effects).toBe(1);
+    await expect(queue.get("job-9")).resolves.toMatchObject({ status: "completed", attempts: 2, lastError: "Worker lease expired" });
   });
 });

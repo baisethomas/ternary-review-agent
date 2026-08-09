@@ -26,7 +26,7 @@ export interface ReviewQueueStore {
   recoverExpired(now: number): Promise<number>;
   get(id: string): Promise<ReviewJob | null>;
   list(limit: number): Promise<ReviewJob[]>;
-  nextAvailableAt(): Promise<number | null>;
+  nextWakeAt(): Promise<number | null>;
 }
 
 type ReviewQueueOptions = {
@@ -138,7 +138,7 @@ export class ReviewQueue {
     return this.store.list(limit);
   }
 
-  nextAvailableAt() {
-    return this.store.nextAvailableAt();
+  nextWakeAt() {
+    return this.store.nextWakeAt();
   }
 }

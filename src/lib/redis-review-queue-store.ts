@@ -27,7 +27,7 @@ return ARGV[2]
 `;
 
 const claimScript = `
-local candidates = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", ARGV[1], "LIMIT", 0, 25)
+local candidates = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", ARGV[1], "LIMIT", 0, 250)
 for _, id in ipairs(candidates) do
   local jobKey = ARGV[4] .. id
   local encoded = redis.call("GET", jobKey)
@@ -212,9 +212,16 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
     return jobs.filter((job): job is ReviewJob => Boolean(job));
   }
 
-  async nextAvailableAt() {
-    const ids = await this.redis.zrange<string[]>(this.scheduledKey, 0, 0);
-    if (!ids[0]) return null;
-    return this.redis.zscore(this.scheduledKey, ids[0]);
+  async nextWakeAt() {
+    const [scheduledIds, activeIds] = await Promise.all([
+      this.redis.zrange<string[]>(this.scheduledKey, 0, 0),
+      this.redis.zrange<string[]>(this.activeKey, 0, 0),
+    ]);
+    const scores = await Promise.all([
+      scheduledIds[0] ? this.redis.zscore(this.scheduledKey, scheduledIds[0]) : null,
+      activeIds[0] ? this.redis.zscore(this.activeKey, activeIds[0]) : null,
+    ]);
+    const available = scores.filter((score): score is number => score !== null);
+    return available.length ? Math.min(...available) : null;
   }
 }

@@ -27,19 +27,8 @@ describe.skipIf(!enabled || !redis)("RedisReviewQueueStore", () => {
   const store = new RedisReviewQueueStore(redis!, prefix);
 
   afterAll(async () => {
-    await redis!.del(
-      `${prefix}:scheduled`,
-      `${prefix}:active`,
-      `${prefix}:all`,
-      `${prefix}:job:redis-job-1`,
-      `${prefix}:job:redis-job-2`,
-      `${prefix}:job:redis-job-3`,
-      `${prefix}:job:redis-job-4`,
-      `${prefix}:job:redis-race-job`,
-      `${prefix}:idempotency:github-delivery:test`,
-      `${prefix}:lock:installation:${request.installationId}`,
-      `${prefix}:lock:repository:${request.owner}/${request.repo}`,
-    );
+    const keys = await redis!.keys(`${prefix}:*`);
+    if (keys.length) await redis!.del(...keys);
   });
 
   test("executes retry, locking, and expired-lease recovery through Redis scripts", async () => {
@@ -91,11 +80,37 @@ describe.skipIf(!enabled || !redis)("RedisReviewQueueStore", () => {
     expect(await store.claim(now, 5_000, "competing-lease")).toBeNull();
     const renewedUntil = startedAt + 10_000;
     expect(await store.renew(abandonedId, "abandoned-lease", renewedUntil)).toBe(true);
+    expect(await store.nextWakeAt()).toBe(renewedUntil);
     now = startedAt + 5_001;
     expect(await store.claim(now, 5_000, "premature-recovery")).toBeNull();
     now = renewedUntil + 1;
 
     await queue.processNext();
     await expect(queue.get(abandonedId)).resolves.toMatchObject({ status: "completed", attempts: 2, lastError: "Worker lease expired" });
+
+    const blockedInstallationId = 88_000_001;
+    await queue.enqueue({ ...request, installationId: blockedInstallationId, pullNumber: 100, headSha: "blocker" });
+    const blocker = await store.claim(now, 30_000, "blocking-lease");
+    expect(blocker).toMatchObject({ headSha: "blocker", status: "running" });
+
+    await Promise.all([
+      ...Array.from({ length: 30 }, (_, index) => queue.enqueue({
+        ...request,
+        installationId: blockedInstallationId,
+        pullNumber: 101 + index,
+        headSha: `blocked-${index}`,
+      })),
+      queue.enqueue({
+        ...request,
+        owner: "independent-installation",
+        repo: "runnable-review",
+        installationId: 88_000_002,
+        pullNumber: 200,
+        headSha: "independent",
+      }),
+    ]);
+
+    const runnable = await store.claim(now, 30_000, "independent-lease");
+    expect(runnable).toMatchObject({ headSha: "independent", installationId: 88_000_002, status: "running" });
   }, 20_000);
 });
