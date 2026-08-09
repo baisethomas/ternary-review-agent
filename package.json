@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "test:redis": "RUN_REDIS_INTEGRATION_TESTS=1 vitest run src/lib/redis-review-queue-store.integration.test.ts"
+    "test:redis": "RUN_REDIS_INTEGRATION_TESTS=1 vitest run src/lib/redis-review-queue-store.integration.test.ts src/lib/redis-repository-index-store.integration.test.ts"
   },
   "dependencies": {
     "@upstash/qstash": "^2.11.3",

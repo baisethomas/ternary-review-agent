@@ -17,7 +17,15 @@ async function githubResponseError(response: Response, label = "GitHub API") {
   const message = `${label} ${response.status}: ${await response.text()}`;
   const rateLimited = response.status === 403 && (response.headers.get("x-ratelimit-remaining") === "0" || response.headers.has("retry-after"));
   const retryable = rateLimited || isRetryableHttpStatus(response.status);
-  return retryable ? new Error(message) : new NonRetryableReviewError(message);
+  const error = retryable ? new Error(message) : new NonRetryableReviewError(message);
+  return Object.assign(error, {
+    status: response.status,
+    accessMissing: response.status === 404 || (response.status === 403 && !rateLimited),
+  });
+}
+
+export function isGitHubAccessMissing(error: unknown) {
+  return error instanceof Error && "accessMissing" in error && error.accessMissing === true;
 }
 
 export function verifyWebhookSignature(rawBody: string, signature: string | null) {
@@ -153,6 +161,20 @@ export function getPullRequest(owner: string, repo: string, pullNumber: number, 
   );
 }
 
+export function getBranch(owner: string, repo: string, branch: string, token: string) {
+  return githubFetch<{ name: string; commit: { sha: string } }>(
+    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${encodeURIComponent(branch)}`,
+    token,
+  );
+}
+
+export function getRepository(owner: string, repo: string, token: string) {
+  return githubFetch<GitHubRepository>(
+    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+    token,
+  );
+}
+
 export function listTernaryCheckRuns(owner: string, repo: string, headSha: string, token: string) {
   return githubFetch<{ total_count: number; check_runs: GitHubCheckRun[] }>(
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(headSha)}/check-runs?check_name=${encodeURIComponent("Ternary review")}&per_page=20`,
@@ -180,6 +202,22 @@ export async function getPullRequestDiff(owner: string, repo: string, pullNumber
   });
   if (!response.ok) throw await githubResponseError(response, "Unable to fetch PR diff");
   return response.text();
+}
+
+export async function getRepositoryTree(owner: string, repo: string, commitSha: string, token: string) {
+  return githubFetch<{ truncated: boolean; tree: Array<{ path: string; type: "blob" | "tree"; sha: string; size?: number }> }>(
+    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${encodeURIComponent(commitSha)}?recursive=1`,
+    token,
+  );
+}
+
+export async function getRepositoryBlob(owner: string, repo: string, blobSha: string, token: string) {
+  const blob = await githubFetch<{ encoding: "base64"; content: string; size: number }>(
+    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/blobs/${encodeURIComponent(blobSha)}`,
+    token,
+  );
+  if (blob.encoding !== "base64") throw new NonRetryableReviewError(`Unsupported GitHub blob encoding: ${blob.encoding}`);
+  return Buffer.from(blob.content.replace(/\n/g, ""), "base64").toString("utf8");
 }
 
 export async function createCheckRun(owner: string, repo: string, headSha: string, token: string) {
