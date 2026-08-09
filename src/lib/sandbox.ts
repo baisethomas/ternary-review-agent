@@ -17,18 +17,18 @@ const INSTALL_NETWORK: NetworkPolicy = {
 const OUTPUT_LIMIT = 24_000;
 const COMMAND_TIMEOUT = 55_000;
 
-function credentials() {
-  const explicit = [process.env.VERCEL_TOKEN, process.env.VERCEL_TEAM_ID, process.env.VERCEL_PROJECT_ID];
-  if (explicit.some(Boolean) && !explicit.every(Boolean)) {
+type SandboxCredentialEnvironment = Partial<Record<"VERCEL_TOKEN" | "VERCEL_TEAM_ID" | "VERCEL_PROJECT_ID", string>>;
+
+export function sandboxCredentials(environment: SandboxCredentialEnvironment = process.env as SandboxCredentialEnvironment) {
+  const token = environment.VERCEL_TOKEN;
+  const teamId = environment.VERCEL_TEAM_ID;
+  const projectId = environment.VERCEL_PROJECT_ID;
+  const usesExplicitCredentials = Boolean(token || teamId);
+
+  if (usesExplicitCredentials && !(token && teamId && projectId)) {
     throw new NonRetryableReviewError("VERCEL_TOKEN, VERCEL_TEAM_ID, and VERCEL_PROJECT_ID must be configured together");
   }
-  if (process.env.VERCEL_TOKEN && process.env.VERCEL_TEAM_ID && process.env.VERCEL_PROJECT_ID) {
-    return {
-      token: process.env.VERCEL_TOKEN,
-      teamId: process.env.VERCEL_TEAM_ID,
-      projectId: process.env.VERCEL_PROJECT_ID,
-    };
-  }
+  if (token && teamId && projectId) return { token, teamId, projectId };
   return {};
 }
 
@@ -67,7 +67,7 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string):
   let sandbox: Awaited<ReturnType<typeof Sandbox.create>>;
   try {
     sandbox = await Sandbox.create({
-      ...credentials(),
+      ...sandboxCredentials(),
       name: sandboxName,
       source: {
         type: "git",

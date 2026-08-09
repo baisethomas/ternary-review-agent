@@ -12,6 +12,7 @@ import {
 } from "./github";
 import type { ReviewFinding, ReviewRequest, ReviewResult } from "./types";
 import { getWatchedRepositories, normalizeRepositoryName } from "./repository-watch";
+import { selectReviewRepositories } from "./review-repository-selection";
 
 export type DashboardRepository = {
   id: number;
@@ -66,6 +67,7 @@ export type DashboardData = {
   appName: string;
   installUrl: string;
   account: string | null;
+  installedRepositoryCount: number;
   repositories: DashboardRepository[];
   selectedRepository: DashboardRepository | null;
   pullRequests: DashboardPullRequest[];
@@ -208,8 +210,8 @@ export async function getRepositoryDashboardData(): Promise<RepositoryDashboardD
 
 export async function getDashboardData(requestedRepository?: string): Promise<DashboardData> {
   const { app, installedRepositories, repositories } = await getRepositoryCatalog();
-
-  const selectedRepository = repositories.find((repository) => repository.fullName === requestedRepository) ?? repositories[0] ?? null;
+  const reviewSelection = selectReviewRepositories(repositories, requestedRepository);
+  const selectedRepository = reviewSelection.selectedRepository;
   const selectedRecord = selectedRepository
     ? installedRepositories.find(({ repository }) => repository.full_name === selectedRepository.fullName)
     : undefined;
@@ -249,8 +251,9 @@ export async function getDashboardData(requestedRepository?: string): Promise<Da
   return {
     appName: app.name,
     installUrl: `${app.html_url}/installations/new`,
-    account: selectedRepository?.account ?? null,
-    repositories,
+    account: selectedRepository?.account ?? repositories[0]?.account ?? null,
+    installedRepositoryCount: repositories.length,
+    repositories: reviewSelection.repositories,
     selectedRepository,
     pullRequests,
     fetchedAt: new Date().toISOString(),

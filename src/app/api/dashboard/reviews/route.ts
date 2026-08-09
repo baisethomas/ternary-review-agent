@@ -1,7 +1,6 @@
 import { isDashboardAuthenticated } from "@/lib/dashboard-auth";
-import { resolveReviewRequest } from "@/lib/dashboard-data";
-import { enqueueAndTryDispatchReview } from "@/lib/review-queue-service";
-import { isValidInvocationId, manualReviewIdempotencyKey } from "@/lib/review-submission";
+import { PausedRepositoryReviewError, submitDashboardReview } from "@/lib/dashboard-review-service";
+import { isValidInvocationId } from "@/lib/review-submission";
 
 export const maxDuration = 300;
 
@@ -12,11 +11,10 @@ export async function POST(request: Request) {
     return Response.json({ error: "owner, repo, pullNumber, and invocationId are required" }, { status: 400 });
   }
   try {
-    const review = await resolveReviewRequest(body.owner, body.repo, Number(body.pullNumber));
-    const job = await enqueueAndTryDispatchReview(review, manualReviewIdempotencyKey(review, body.invocationId));
+    const { review, job } = await submitDashboardReview(body.owner, body.repo, Number(body.pullNumber), body.invocationId);
     return Response.json({ accepted: true, headSha: review.headSha, jobId: job.id }, { status: 202 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to start review";
-    return Response.json({ error: message }, { status: 400 });
+    return Response.json({ error: message }, { status: error instanceof PausedRepositoryReviewError ? 409 : 400 });
   }
 }
