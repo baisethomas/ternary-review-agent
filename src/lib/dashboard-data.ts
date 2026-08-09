@@ -182,10 +182,14 @@ async function getRepositoryCatalog() {
   return { app, installations, installedRepositories, repositories };
 }
 
-export async function isInstalledRepository(fullName: string) {
+export async function getInstalledRepository(fullName: string) {
   const installedRepositories = await getInstallationRepositories();
   const normalized = normalizeRepositoryName(fullName);
-  return installedRepositories.some(({ repository }) => normalizeRepositoryName(repository.full_name) === normalized);
+  return installedRepositories.find(({ repository }) => normalizeRepositoryName(repository.full_name) === normalized) ?? null;
+}
+
+export async function isInstalledRepository(fullName: string) {
+  return Boolean(await getInstalledRepository(fullName));
 }
 
 export async function getRepositoryDashboardData(): Promise<RepositoryDashboardData> {

@@ -1,6 +1,7 @@
 import { createInstallationToken, finishCheckRun, getOrCreateCheckRun, getPullRequestDiff, upsertPullRequestComment } from "./github";
 import { isRetryableHttpStatus, NonRetryableReviewError, ReviewLeaseLostError } from "./review-errors";
 import { runInSandbox } from "./sandbox";
+import { getRepositoryReviewContext } from "./repository-context-service";
 import type { ReviewLease } from "./review-queue";
 import type { ReviewFinding, ReviewRequest, ReviewResult, SandboxResult } from "./types";
 
@@ -15,10 +16,10 @@ function fallbackReview(sandbox: SandboxResult): ReviewResult {
   };
 }
 
-async function generateReview(diff: string, sandbox: SandboxResult): Promise<ReviewResult> {
+async function generateReview(diff: string, sandbox: SandboxResult, repositoryContext: string): Promise<ReviewResult> {
   if (!process.env.OPENAI_API_KEY) return fallbackReview(sandbox);
   const maxDiffChars = Number(process.env.MAX_DIFF_CHARS ?? 160_000);
-  const input = `PR DIFF:\n${diff.slice(0, maxDiffChars)}\n\nSANDBOX RESULT:\n${JSON.stringify(sandbox)}`;
+  const input = `PR DIFF:\n${diff.slice(0, maxDiffChars)}\n\nREPOSITORY CONTEXT:\n${repositoryContext || "No matching repository context was available."}\n\nSANDBOX RESULT:\n${JSON.stringify(sandbox)}`;
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
@@ -86,7 +87,8 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
       getPullRequestDiff(request.owner, request.repo, request.pullNumber, token),
       runInSandbox(request, token),
     ]);
-    const result = await generateReview(diff, sandbox);
+    const repositoryContext = await getRepositoryReviewContext(request, token, diff);
+    const result = await generateReview(diff, sandbox, repositoryContext.text);
     const marker = request.id ? `\n\n<!-- ternary-review-job:${request.id} -->` : "";
     const markdown = `${formatReview(result)}${marker}`;
     await lease?.assertActive();

@@ -4,8 +4,8 @@ import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { DASHBOARD_COOKIE, dashboardSessionValue, isDashboardAuthenticated, isValidDashboardToken } from "@/lib/dashboard-auth";
-import { isInstalledRepository } from "@/lib/dashboard-data";
-import { setRepositoryWatched } from "@/lib/repository-watch";
+import { getInstalledRepository } from "@/lib/dashboard-data";
+import { updateRepositoryWatch } from "@/lib/repository-watch-service";
 
 export type LoginState = { error: string | null };
 export type WatchState = { error: string | null };
@@ -39,10 +39,11 @@ export async function setRepositoryWatchAction(_state: WatchState, formData: For
     return { error: "That repository is not available to this GitHub App." };
   }
   try {
-    if (!await isInstalledRepository(repository)) {
+    const installed = await getInstalledRepository(repository);
+    if (!installed) {
       return { error: "That repository is not available to this GitHub App." };
     }
-    await setRepositoryWatched(repository, watched);
+    await updateRepositoryWatch(repository, watched, installed);
     revalidatePath("/repositories");
     revalidatePath("/");
     return { error: null };
