@@ -70,6 +70,11 @@ describe.skipIf(!enabled || !redis)("RedisReviewQueueStore", () => {
       expect(await redis!.ttl(alias)).toBeGreaterThan(0);
       expect(await redis!.ttl(alias)).toBeLessThanOrEqual(7 * 24 * 60 * 60);
     }
+    await redis!.expire(canonicalAlias, 2);
+    const laterRequest = { ...request, webhookDeliveryId: "delivery-later" };
+    const laterDelivery = await queue.enqueue(laterRequest, webhookReviewIdempotencyKeys(laterRequest));
+    expect(laterDelivery.id).toBe(firstDelivery.id);
+    expect(await redis!.ttl(canonicalAlias)).toBeGreaterThan(6 * 24 * 60 * 60);
     expect(await redis!.zcard(`${prefix}:scheduled`)).toBe(1);
     expect(await redis!.zcard(`${prefix}:all`)).toBe(1);
 

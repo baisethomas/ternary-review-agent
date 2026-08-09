@@ -11,7 +11,10 @@ const createScript = `
 local idempotencyKeys = cjson.decode(ARGV[6])
 local function attachAliases(jobId)
   for _, alias in ipairs(idempotencyKeys) do
-    redis.call("SET", alias, jobId, "NX", "EX", ARGV[8])
+    local owner = redis.call("GET", alias)
+    if not owner or owner == jobId then
+      redis.call("SET", alias, jobId, "EX", ARGV[8])
+    end
   end
 end
 for _, key in ipairs(idempotencyKeys) do
