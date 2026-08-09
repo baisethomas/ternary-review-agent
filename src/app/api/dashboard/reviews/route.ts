@@ -1,6 +1,7 @@
 import { isDashboardAuthenticated } from "@/lib/dashboard-auth";
 import { resolveReviewRequest } from "@/lib/dashboard-data";
 import { enqueueAndDispatchReview } from "@/lib/review-queue-service";
+import { manualReviewIdempotencyKey } from "@/lib/review-submission";
 
 export const maxDuration = 300;
 
@@ -12,7 +13,7 @@ export async function POST(request: Request) {
   }
   try {
     const review = await resolveReviewRequest(body.owner, body.repo, Number(body.pullNumber));
-    const job = await enqueueAndDispatchReview(review);
+    const job = await enqueueAndDispatchReview(review, manualReviewIdempotencyKey(review));
     return Response.json({ accepted: true, headSha: review.headSha, jobId: job.id }, { status: 202 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to start review";

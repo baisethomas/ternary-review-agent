@@ -216,9 +216,19 @@ export async function postPullRequestComment(owner: string, repo: string, pullNu
   });
 }
 
+function reviewCommentMarker(externalId: string) {
+  return `<!-- ternary-review-job:${externalId} -->`;
+}
+
+export function tagReviewComment(body: string, externalId: string) {
+  const marker = reviewCommentMarker(externalId);
+  return body.includes(marker) ? body : `${body}\n\n${marker}`;
+}
+
 export async function upsertPullRequestComment(owner: string, repo: string, pullNumber: number, token: string, body: string, externalId?: string) {
   if (!externalId) return postPullRequestComment(owner, repo, pullNumber, token, body);
-  const marker = `<!-- ternary-review-job:${externalId} -->`;
+  const marker = reviewCommentMarker(externalId);
+  const taggedBody = tagReviewComment(body, externalId);
   for (let page = 1; ; page += 1) {
     const comments = await githubFetch<Array<{ id: number; body: string | null }>>(
       `/repos/${owner}/${repo}/issues/${pullNumber}/comments?per_page=100&page=${page}`,
@@ -228,10 +238,10 @@ export async function upsertPullRequestComment(owner: string, repo: string, pull
     if (existing) {
       return githubFetch(`/repos/${owner}/${repo}/issues/comments/${existing.id}`, token, {
         method: "PATCH",
-        body: JSON.stringify({ body }),
+        body: JSON.stringify({ body: taggedBody }),
       });
     }
     if (comments.length < 100) break;
   }
-  return postPullRequestComment(owner, repo, pullNumber, token, body);
+  return postPullRequestComment(owner, repo, pullNumber, token, taggedBody);
 }
