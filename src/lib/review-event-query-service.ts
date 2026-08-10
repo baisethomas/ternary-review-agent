@@ -24,14 +24,14 @@ export async function listRepositoryReviewEvents(repository: string, query: Revi
   return reviewEventLedger().list(await authorizedScope(repository), query);
 }
 
-export async function allRepositoryReviewEvents(repository: string, reviewId?: string) {
+export async function repositoryReviewEventPages(repository: string, reviewId?: string) {
   const scope = await authorizedScope(repository);
-  const events = [];
-  let after: string | undefined;
-  do {
-    const page = await reviewEventLedger().list(scope, { after, limit: 250, reviewId });
-    events.push(...page.events);
-    after = page.nextCursor ?? undefined;
-  } while (after);
-  return events;
+  return (async function* () {
+    let after: string | undefined;
+    do {
+      const page = await reviewEventLedger().list(scope, { after, limit: 250, reviewId });
+      yield page.events;
+      after = page.nextCursor ?? undefined;
+    } while (after);
+  })();
 }

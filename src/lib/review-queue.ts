@@ -5,6 +5,12 @@ import { ReviewEventAccessRevokedError } from "./review-event-ledger";
 
 export type ReviewJobStatus = "queued" | "running" | "retrying" | "failed" | "completed";
 
+export type ReviewSubmission = {
+  source: "github" | "dashboard" | "api";
+  deliveryId?: string;
+  idempotencyKey?: string;
+};
+
 export type ReviewJob = ReviewRequest & {
   id: string;
   status: ReviewJobStatus;
@@ -18,12 +24,24 @@ export type ReviewJob = ReviewRequest & {
   leaseId?: string;
   leaseExpiresAt?: number;
   lastError?: string;
+  submission?: ReviewSubmission;
+};
+
+export type PendingReviewCompletion = {
+  job: ReviewJob;
+  result: unknown;
 };
 
 export interface ReviewQueueStore {
   create(job: ReviewJob, idempotencyKeys?: readonly string[]): Promise<ReviewJob>;
+  activate(job: ReviewJob): Promise<boolean>;
+  pendingActivations(limit: number): Promise<ReviewJob[]>;
+  failActivation(job: ReviewJob, failedAt: number, error: string): Promise<boolean>;
   claim(now: number, leaseMs: number, leaseId: string): Promise<ReviewJob | null>;
   finish(job: ReviewJob): Promise<boolean>;
+  stageCompletion(completion: PendingReviewCompletion): Promise<boolean>;
+  pendingCompletions(limit: number): Promise<PendingReviewCompletion[]>;
+  acknowledgeCompletion(job: ReviewJob): Promise<boolean>;
   renew(id: string, leaseId: string, leaseExpiresAt: number): Promise<boolean>;
   recoverExpired(now: number): Promise<ReviewJob[]>;
   acknowledgeRecovery(id: string): Promise<void>;
@@ -34,6 +52,7 @@ export interface ReviewQueueStore {
 }
 
 export type ReviewQueueLifecycle = {
+  requested?(job: ReviewJob): Promise<void>;
   queued(job: ReviewJob): Promise<void>;
   started(job: ReviewJob): Promise<void>;
   completed(job: ReviewJob, result: unknown): Promise<void>;
@@ -95,7 +114,11 @@ export class ReviewQueue {
     this.lifecycle = options.lifecycle ?? noLifecycle;
   }
 
-  async enqueue(request: ReviewRequest, idempotencyKeys?: string | readonly string[]) {
+  async enqueue(
+    request: ReviewRequest,
+    idempotencyKeys?: string | readonly string[],
+    submission?: ReviewSubmission,
+  ) {
     const now = this.now();
     const job: ReviewJob = {
       ...request,
@@ -106,14 +129,32 @@ export class ReviewQueue {
       createdAt: now,
       updatedAt: now,
       availableAt: now,
+      ...(submission ? { submission } : {}),
     };
     const keys = typeof idempotencyKeys === "string" ? [idempotencyKeys] : idempotencyKeys;
     const stored = await this.store.create(job, keys);
-    await this.lifecycle.queued(stored);
+    if (stored.status === "queued") await this.activate(stored);
     return stored;
   }
 
   async processNext() {
+    for (const pending of await this.store.pendingActivations(100)) {
+      try {
+        await this.activate(pending);
+      } catch (error) {
+        if (!(error instanceof ReviewEventAccessRevokedError)) throw error;
+        await this.store.failActivation(pending, this.now(), errorMessage(error));
+      }
+    }
+    const pendingCompletions = await this.store.pendingCompletions(100);
+    for (const completion of pendingCompletions) {
+      try {
+        await this.lifecycle.completed(completion.job, completion.result);
+      } catch (error) {
+        if (!(error instanceof ReviewEventAccessRevokedError)) throw error;
+      }
+      await this.store.acknowledgeCompletion(completion.job);
+    }
     const now = this.now();
     const recovered = await this.store.recoverExpired(now);
     for (const recoveredJob of recovered) {
@@ -144,16 +185,16 @@ export class ReviewQueue {
     }, Math.max(1_000, Math.floor(this.leaseMs / 3)));
     heartbeat.unref();
 
+    let result: unknown;
     try {
       await this.lifecycle.started(job);
-      const result = await this.run(job, { assertActive });
+      result = await this.run(job, { assertActive });
       await assertActive();
-      const completedAt = this.now();
-      const completed = { ...job, status: "completed" as const, updatedAt: completedAt, completedAt };
-      await this.lifecycle.completed(completed, result);
-      return await this.store.finish(completed) ? completed : this.store.get(job.id);
     } catch (error) {
-      if (error instanceof ReviewLeaseLostError) return this.store.get(job.id);
+      if (error instanceof ReviewLeaseLostError) {
+        clearInterval(heartbeat);
+        return this.store.get(job.id);
+      }
       const failedAt = this.now();
       const accessRevoked = error instanceof ReviewEventAccessRevokedError;
       const exhausted = accessRevoked || job.attempts >= job.maxAttempts || !isRetryableReviewError(error);
@@ -165,14 +206,37 @@ export class ReviewQueue {
         completedAt: exhausted ? failedAt : undefined,
         lastError: errorMessage(error),
       };
-      if (!accessRevoked) {
-        if (exhausted) await this.lifecycle.failed(failed);
-        else await this.lifecycle.retryScheduled(failed);
+      try {
+        if (!accessRevoked) {
+          if (exhausted) await this.lifecycle.failed(failed);
+          else await this.lifecycle.retryScheduled(failed);
+        }
+        return await this.store.finish(failed) ? failed : this.store.get(job.id);
+      } finally {
+        clearInterval(heartbeat);
       }
-      return await this.store.finish(failed) ? failed : this.store.get(job.id);
+    }
+
+    const completedAt = this.now();
+    const completed = { ...job, status: "completed" as const, updatedAt: completedAt, completedAt };
+    try {
+      const staged = await this.store.stageCompletion({ job: completed, result });
+      if (!staged) return this.store.get(job.id);
+      try {
+        await this.lifecycle.completed(completed, result);
+      } catch (error) {
+        if (!(error instanceof ReviewEventAccessRevokedError)) throw error;
+      }
+      return await this.store.acknowledgeCompletion(completed) ? completed : this.store.get(job.id);
     } finally {
       clearInterval(heartbeat);
     }
+  }
+
+  private async activate(job: ReviewJob) {
+    await this.lifecycle.requested?.(job);
+    await this.lifecycle.queued(job);
+    await this.store.activate(job);
   }
 
   get(id: string) {

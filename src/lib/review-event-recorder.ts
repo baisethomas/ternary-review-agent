@@ -1,9 +1,9 @@
 import { findingIdentity, reviewIdentity, type ReviewEvent, type ReviewEventLedger } from "./review-event-ledger";
-import type { ReviewQueueLifecycle } from "./review-queue";
+import type { ReviewQueueLifecycle, ReviewSubmission } from "./review-queue";
 import type { ReviewRequest, ReviewResult } from "./types";
 
 type EventClock = { eventId?: () => string; now?: () => number };
-type ReviewSource = { source: "github" | "dashboard" | "api"; deliveryId?: string; idempotencyKey?: string };
+type ReviewSource = ReviewSubmission;
 const sandboxEvidenceLimit = 24_000;
 
 function sandboxOutput(value: string, remaining: number) {
@@ -78,6 +78,9 @@ export function recordFindingFeedback(
 
 export function createReviewEventLifecycle(ledger: ReviewEventLedger, clock: EventClock = {}): ReviewQueueLifecycle {
   return {
+    async requested(job) {
+      if (job.submission) await recordReviewRequested(ledger, job, job.submission, clock);
+    },
     async queued(job) {
       await ledger.append({ ...eventBase(job, `job:${job.id}:queued`, { ...clock, now: () => job.createdAt }), type: "review.queued", payload: { jobId: job.id } });
     },

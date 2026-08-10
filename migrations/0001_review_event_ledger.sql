@@ -33,3 +33,6 @@ CREATE INDEX IF NOT EXISTS review_events_scope_pull_sequence_idx
 
 CREATE INDEX IF NOT EXISTS review_events_scope_occurred_at_idx
   ON review_events (installation_id, owner, repo, occurred_at);
+
+CREATE INDEX IF NOT EXISTS review_events_occurred_at_idx
+  ON review_events (occurred_at);

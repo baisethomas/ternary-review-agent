@@ -1,4 +1,4 @@
-import type { ReviewJob, ReviewQueueStore } from "./review-queue";
+import type { PendingReviewCompletion, ReviewJob, ReviewQueueStore } from "./review-queue";
 
 type Lock = { jobId: string; expiresAt: number };
 
@@ -7,6 +7,9 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
   private readonly locks = new Map<string, Lock>();
   private readonly idempotencyKeys = new Map<string, string>();
   private readonly pendingRecoveries = new Map<string, ReviewJob>();
+  private readonly completions = new Map<string, PendingReviewCompletion>();
+  private readonly ready = new Set<string>();
+  private readonly activations = new Set<string>();
 
   async create(job: ReviewJob, idempotencyKeys: readonly string[] = []) {
     for (const key of idempotencyKeys) {
@@ -21,8 +24,35 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
       if (existingId) this.idempotencyKeys.delete(key);
     }
     this.jobs.set(job.id, structuredClone(job));
+    this.activations.add(job.id);
     for (const key of idempotencyKeys) this.idempotencyKeys.set(key, job.id);
     return structuredClone(job);
+  }
+
+  async activate(job: ReviewJob) {
+    const current = this.jobs.get(job.id);
+    if (!current || current.status !== "queued") return false;
+    this.ready.add(job.id);
+    this.activations.delete(job.id);
+    return true;
+  }
+
+  async pendingActivations(limit: number) {
+    return [...this.activations]
+      .slice(0, limit)
+      .flatMap((id) => {
+        const job = this.jobs.get(id);
+        return job ? [structuredClone(job)] : [];
+      });
+  }
+
+  async failActivation(job: ReviewJob, failedAt: number, error: string) {
+    const current = this.jobs.get(job.id);
+    if (!current || current.status !== "queued" || !this.activations.has(job.id)) return false;
+    this.jobs.set(job.id, { ...current, status: "failed", updatedAt: failedAt, completedAt: failedAt, lastError: error });
+    this.activations.delete(job.id);
+    this.ready.delete(job.id);
+    return true;
   }
 
   async claim(now: number, leaseMs: number, leaseId: string) {
@@ -30,7 +60,7 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
       if (lock.expiresAt <= now) this.locks.delete(scope);
     }
     const candidates = [...this.jobs.values()]
-      .filter((job) => (job.status === "queued" || job.status === "retrying") && job.availableAt <= now)
+      .filter((job) => (job.status === "retrying" || (job.status === "queued" && this.ready.has(job.id))) && job.availableAt <= now)
       .sort((a, b) => a.availableAt - b.availableAt || a.createdAt - b.createdAt);
 
     for (const job of candidates) {
@@ -48,6 +78,7 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
         leaseExpiresAt,
       };
       this.jobs.set(job.id, claimed);
+      this.ready.delete(job.id);
       return structuredClone(claimed);
     }
     return null;
@@ -57,6 +88,28 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
     const current = this.jobs.get(job.id);
     if (!current || current.leaseId !== job.leaseId) return false;
     this.jobs.set(job.id, structuredClone({ ...job, leaseId: undefined, leaseExpiresAt: undefined }));
+    this.releaseLocks(job.id);
+    return true;
+  }
+
+  async stageCompletion(completion: PendingReviewCompletion) {
+    const current = this.jobs.get(completion.job.id);
+    if (!current || current.status !== "running" || current.leaseId !== completion.job.leaseId) return false;
+    this.completions.set(completion.job.id, structuredClone(completion));
+    return true;
+  }
+
+  async pendingCompletions(limit: number) {
+    return [...this.completions.values()].slice(0, limit).map((completion) => structuredClone(completion));
+  }
+
+  async acknowledgeCompletion(job: ReviewJob) {
+    const pending = this.completions.get(job.id);
+    if (!pending) return false;
+    const current = this.jobs.get(job.id);
+    if (!current || current.leaseId !== pending.job.leaseId) return false;
+    this.jobs.set(job.id, structuredClone({ ...job, leaseId: undefined, leaseExpiresAt: undefined }));
+    this.completions.delete(job.id);
     this.releaseLocks(job.id);
     return true;
   }
@@ -74,7 +127,7 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
   async recoverExpired(now: number) {
     const recovered: ReviewJob[] = [];
     for (const [id, job] of this.jobs) {
-      if (job.status !== "running" || !job.leaseExpiresAt || job.leaseExpiresAt > now) continue;
+      if (job.status !== "running" || this.completions.has(id) || !job.leaseExpiresAt || job.leaseExpiresAt > now) continue;
       const exhausted = job.attempts >= job.maxAttempts;
       const recoveredJob: ReviewJob = {
         ...job,
@@ -90,6 +143,7 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
       this.releaseLocks(id);
       recovered.push(structuredClone(recoveredJob));
       this.pendingRecoveries.set(id, structuredClone(recoveredJob));
+      if (recoveredJob.status === "retrying") this.ready.add(id);
     }
     return [...this.pendingRecoveries.values()].map((job) => structuredClone(job));
   }
@@ -107,7 +161,11 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
     const expired = [...this.jobs.entries()]
       .filter(([, job]) => (job.status === "completed" || job.status === "failed") && (job.completedAt ?? Infinity) <= completedBefore)
       .slice(0, limit);
-    for (const [id] of expired) this.jobs.delete(id);
+    for (const [id] of expired) {
+      this.jobs.delete(id);
+      this.ready.delete(id);
+      this.activations.delete(id);
+    }
     return expired.length;
   }
 

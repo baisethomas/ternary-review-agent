@@ -2,11 +2,12 @@ import "server-only";
 import { Redis } from "@upstash/redis";
 import { RedisReviewQueueStore } from "./redis-review-queue-store";
 import { ReviewQueue } from "./review-queue";
-import { createReviewEventLifecycle, recordReviewRequested } from "./review-event-recorder";
+import { createReviewEventLifecycle } from "./review-event-recorder";
 import { pruneExpiredReviewEvents, reviewEventLedger } from "./review-event-ledger-service";
 import { runReview } from "./reviewer";
 import { dispatchReviewWorker } from "./review-worker-dispatcher";
 import { submitReview, submitReviewBestEffort } from "./review-submission";
+import type { ReviewSubmission } from "./review-queue";
 import type { ReviewRequest } from "./types";
 
 let queue: ReviewQueue | null = null;
@@ -29,30 +30,27 @@ function requestedIdempotencyKey(idempotencyKeys?: string | readonly string[]) {
   return first ? `${first}:review.requested` : undefined;
 }
 
-async function recordRequested(request: ReviewRequest, source: "github" | "dashboard" | "api", idempotencyKeys?: string | readonly string[]) {
+function submission(request: ReviewRequest, source: ReviewSubmission["source"], idempotencyKeys?: string | readonly string[]): ReviewSubmission {
   const deliveryId = "webhookDeliveryId" in request ? String(request.webhookDeliveryId) : undefined;
-  await recordReviewRequested(reviewEventLedger(), request, { source, deliveryId, idempotencyKey: deliveryId ? undefined : requestedIdempotencyKey(idempotencyKeys) });
+  return { source, ...(deliveryId ? { deliveryId } : { idempotencyKey: requestedIdempotencyKey(idempotencyKeys) }) };
 }
 
 export async function enqueueReview(request: ReviewRequest, idempotencyKeys?: string | readonly string[]) {
-  await recordRequested(request, "api", idempotencyKeys);
-  return reviewQueue().enqueue(request, idempotencyKeys);
+  return reviewQueue().enqueue(request, idempotencyKeys, submission(request, "api", idempotencyKeys));
 }
 
 export async function enqueueAndDispatchReview(request: ReviewRequest, idempotencyKeys?: string | readonly string[]) {
-  await recordRequested(request, "github", idempotencyKeys);
-  return submitReview(reviewQueue(), dispatchReviewWorker, request, idempotencyKeys);
+  return submitReview(reviewQueue(), dispatchReviewWorker, request, idempotencyKeys, submission(request, "github", idempotencyKeys));
 }
 
 export async function enqueueAndTryDispatchReview(request: ReviewRequest, idempotencyKey: string, source: "dashboard" | "api" = "api") {
-  await recordRequested(request, source, idempotencyKey);
   return submitReviewBestEffort(reviewQueue(), dispatchReviewWorker, request, idempotencyKey, (error, job) => {
     console.error(`Review job ${job.id} was persisted but immediate dispatch failed`, error);
-  });
+  }, submission(request, source, idempotencyKey));
 }
 
 export async function processReviewQueue(maxJobs = 1) {
-  await Promise.all([reviewQueue().pruneExpiredTerminalJobs(), pruneExpiredReviewEvents()]);
+  await reviewQueue().pruneExpiredTerminalJobs();
   const processed = [];
   for (let index = 0; index < maxJobs; index += 1) {
     const job = await reviewQueue().processNext();
@@ -60,6 +58,10 @@ export async function processReviewQueue(maxJobs = 1) {
     processed.push(job);
   }
   return processed;
+}
+
+export function pruneReviewEventHistory() {
+  return pruneExpiredReviewEvents();
 }
 
 export function listReviewJobs(limit = 100) {

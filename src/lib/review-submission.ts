@@ -1,4 +1,4 @@
-import type { ReviewQueue, ReviewJob } from "./review-queue";
+import type { ReviewQueue, ReviewJob, ReviewSubmission } from "./review-queue";
 import type { ReviewRequest, WebhookReviewRequest } from "./types";
 
 type DispatchReviewWorker = (availableAt: number) => Promise<unknown>;
@@ -24,8 +24,9 @@ export async function submitReview(
   dispatch: DispatchReviewWorker,
   request: ReviewRequest,
   idempotencyKeys?: string | readonly string[],
+  submission?: ReviewSubmission,
 ): Promise<ReviewJob> {
-  const job = await queue.enqueue(request, idempotencyKeys);
+  const job = await queue.enqueue(request, idempotencyKeys, submission);
   await dispatch(job.availableAt);
   return job;
 }
@@ -36,8 +37,9 @@ export async function submitReviewBestEffort(
   request: ReviewRequest,
   idempotencyKey: string,
   onDispatchError: (error: unknown, job: ReviewJob) => void = () => undefined,
+  submission?: ReviewSubmission,
 ) {
-  const job = await queue.enqueue(request, idempotencyKey);
+  const job = await queue.enqueue(request, idempotencyKey, submission);
   try {
     await dispatch(job.availableAt);
   } catch (error) {

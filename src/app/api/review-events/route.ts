@@ -1,7 +1,7 @@
 import { hasBearerToken } from "@/lib/api-auth";
 import { isDashboardAuthenticated } from "@/lib/dashboard-auth";
-import { reviewEventsCsv } from "@/lib/review-event-export";
-import { allRepositoryReviewEvents, listRepositoryReviewEvents, RepositoryReviewEventsAccessError } from "@/lib/review-event-query-service";
+import { reviewEventsCsvStream } from "@/lib/review-event-export";
+import { listRepositoryReviewEvents, repositoryReviewEventPages, RepositoryReviewEventsAccessError } from "@/lib/review-event-query-service";
 import { InvalidReviewEventCursorError } from "@/lib/review-event-ledger";
 
 export async function GET(request: Request) {
@@ -14,8 +14,8 @@ export async function GET(request: Request) {
   const reviewId = url.searchParams.get("reviewId") ?? undefined;
   try {
     if (url.searchParams.get("format") === "csv") {
-      const csv = reviewEventsCsv(await allRepositoryReviewEvents(repository, reviewId));
-      return new Response(csv, { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="${repository.replace("/", "-")}-review-events.csv"` } });
+      const pages = await repositoryReviewEventPages(repository, reviewId);
+      return new Response(reviewEventsCsvStream(pages), { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="${repository.replace("/", "-")}-review-events.csv"` } });
     }
     const limit = Number(url.searchParams.get("limit") ?? 100);
     if (!Number.isInteger(limit) || limit < 1 || limit > 250) return Response.json({ error: "limit must be between 1 and 250" }, { status: 400 });

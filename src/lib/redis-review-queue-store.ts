@@ -1,6 +1,6 @@
 import "server-only";
 import { Redis } from "@upstash/redis";
-import type { ReviewJob, ReviewQueueStore } from "./review-queue";
+import type { PendingReviewCompletion, ReviewJob, ReviewQueueStore } from "./review-queue";
 import { terminalJobRetentionSeconds } from "./review-retention";
 
 const defaultPrefix = "ternary:review-queue:v1";
@@ -38,9 +38,35 @@ if #idempotencyKeys > 0 then
   attachAliases(ARGV[3])
 end
 redis.call("SET", ARGV[1], ARGV[2])
-redis.call("ZADD", KEYS[1], ARGV[4], ARGV[3])
 redis.call("ZADD", KEYS[2], ARGV[5], ARGV[3])
+redis.call("ZADD", KEYS[3], ARGV[5], ARGV[3])
 return ARGV[2]
+`;
+
+const activateScript = `
+local encoded = redis.call("GET", KEYS[1])
+if not encoded then return 0 end
+local job = cjson.decode(encoded)
+if job.status ~= "queued" then return 0 end
+redis.call("ZADD", KEYS[2], job.availableAt, job.id)
+redis.call("ZREM", KEYS[3], job.id)
+return 1
+`;
+
+const failActivationScript = `
+local encoded = redis.call("GET", KEYS[1])
+if not encoded or not redis.call("ZSCORE", KEYS[2], ARGV[1]) then return 0 end
+local job = cjson.decode(encoded)
+if job.status ~= "queued" then return 0 end
+job.status = "failed"
+job.updatedAt = tonumber(ARGV[2])
+job.completedAt = tonumber(ARGV[2])
+job.lastError = ARGV[3]
+redis.call("SET", KEYS[1], cjson.encode(job), "EX", ARGV[4])
+redis.call("ZREM", KEYS[2], ARGV[1])
+redis.call("ZREM", KEYS[3], ARGV[1])
+redis.call("ZADD", KEYS[4], job.completedAt, ARGV[1])
+return 1
 `;
 
 const pruneTerminalScript = `
@@ -120,15 +146,50 @@ if redis.call("GET", repositoryLock) == ARGV[2] then redis.call("DEL", repositor
 return 1
 `;
 
+const stageCompletionScript = `
+local encoded = redis.call("GET", KEYS[1])
+if not encoded then return 0 end
+local current = cjson.decode(encoded)
+local completion = cjson.decode(ARGV[1])
+if current.status ~= "running" or current.leaseId ~= completion.job.leaseId then return 0 end
+redis.call("SET", KEYS[3], ARGV[1])
+redis.call("ZADD", KEYS[2], completion.job.updatedAt, ARGV[2])
+return 1
+`;
+
+const acknowledgeCompletionScript = `
+local pending = redis.call("GET", KEYS[6])
+local encoded = redis.call("GET", KEYS[1])
+if not pending or not encoded then return 0 end
+local completion = cjson.decode(pending)
+local current = cjson.decode(encoded)
+local proposed = completion.job
+if current.leaseId ~= proposed.leaseId then return 0 end
+local installationLock = ARGV[3] .. "installation:" .. tostring(current.installationId)
+local repositoryLock = ARGV[3] .. "repository:" .. string.lower(current.owner) .. "/" .. string.lower(current.repo)
+proposed.leaseId = nil
+proposed.leaseExpiresAt = nil
+redis.call("SET", KEYS[1], cjson.encode(proposed), "EX", ARGV[4])
+redis.call("ZREM", KEYS[2], ARGV[2])
+redis.call("ZREM", KEYS[3], ARGV[2])
+redis.call("ZREM", KEYS[5], ARGV[2])
+redis.call("ZADD", KEYS[4], proposed.completedAt, ARGV[2])
+redis.call("DEL", KEYS[6])
+if redis.call("GET", installationLock) == ARGV[2] then redis.call("DEL", installationLock) end
+if redis.call("GET", repositoryLock) == ARGV[2] then redis.call("DEL", repositoryLock) end
+return 1
+`;
+
 const recoverScript = `
 local expired = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", ARGV[1])
 local recovered = {}
 for _, id in ipairs(expired) do
-  local jobKey = ARGV[2] .. id
-  local encoded = redis.call("GET", jobKey)
-  if encoded then
-    local job = cjson.decode(encoded)
-    if job.status == "running" and job.leaseExpiresAt <= tonumber(ARGV[1]) then
+  if redis.call("EXISTS", ARGV[5] .. id) == 0 then
+    local jobKey = ARGV[2] .. id
+    local encoded = redis.call("GET", jobKey)
+    if encoded then
+      local job = cjson.decode(encoded)
+      if job.status == "running" and job.leaseExpiresAt <= tonumber(ARGV[1]) then
       local installationLock = ARGV[3] .. "installation:" .. tostring(job.installationId)
       local repositoryLock = ARGV[3] .. "repository:" .. string.lower(job.owner) .. "/" .. string.lower(job.repo)
       job.updatedAt = tonumber(ARGV[1])
@@ -153,9 +214,10 @@ for _, id in ipairs(expired) do
       if redis.call("GET", repositoryLock) == id then redis.call("DEL", repositoryLock) end
       table.insert(recovered, job)
       redis.call("ZADD", KEYS[4], job.updatedAt, id)
+      end
     end
+    redis.call("ZREM", KEYS[1], id)
   end
-  redis.call("ZREM", KEYS[1], id)
 end
 local pending = redis.call("ZRANGE", KEYS[4], 0, 99)
 recovered = {}
@@ -196,6 +258,9 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
   private get allKey() { return `${this.prefix}:all`; }
   private get terminalKey() { return `${this.prefix}:terminal`; }
   private get recoveryKey() { return `${this.prefix}:recovery-pending`; }
+  private get activationKey() { return `${this.prefix}:activation-pending`; }
+  private get completionKey() { return `${this.prefix}:completion-pending`; }
+  private get completionPrefix() { return `${this.prefix}:completion:`; }
   private get jobPrefix() { return `${this.prefix}:job:`; }
   private get lockPrefix() { return `${this.prefix}:lock:`; }
   private get idempotencyPrefix() { return `${this.prefix}:idempotency:`; }
@@ -204,7 +269,7 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
   async create(job: ReviewJob, idempotencyKeys: readonly string[] = []) {
     const created = await this.redis.eval<[string, string, string, number, number, string, string, number], ReviewJob>(
       createScript,
-      [this.scheduledKey, this.allKey],
+      [this.scheduledKey, this.allKey, this.activationKey],
       [
         this.jobKey(job.id),
         JSON.stringify(job),
@@ -217,6 +282,30 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
       ],
     );
     return created;
+  }
+
+  async activate(job: ReviewJob) {
+    const activated = await this.redis.eval<[], number>(
+      activateScript,
+      [this.jobKey(job.id), this.scheduledKey, this.activationKey],
+      [],
+    );
+    return activated === 1;
+  }
+
+  async pendingActivations(limit: number) {
+    const ids = await this.redis.zrange<string[]>(this.activationKey, 0, Math.max(0, limit - 1));
+    const jobs = await Promise.all(ids.map((id) => this.get(id)));
+    return jobs.filter((job): job is ReviewJob => Boolean(job));
+  }
+
+  async failActivation(job: ReviewJob, failedAt: number, error: string) {
+    const failed = await this.redis.eval<[string, number, string, number], number>(
+      failActivationScript,
+      [this.jobKey(job.id), this.activationKey, this.scheduledKey, this.terminalKey],
+      [job.id, failedAt, error, terminalJobRetentionSeconds],
+    );
+    return failed === 1;
   }
 
   async claim(now: number, leaseMs: number, leaseId: string) {
@@ -237,6 +326,30 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
     return finished === 1;
   }
 
+  async stageCompletion(completion: PendingReviewCompletion) {
+    const staged = await this.redis.eval<[string, string], number>(
+      stageCompletionScript,
+      [this.jobKey(completion.job.id), this.completionKey, `${this.completionPrefix}${completion.job.id}`],
+      [JSON.stringify(completion), completion.job.id],
+    );
+    return staged === 1;
+  }
+
+  async pendingCompletions(limit: number) {
+    const ids = await this.redis.zrange<string[]>(this.completionKey, 0, Math.max(0, limit - 1));
+    const completions = await Promise.all(ids.map((id) => this.redis.get<PendingReviewCompletion>(`${this.completionPrefix}${id}`)));
+    return completions.filter((completion): completion is PendingReviewCompletion => Boolean(completion));
+  }
+
+  async acknowledgeCompletion(job: ReviewJob) {
+    const acknowledged = await this.redis.eval<[string, string, string, number], number>(
+      acknowledgeCompletionScript,
+      [this.jobKey(job.id), this.scheduledKey, this.activeKey, this.terminalKey, this.completionKey, `${this.completionPrefix}${job.id}`],
+      [JSON.stringify(job), job.id, this.lockPrefix, terminalJobRetentionSeconds],
+    );
+    return acknowledged === 1;
+  }
+
   async renew(id: string, leaseId: string, leaseExpiresAt: number) {
     const renewed = await this.redis.eval<[string, string, number, string], number>(
       renewScript,
@@ -247,12 +360,13 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
   }
 
   async recoverExpired(now: number) {
-    const recovered = await this.redis.eval<[number, string, string, number], string>(
+    const recovered = await this.redis.eval<[number, string, string, number, string], string | ReviewJob[]>(
       recoverScript,
       [this.activeKey, this.scheduledKey, this.terminalKey, this.recoveryKey],
-      [now, this.jobPrefix, this.lockPrefix, terminalJobRetentionSeconds],
+      [now, this.jobPrefix, this.lockPrefix, terminalJobRetentionSeconds, this.completionPrefix],
     );
-    return JSON.parse(recovered) as ReviewJob[];
+    if (Array.isArray(recovered)) return recovered;
+    return recovered ? JSON.parse(recovered) as ReviewJob[] : [];
   }
 
   async acknowledgeRecovery(id: string) {
