@@ -47,7 +47,7 @@ On Vercel, authentication is automatic through `VERCEL_OIDC_TOKEN`. For local Sa
 
 1. Push this folder to a private GitHub repository.
 2. Import it in Vercel as a Next.js project.
-3. Add the GitHub and OpenAI variables from `.env.example` to the Vercel project. Connect Neon Postgres through Vercel Marketplace, then run `npm run db:migrate` with its `DATABASE_URL`. Sandbox authentication is automatic.
+3. Add the GitHub and OpenRouter variables from `.env.example` to the Vercel project. Connect Neon Postgres through Vercel Marketplace, then run `npm run db:migrate` with its `DATABASE_URL`. Sandbox authentication is automatic.
 4. Deploy, update the GitHub App webhook URL, and install the app on a test repository.
 5. Open a PR and confirm the `Ternary review` check appears.
 
@@ -55,7 +55,7 @@ The webhook persists work in Upstash Redis before GitHub receives a `202`, then 
 
 Every accepted review also writes immutable, idempotent lifecycle facts to Postgres: requested, queued, started, retry scheduled, completed, and failed. Completed facts retain structured findings and bounded sandbox evidence, while watched pull-request merges add merge outcomes. Repository and installation removal delete their private ledger history, and the daily worker prunes events older than `REVIEW_EVENT_RETENTION_DAYS` (365 by default). Authenticated operators can page one installed repository through `GET /api/review-events?repository=OWNER/REPO` or export its complete history with `format=csv`; the server derives the installation scope from current GitHub access rather than trusting a caller-provided installation ID.
 
-The authenticated `/analytics` dashboard aggregates that ledger across connected organizations and repositories. It exposes review outcomes, finding and feedback trends, queue/sandbox/model timing, merge outcomes, and a filtered CSV export. Historical metrics remain visible when a repository is paused. Model cost is shown only when `OPENAI_INPUT_COST_PER_MILLION` and `OPENAI_OUTPUT_COST_PER_MILLION` are configured for the selected `OPENAI_MODEL`; this is a telemetry estimate, not an invoice. Older events visibly report partial or unavailable coverage for fields that were not recorded at the time.
+The authenticated `/analytics` dashboard aggregates that ledger across connected organizations and repositories. It exposes review outcomes, finding and feedback trends, queue/sandbox/model timing, merge outcomes, and a filtered CSV export. Historical metrics remain visible when a repository is paused. Model cost uses the cost reported by OpenRouter for the selected `OPENROUTER_MODEL`; it remains telemetry rather than an invoice. Older events visibly report partial or unavailable coverage for fields that were not recorded at the time.
 
 Ternary posts one stable inline GitHub thread per finding. Replies, reactions, and thread resolution from repository maintainers become idempotent feedback events. Each later review reconciles the same finding identity across moved lines and new commits, and the dashboard shows open, fixed, dismissed, superseded, and stale findings with preserved developer reasons. These structured lifecycle facts also feed Analytics and form the durable input for adaptive Memory and evaluation work. Existing GitHub Apps must enable the review-comment, review-thread, and reaction webhook events to activate this feedback loop.
 
