@@ -4,6 +4,14 @@ import type { ReviewRequest, ReviewResult } from "./types";
 
 type EventClock = { eventId?: () => string; now?: () => number };
 type ReviewSource = { source: "github" | "dashboard" | "api"; deliveryId?: string; idempotencyKey?: string };
+const sandboxEvidenceLimit = 24_000;
+
+function sandboxOutput(value: string, remaining: number) {
+  const redacted = value
+    .replace(/\b(?:gh[opsu]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g, "[REDACTED]")
+    .replace(/(authorization\s*:\s*bearer\s+)[^\s]+/gi, "$1[REDACTED]");
+  return redacted.slice(0, Math.max(0, remaining));
+}
 
 function eventBase(request: ReviewRequest, idempotencyKey: string, clock: EventClock = {}) {
   return {
@@ -72,7 +80,11 @@ export function createReviewEventLifecycle(ledger: ReviewEventLedger, clock: Eve
           sandbox: {
             sandboxId: result.sandbox.sandboxId,
             durationMs: result.sandbox.durationMs,
-            commands: result.sandbox.commands.map(({ command, exitCode }) => ({ command, exitCode })),
+            commands: result.sandbox.commands.reduce<Array<{ command: string; exitCode: number; output: string }>>((commands, item) => {
+              const used = commands.reduce((total, command) => total + command.output.length, 0);
+              commands.push({ command: item.command, exitCode: item.exitCode, output: sandboxOutput(item.output, sandboxEvidenceLimit - used) });
+              return commands;
+            }, []),
           },
         },
       };

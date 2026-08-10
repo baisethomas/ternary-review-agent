@@ -40,7 +40,7 @@ async function generateReview(diff: string, sandbox: SandboxResult, repositoryCo
   if (!text) throw new NonRetryableReviewError("AI response did not include review output");
   try {
     const review = JSON.parse(text) as Omit<ReviewResult, "sandbox">;
-    const findingKeys = review.findings.map((finding) => finding.findingKey ? `${finding.file.toLowerCase()}\u0000${finding.findingKey.toLowerCase()}` : null);
+    const findingKeys = review.findings.map((finding) => finding.findingKey?.toLowerCase() ?? null);
     if (findingKeys.some((key) => !key) || new Set(findingKeys).size !== findingKeys.length) {
       throw new NonRetryableReviewError("AI response included missing or duplicate finding keys");
     }

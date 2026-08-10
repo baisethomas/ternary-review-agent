@@ -14,10 +14,11 @@ CREATE TABLE IF NOT EXISTS review_events (
   event JSONB NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS review_event_revocations (
+CREATE TABLE IF NOT EXISTS review_event_access (
   installation_id BIGINT NOT NULL,
   scope_key TEXT NOT NULL,
-  revoked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  status TEXT NOT NULL CHECK (status IN ('active', 'revoked')),
+  changed_at BIGINT NOT NULL,
   PRIMARY KEY (installation_id, scope_key)
 );
 

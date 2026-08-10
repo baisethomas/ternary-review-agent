@@ -2,7 +2,7 @@ import "server-only";
 import { isRepositoryWatched } from "./repository-watch";
 import { enqueueAndDispatchReview } from "./review-queue-service";
 import { webhookReviewIdempotencyKeys } from "./review-submission";
-import { deleteInstallationReviewEvents, deleteRepositoryReviewEvents, recordPullRequestMergedEvent, restoreInstallationReviewEventAccess, restoreRepositoryReviewEventAccess } from "./review-event-ledger-service";
+import { recordPullRequestMergedEvent } from "./review-event-ledger-service";
 import { dispatchRepositoryIndexTask } from "./repository-index-dispatcher";
 import type { WebhookReviewRequest } from "./types";
 
@@ -49,12 +49,10 @@ const handleInstallationRepositories: WebhookHandler = async (rawBody, deliveryI
   if (payload.action === "removed") {
     await Promise.all((payload.repositories_removed ?? []).map(async (repository) => {
       await dispatchRepositoryIndexTask({ action: "deleteRepository", installationId: payload.installation.id, owner: repository.owner.login, repo: repository.name, changedAt });
-      await deleteRepositoryReviewEvents({ installationId: payload.installation.id, owner: repository.owner.login, repo: repository.name });
     }));
   } else if (payload.action === "added") {
     await Promise.all((payload.repositories_added ?? []).map(async (repository) => {
       await dispatchRepositoryIndexTask({ action: "restoreRepository", installationId: payload.installation.id, owner: repository.owner.login, repo: repository.name, changedAt });
-      await restoreRepositoryReviewEventAccess({ installationId: payload.installation.id, owner: repository.owner.login, repo: repository.name });
       if (!await isRepositoryWatched(`${repository.owner.login}/${repository.name}`)) return;
       await dispatchRepositoryIndexTask({ action: "updateDefaultBranch", installationId: payload.installation.id, owner: repository.owner.login, repo: repository.name, defaultBranch: repository.default_branch, changedAt });
     }));
@@ -67,11 +65,9 @@ const handleInstallation: WebhookHandler = async (rawBody, deliveryId) => {
   const changedAt = payload.installation.updated_at ? Date.parse(payload.installation.updated_at) : Date.now();
   if (payload.action === "deleted" || payload.action === "suspend") {
     await dispatchRepositoryIndexTask({ action: "deleteInstallation", installationId: payload.installation.id, changedAt });
-    await deleteInstallationReviewEvents(payload.installation.id);
   }
   if (payload.action === "unsuspend") {
     await dispatchRepositoryIndexTask({ action: "restoreInstallation", installationId: payload.installation.id, changedAt });
-    await restoreInstallationReviewEventAccess(payload.installation.id);
   }
   return Response.json({ accepted: true, delivery: deliveryId }, { status: 202 });
 };

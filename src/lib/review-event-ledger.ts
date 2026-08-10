@@ -28,7 +28,7 @@ export type FindingSnapshot = {
 export type SandboxEvidence = {
   sandboxId: string;
   durationMs: number;
-  commands: Array<{ command: string; exitCode: number }>;
+  commands: Array<{ command: string; exitCode: number; output: string }>;
 };
 
 export type ReviewEvent =
@@ -47,11 +47,11 @@ export interface ReviewEventLedger {
   append(event: ReviewEvent): Promise<{ event: ReviewEvent; inserted: boolean }>;
   list(scope: RepositoryScope, query?: ReviewEventQuery): Promise<ReviewEventPage>;
   deleteBefore(scope: RepositoryScope, occurredBefore: string): Promise<number>;
-  deleteScope(scope: RepositoryScope): Promise<number>;
-  deleteInstallation(installationId: number): Promise<number>;
+  deleteScope(scope: RepositoryScope, changedAt?: number, forceAuthoritative?: boolean): Promise<number>;
+  deleteInstallation(installationId: number, changedAt?: number, forceAuthoritative?: boolean): Promise<number>;
   deleteExpired(occurredBefore: string): Promise<number>;
-  restoreScope(scope: RepositoryScope): Promise<void>;
-  restoreInstallation(installationId: number): Promise<void>;
+  restoreScope(scope: RepositoryScope, changedAt?: number, forceAuthoritative?: boolean): Promise<void>;
+  restoreInstallation(installationId: number, changedAt?: number, forceAuthoritative?: boolean): Promise<void>;
 }
 
 export class ReviewEventConflictError extends Error {
@@ -88,7 +88,7 @@ export function reviewIdentity(request: Pick<ReviewRequest, "owner" | "repo" | "
 
 export function findingIdentity(request: Pick<ReviewRequest, "owner" | "repo" | "pullNumber">, finding: ReviewFinding) {
   const pullRequestId = `${request.owner.toLowerCase()}/${request.repo.toLowerCase()}#${request.pullNumber}`;
-  const signature = [finding.file.toLowerCase(), (finding.findingKey ?? finding.title).toLowerCase()].join("\u0000");
+  const signature = (finding.findingKey ?? finding.title).toLowerCase();
   return `${pullRequestId}:finding:${createHash("sha256").update(signature).digest("hex").slice(0, 24)}`;
 }
 
@@ -106,12 +106,12 @@ function scopeKey(scope: RepositoryScope) {
 export class InMemoryReviewEventLedger implements ReviewEventLedger {
   private readonly events = new Map<string, Array<{ sequence: number; event: ReviewEvent }>>();
   private readonly idempotency = new Map<string, ReviewEvent>();
-  private readonly revokedScopes = new Set<string>();
-  private readonly revokedInstallations = new Set<number>();
+  private readonly scopeAccess = new Map<string, { status: "active" | "revoked"; changedAt: number }>();
+  private readonly installationAccess = new Map<number, { status: "active" | "revoked"; changedAt: number }>();
   private sequence = 0;
 
   async append(event: ReviewEvent) {
-    if (this.revokedInstallations.has(event.scope.installationId) || this.revokedScopes.has(scopeKey(event.scope))) throw new ReviewEventAccessRevokedError(event.scope);
+    if (this.installationAccess.get(event.scope.installationId)?.status === "revoked" || this.scopeAccess.get(scopeKey(event.scope))?.status === "revoked") throw new ReviewEventAccessRevokedError(event.scope);
     const existing = this.idempotency.get(event.idempotencyKey);
     if (existing) {
       if (reviewEventFactFingerprint(existing) !== reviewEventFactFingerprint(event)) throw new ReviewEventConflictError(event.idempotencyKey);
@@ -143,13 +143,13 @@ export class InMemoryReviewEventLedger implements ReviewEventLedger {
     return this.deleteMatching(key, (event) => event.occurredAt < occurredBefore);
   }
 
-  async deleteScope(scope: RepositoryScope) {
-    this.revokedScopes.add(scopeKey(scope));
+  async deleteScope(scope: RepositoryScope, changedAt = Date.now(), forceAuthoritative = true) {
+    if (!this.transition(this.scopeAccess, scopeKey(scope), "revoked", changedAt, forceAuthoritative)) return 0;
     return this.deleteMatching(scopeKey(scope), () => true);
   }
 
-  async deleteInstallation(installationId: number) {
-    this.revokedInstallations.add(installationId);
+  async deleteInstallation(installationId: number, changedAt = Date.now(), forceAuthoritative = true) {
+    if (!this.transition(this.installationAccess, installationId, "revoked", changedAt, forceAuthoritative)) return 0;
     let deleted = 0;
     for (const key of [...this.events.keys()]) {
       if (key.startsWith(`${installationId}:`)) deleted += this.deleteMatching(key, () => true);
@@ -163,12 +163,20 @@ export class InMemoryReviewEventLedger implements ReviewEventLedger {
     return deleted;
   }
 
-  async restoreScope(scope: RepositoryScope) {
-    this.revokedScopes.delete(scopeKey(scope));
+  async restoreScope(scope: RepositoryScope, changedAt = Date.now(), forceAuthoritative = true) {
+    this.transition(this.scopeAccess, scopeKey(scope), "active", changedAt, forceAuthoritative);
   }
 
-  async restoreInstallation(installationId: number) {
-    this.revokedInstallations.delete(installationId);
+  async restoreInstallation(installationId: number, changedAt = Date.now(), forceAuthoritative = true) {
+    this.transition(this.installationAccess, installationId, "active", changedAt, forceAuthoritative);
+  }
+
+  private transition<Key>(states: Map<Key, { status: "active" | "revoked"; changedAt: number }>, key: Key, status: "active" | "revoked", changedAt: number, force: boolean) {
+    const current = states.get(key);
+    if (current && current.changedAt > changedAt && !(force && current.status !== status)) return false;
+    if (current && current.changedAt === changedAt && current.status !== status && !force) return false;
+    states.set(key, { status, changedAt: Math.max(current?.changedAt ?? changedAt, changedAt) });
+    return true;
   }
 
   private deleteMatching(key: string, predicate: (event: ReviewEvent) => boolean) {

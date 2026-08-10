@@ -20,7 +20,7 @@ describe("ReviewEventLedger", () => {
     const finding = { findingKey: "authorization-bypass-handler", severity: "blocking" as const, file: "src/auth.ts", line: 42, title: "Authorization bypass", explanation: "The route trusts caller input." };
 
     expect(reviewId).toBe("ternary/agent#8:head-sha");
-    expect(findingIdentity(findingScope, finding)).toBe(findingIdentity(findingScope, { ...finding, line: 43, title: "Reworded title", explanation: "Updated wording." }));
+    expect(findingIdentity(findingScope, finding)).toBe(findingIdentity(findingScope, { ...finding, file: "src/moved/auth.ts", line: 43, title: "Reworded title", explanation: "Updated wording." }));
     expect(findingIdentity(findingScope, { ...finding, findingKey: "different-symbol" })).not.toBe(findingIdentity(findingScope, finding));
   });
 
@@ -73,7 +73,7 @@ describe("ReviewEventLedger", () => {
         verdict: "request_changes",
         summary: "One material issue",
         findings: [{ findingId: "finding-auth-1", severity: "blocking", file: "src/auth.ts", line: 42, title: "Authorization bypass", explanation: "The route trusts caller input." }],
-        sandbox: { sandboxId: "sandbox-1", durationMs: 1_200, commands: [{ command: "npm test", exitCode: 0 }] },
+        sandbox: { sandboxId: "sandbox-1", durationMs: 1_200, commands: [{ command: "npm test", exitCode: 0, output: "Tests passed" }] },
       },
     };
     await ledger.append(completed);
@@ -119,6 +119,19 @@ describe("ReviewEventLedger", () => {
     await expect(ledger.append({ ...requested, eventId: "late", idempotencyKey: "late" })).rejects.toBeInstanceOf(ReviewEventAccessRevokedError);
     await ledger.restoreScope(requested.scope);
     await expect(ledger.append({ ...requested, eventId: "restored", idempotencyKey: "restored" })).resolves.toMatchObject({ inserted: true });
+  });
+
+  it("ignores stale access transitions while authoritative compensation can win", async () => {
+    const ledger = new InMemoryReviewEventLedger();
+    await ledger.restoreScope(requested.scope, 700, true);
+    await ledger.deleteScope(requested.scope, 650, false);
+    await expect(ledger.append(requested)).resolves.toMatchObject({ inserted: true });
+
+    await ledger.deleteScope(requested.scope, 800, true);
+    await ledger.restoreScope(requested.scope, 750, false);
+    await expect(ledger.append({ ...requested, eventId: "stale-restore", idempotencyKey: "stale-restore" })).rejects.toBeInstanceOf(ReviewEventAccessRevokedError);
+    await ledger.restoreScope(requested.scope, 750, true);
+    await expect(ledger.append({ ...requested, eventId: "compensated", idempotencyKey: "compensated" })).resolves.toMatchObject({ inserted: true });
   });
 
   it("prunes expired facts across repositories while retaining newer history", async () => {

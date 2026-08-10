@@ -16,7 +16,7 @@ describe("review event recorder", () => {
       verdict: "request_changes",
       summary: "One issue",
       findings: [{ findingKey: "authorization-bypass-handler", severity: "blocking", file: "src/auth.ts", line: 42, title: "Authorization bypass", explanation: "Caller input is trusted." }],
-      sandbox: { ok: true, sandboxId: "sandbox-1", durationMs: 1200, commands: [{ command: "test", exitCode: 0, output: "ok" }] },
+      sandbox: { ok: true, sandboxId: "sandbox-1", durationMs: 1200, commands: [{ command: "test", exitCode: 0, output: "Authorization: Bearer secret-token" }] },
     };
 
     await recordReviewRequested(ledger, request, { source: "github", deliveryId: "delivery-1" }, { eventId: () => "requested", now: () => 1_000 });
@@ -28,7 +28,7 @@ describe("review event recorder", () => {
     expect(page.events[1]).toMatchObject({
       payload: {
         findings: [expect.objectContaining({ findingId: expect.stringContaining(":finding:") })],
-        sandbox: { commands: [{ command: "test", exitCode: 0 }] },
+        sandbox: { commands: [{ command: "test", exitCode: 0, output: "Authorization: Bearer [REDACTED]" }] },
       },
     });
   });

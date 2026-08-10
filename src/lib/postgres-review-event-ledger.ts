@@ -48,8 +48,8 @@ export class PostgresReviewEventLedger implements ReviewEventLedger {
       ) SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb
       FROM repository_lock
       WHERE NOT EXISTS (
-        SELECT 1 FROM review_event_revocations
-        WHERE installation_id = $3 AND scope_key IN ('*', $15)
+        SELECT 1 FROM review_event_access
+        WHERE installation_id = $3 AND scope_key IN ('*', $15) AND status = 'revoked'
       )
       ON CONFLICT (idempotency_key) DO NOTHING
       RETURNING sequence, event, fact_fingerprint, TRUE AS inserted`,
@@ -77,8 +77,8 @@ export class PostgresReviewEventLedger implements ReviewEventLedger {
        FROM review_events
        WHERE installation_id = $1 AND owner = $2 AND repo = $3 AND sequence > $4
        AND NOT EXISTS (
-         SELECT 1 FROM review_event_revocations
-         WHERE installation_id = $1 AND scope_key IN ('*', $2 || '/' || $3)
+         SELECT 1 FROM review_event_access
+         WHERE installation_id = $1 AND scope_key IN ('*', $2 || '/' || $3) AND status = 'revoked'
        )
        ${reviewFilter}
        ${pullRequestFilter}
@@ -104,7 +104,7 @@ export class PostgresReviewEventLedger implements ReviewEventLedger {
     return rows.length;
   }
 
-  async deleteScope(scope: RepositoryScope) {
+  async deleteScope(scope: RepositoryScope, changedAt = Date.now(), forceAuthoritative = true) {
     const normalized = normalizedScope(scope);
     const rows = await this.sql.query(
       `WITH installation_lock AS MATERIALIZED (
@@ -112,34 +112,40 @@ export class PostgresReviewEventLedger implements ReviewEventLedger {
        ), repository_lock AS MATERIALIZED (
          SELECT pg_advisory_xact_lock(hashtextextended($5, 0)) FROM installation_lock
        ), revoked AS (
-         INSERT INTO review_event_revocations (installation_id, scope_key)
-         SELECT $1, $6 FROM repository_lock
-         ON CONFLICT (installation_id, scope_key) DO UPDATE SET revoked_at = review_event_revocations.revoked_at
+         INSERT INTO review_event_access (installation_id, scope_key, status, changed_at)
+         SELECT $1, $6, 'revoked', $7 FROM repository_lock
+         ON CONFLICT (installation_id, scope_key) DO UPDATE
+         SET status = 'revoked', changed_at = GREATEST(review_event_access.changed_at, EXCLUDED.changed_at)
+         WHERE review_event_access.changed_at <= EXCLUDED.changed_at
+           OR ($8::boolean AND review_event_access.status = 'active')
          RETURNING 1
        )
        DELETE FROM review_events
        WHERE installation_id = $1 AND owner = $2 AND repo = $3
        AND EXISTS (SELECT 1 FROM revoked)
        RETURNING event_id`,
-      [normalized.installationId, normalized.owner, normalized.repo, installationLockKey(normalized.installationId), repositoryLockKey(normalized), repositoryScopeKey(normalized)],
+      [normalized.installationId, normalized.owner, normalized.repo, installationLockKey(normalized.installationId), repositoryLockKey(normalized), repositoryScopeKey(normalized), changedAt, forceAuthoritative],
     ) as Array<{ event_id: string }>;
     return rows.length;
   }
 
-  async deleteInstallation(installationId: number) {
+  async deleteInstallation(installationId: number, changedAt = Date.now(), forceAuthoritative = true) {
     const rows = await this.sql.query(
       `WITH installation_lock AS MATERIALIZED (
          SELECT pg_advisory_xact_lock(hashtextextended($2, 0))
        ), revoked AS (
-         INSERT INTO review_event_revocations (installation_id, scope_key)
-         SELECT $1, '*' FROM installation_lock
-         ON CONFLICT (installation_id, scope_key) DO UPDATE SET revoked_at = review_event_revocations.revoked_at
+         INSERT INTO review_event_access (installation_id, scope_key, status, changed_at)
+         SELECT $1, '*', 'revoked', $3 FROM installation_lock
+         ON CONFLICT (installation_id, scope_key) DO UPDATE
+         SET status = 'revoked', changed_at = GREATEST(review_event_access.changed_at, EXCLUDED.changed_at)
+         WHERE review_event_access.changed_at <= EXCLUDED.changed_at
+           OR ($4::boolean AND review_event_access.status = 'active')
          RETURNING 1
        )
        DELETE FROM review_events
        WHERE installation_id = $1 AND EXISTS (SELECT 1 FROM revoked)
        RETURNING event_id`,
-      [installationId, installationLockKey(installationId)],
+      [installationId, installationLockKey(installationId), changedAt, forceAuthoritative],
     ) as Array<{ event_id: string }>;
     return rows.length;
   }
@@ -152,7 +158,7 @@ export class PostgresReviewEventLedger implements ReviewEventLedger {
     return rows.length;
   }
 
-  async restoreScope(scope: RepositoryScope) {
+  async restoreScope(scope: RepositoryScope, changedAt = Date.now(), forceAuthoritative = true) {
     const normalized = normalizedScope(scope);
     await this.sql.query(
       `WITH installation_lock AS MATERIALIZED (
@@ -160,22 +166,28 @@ export class PostgresReviewEventLedger implements ReviewEventLedger {
        ), repository_lock AS MATERIALIZED (
          SELECT pg_advisory_xact_lock(hashtextextended($3, 0)) FROM installation_lock
        )
-       DELETE FROM review_event_revocations
-       WHERE installation_id = $1 AND scope_key = $4
-       AND EXISTS (SELECT 1 FROM repository_lock)`,
-      [normalized.installationId, installationLockKey(normalized.installationId), repositoryLockKey(normalized), repositoryScopeKey(normalized)],
+       INSERT INTO review_event_access (installation_id, scope_key, status, changed_at)
+       SELECT $1, $4, 'active', $5 FROM repository_lock
+       ON CONFLICT (installation_id, scope_key) DO UPDATE
+       SET status = 'active', changed_at = GREATEST(review_event_access.changed_at, EXCLUDED.changed_at)
+       WHERE review_event_access.changed_at <= EXCLUDED.changed_at
+         OR ($6::boolean AND review_event_access.status = 'revoked')`,
+      [normalized.installationId, installationLockKey(normalized.installationId), repositoryLockKey(normalized), repositoryScopeKey(normalized), changedAt, forceAuthoritative],
     );
   }
 
-  async restoreInstallation(installationId: number) {
+  async restoreInstallation(installationId: number, changedAt = Date.now(), forceAuthoritative = true) {
     await this.sql.query(
       `WITH installation_lock AS MATERIALIZED (
          SELECT pg_advisory_xact_lock(hashtextextended($2, 0))
        )
-       DELETE FROM review_event_revocations
-       WHERE installation_id = $1 AND scope_key = '*'
-       AND EXISTS (SELECT 1 FROM installation_lock)`,
-      [installationId, installationLockKey(installationId)],
+       INSERT INTO review_event_access (installation_id, scope_key, status, changed_at)
+       SELECT $1, '*', 'active', $3 FROM installation_lock
+       ON CONFLICT (installation_id, scope_key) DO UPDATE
+       SET status = 'active', changed_at = GREATEST(review_event_access.changed_at, EXCLUDED.changed_at)
+       WHERE review_event_access.changed_at <= EXCLUDED.changed_at
+         OR ($4::boolean AND review_event_access.status = 'revoked')`,
+      [installationId, installationLockKey(installationId), changedAt, forceAuthoritative],
     );
   }
 }

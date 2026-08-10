@@ -41,7 +41,7 @@ describe.skipIf(!enabled)("PostgresReviewEventLedger", () => {
       await expect(ledger.list(otherScope.scope)).resolves.toMatchObject({ events: [otherScope] });
     } finally {
       await ledger.deleteInstallation(installationId);
-      await sql.query("DELETE FROM review_event_revocations WHERE installation_id = $1", [installationId]);
+      await sql.query("DELETE FROM review_event_access WHERE installation_id = $1", [installationId]);
     }
   });
 });

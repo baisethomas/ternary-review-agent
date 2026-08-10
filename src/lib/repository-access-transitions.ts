@@ -1,7 +1,37 @@
 import "server-only";
-import { deleteInstallationIndexes, deleteRepositoryIndex, restoreInstallationIndexAccess, restoreRepositoryIndexAccess } from "./repository-context-service";
+import {
+  deleteInstallationIndexes as deleteInstallationIndexState,
+  deleteRepositoryIndex as deleteRepositoryIndexState,
+  restoreInstallationIndexAccess as restoreInstallationIndexState,
+  restoreRepositoryIndexAccess as restoreRepositoryIndexState,
+} from "./repository-context-service";
+import { deleteInstallationReviewEvents, deleteRepositoryReviewEvents, restoreInstallationReviewEventAccess, restoreRepositoryReviewEventAccess } from "./review-event-ledger-service";
 import type { RepositoryIndexTask } from "./repository-index-dispatcher";
 import { installationIsCurrentlyAccessible, repositoryIsCurrentlyAccessible } from "./repository-access-verification";
+
+async function deleteInstallationIndexes(installationId: number, changedAt: number, forceAuthoritative: boolean) {
+  const effectiveAt = await deleteInstallationIndexState(installationId, changedAt, forceAuthoritative);
+  if (effectiveAt !== null) await deleteInstallationReviewEvents(installationId, effectiveAt ?? changedAt, forceAuthoritative);
+  return effectiveAt;
+}
+
+async function restoreInstallationIndexAccess(installationId: number, changedAt: number, forceAuthoritative: boolean) {
+  const effectiveAt = await restoreInstallationIndexState(installationId, changedAt, forceAuthoritative);
+  if (effectiveAt !== null) await restoreInstallationReviewEventAccess(installationId, effectiveAt ?? changedAt, forceAuthoritative);
+  return effectiveAt;
+}
+
+async function deleteRepositoryIndex(task: { installationId: number; owner: string; repo: string }, changedAt: number, forceAuthoritative: boolean) {
+  const effectiveAt = await deleteRepositoryIndexState(task, changedAt, forceAuthoritative);
+  if (effectiveAt !== null) await deleteRepositoryReviewEvents(task, effectiveAt ?? changedAt, forceAuthoritative);
+  return effectiveAt;
+}
+
+async function restoreRepositoryIndexAccess(task: { installationId: number; owner: string; repo: string }, changedAt: number, forceAuthoritative: boolean) {
+  const effectiveAt = await restoreRepositoryIndexState(task, changedAt, forceAuthoritative);
+  if (effectiveAt !== null) await restoreRepositoryReviewEventAccess(task, effectiveAt ?? changedAt, forceAuthoritative);
+  return effectiveAt;
+}
 
 export async function revokeInstallationIfCurrentlyMissing(task: Extract<RepositoryIndexTask, { action: "deleteInstallation" }>) {
   if (await installationIsCurrentlyAccessible(task.installationId)) {

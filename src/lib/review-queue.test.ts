@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { InMemoryReviewQueueStore } from "./in-memory-review-queue-store";
 import { ReviewQueue } from "./review-queue";
 import { NonRetryableReviewError } from "./review-errors";
+import { ReviewEventAccessRevokedError } from "./review-event-ledger";
 import { submitReview, submitReviewBestEffort } from "./review-submission";
 import { webhookReviewIdempotencyKeys } from "./review-submission";
 import { runReviewWorkerCycle } from "./review-worker-cycle";
@@ -253,6 +254,28 @@ describe("ReviewQueue", () => {
     await expect(queue.processNext()).rejects.toThrow("Postgres unavailable");
     await expect(queue.processNext()).resolves.toBeNull();
     await expect(queue.get("job-recovery-replay")).resolves.toMatchObject({ status: "failed", lastError: "Worker lease expired" });
+  });
+
+  test("finalizes revoked work without blocking another repository", async () => {
+    let sequence = 0;
+    const queue = new ReviewQueue({
+      store: new InMemoryReviewQueueStore(),
+      run: async () => undefined,
+      now: () => 4_900,
+      id: () => `revocation-job-${++sequence}`,
+      lifecycle: {
+        queued: async () => undefined,
+        started: async (job) => { if (job.repo === "review-agent") throw new ReviewEventAccessRevokedError(job); },
+        completed: async () => undefined,
+        retryScheduled: async () => undefined,
+        failed: async () => undefined,
+      },
+    });
+    const revoked = await queue.enqueue(request);
+    const healthy = await queue.enqueue({ ...request, installationId: 8, owner: "other", repo: "healthy", pullNumber: 1 });
+
+    await expect(queue.processNext()).resolves.toMatchObject({ id: revoked.id, status: "failed" });
+    await expect(queue.processNext()).resolves.toMatchObject({ id: healthy.id, status: "completed" });
   });
 
   test("moves exhausted jobs to a visible failed state", async () => {

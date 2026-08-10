@@ -1,6 +1,7 @@
 import type { ReviewRequest } from "./types";
 import { isRetryableReviewError, ReviewLeaseLostError } from "./review-errors";
 import { terminalJobRetentionMs } from "./review-retention";
+import { ReviewEventAccessRevokedError } from "./review-event-ledger";
 
 export type ReviewJobStatus = "queued" | "running" | "retrying" | "failed" | "completed";
 
@@ -116,8 +117,12 @@ export class ReviewQueue {
     const now = this.now();
     const recovered = await this.store.recoverExpired(now);
     for (const recoveredJob of recovered) {
-      if (recoveredJob.status === "failed") await this.lifecycle.failed(recoveredJob);
-      else await this.lifecycle.retryScheduled(recoveredJob);
+      try {
+        if (recoveredJob.status === "failed") await this.lifecycle.failed(recoveredJob);
+        else await this.lifecycle.retryScheduled(recoveredJob);
+      } catch (error) {
+        if (!(error instanceof ReviewEventAccessRevokedError)) throw error;
+      }
       await this.store.acknowledgeRecovery(recoveredJob.id);
     }
     const job = await this.store.claim(now, this.leaseMs, this.leaseId());
@@ -150,7 +155,8 @@ export class ReviewQueue {
     } catch (error) {
       if (error instanceof ReviewLeaseLostError) return this.store.get(job.id);
       const failedAt = this.now();
-      const exhausted = job.attempts >= job.maxAttempts || !isRetryableReviewError(error);
+      const accessRevoked = error instanceof ReviewEventAccessRevokedError;
+      const exhausted = accessRevoked || job.attempts >= job.maxAttempts || !isRetryableReviewError(error);
       const failed: ReviewJob = {
         ...job,
         status: exhausted ? "failed" : "retrying",
@@ -159,7 +165,7 @@ export class ReviewQueue {
         completedAt: exhausted ? failedAt : undefined,
         lastError: errorMessage(error),
       };
-      if (exhausted) await this.lifecycle.failed(failed);
+      if (exhausted && !accessRevoked) await this.lifecycle.failed(failed);
       else await this.lifecycle.retryScheduled(failed);
       return await this.store.finish(failed) ? failed : this.store.get(job.id);
     } finally {

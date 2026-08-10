@@ -18,20 +18,20 @@ export function recordPullRequestMergedEvent(request: ReviewRequest, merge: { de
   return recordPullRequestMerged(reviewEventLedger(), request, merge);
 }
 
-export function deleteRepositoryReviewEvents(scope: { installationId: number; owner: string; repo: string }) {
-  return reviewEventLedger().deleteScope(scope);
+export function deleteRepositoryReviewEvents(scope: { installationId: number; owner: string; repo: string }, changedAt = Date.now(), forceAuthoritative = true) {
+  return reviewEventLedger().deleteScope(scope, changedAt, forceAuthoritative);
 }
 
-export function deleteInstallationReviewEvents(installationId: number) {
-  return reviewEventLedger().deleteInstallation(installationId);
+export function deleteInstallationReviewEvents(installationId: number, changedAt = Date.now(), forceAuthoritative = true) {
+  return reviewEventLedger().deleteInstallation(installationId, changedAt, forceAuthoritative);
 }
 
-export function restoreRepositoryReviewEventAccess(scope: { installationId: number; owner: string; repo: string }) {
-  return reviewEventLedger().restoreScope(scope);
+export function restoreRepositoryReviewEventAccess(scope: { installationId: number; owner: string; repo: string }, changedAt = Date.now(), forceAuthoritative = true) {
+  return reviewEventLedger().restoreScope(scope, changedAt, forceAuthoritative);
 }
 
-export function restoreInstallationReviewEventAccess(installationId: number) {
-  return reviewEventLedger().restoreInstallation(installationId);
+export function restoreInstallationReviewEventAccess(installationId: number, changedAt = Date.now(), forceAuthoritative = true) {
+  return reviewEventLedger().restoreInstallation(installationId, changedAt, forceAuthoritative);
 }
 
 export function pruneExpiredReviewEvents(now = Date.now()) {
