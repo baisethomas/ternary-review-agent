@@ -2,6 +2,8 @@
 
 An internal pull-request review agent: GitHub sends a signed webhook, Ternary checks out and tests the change in an isolated runner, asks an AI model to review the diff plus test evidence, and posts a GitHub Check and PR comment.
 
+This repository is Ternary's initial dogfood target for end-to-end review verification.
+
 ## What is included
 
 - A Vercel-ready Next.js 16 dashboard backed by live GitHub installation, repository, PR, and Check Run data
