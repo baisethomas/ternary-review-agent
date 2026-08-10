@@ -1,12 +1,14 @@
-import { createInstallationToken, finishCheckRun, getOrCreateCheckRun, getPullRequestDiff, upsertPullRequestComment } from "./github";
+import { createInstallationToken, finishCheckRun, getOrCreateCheckRun, getPullRequestDiff, syncFindingReviewComments, upsertPullRequestComment } from "./github";
 import { announceDashboardChange } from "./dashboard-change-service";
 import { isRetryableHttpStatus, NonRetryableReviewError, ReviewLeaseLostError } from "./review-errors";
 import { runInSandbox } from "./sandbox";
 import { getRepositoryReviewContext } from "./repository-context-service";
 import type { ReviewLease } from "./review-queue";
 import type { ReviewFinding, ReviewRequest, ReviewResult, SandboxResult } from "./types";
+import { findingIdentity } from "./review-event-ledger";
+import { formatFindingComment } from "./finding-comment";
 
-const systemPrompt = `You are Ternary, a senior code review agent. Review only material problems introduced by this pull request. Prioritize correctness, security, concurrency, data loss, and missing tests. Do not report style preferences. Return strict JSON with: verdict (approve|request_changes|comment), summary, and findings. Each finding has a ruleId for its stable review-rule family (for example security-authorization or correctness-concurrency), plus a unique findingKey that combines that rule with the affected symbol and remains stable when line numbers or wording change. Each finding also has severity (blocking|warning|suggestion), file, optional line, title, explanation, and optional suggestedFix.`;
+const systemPrompt = `You are Ternary, a senior code review agent. Review only material problems introduced by this pull request. Prioritize correctness, security, concurrency, data loss, and missing tests. Do not report style preferences. Return strict JSON with: verdict (approve|request_changes|comment), summary, and findings. Each finding has a ruleId for its stable review-rule family (for example security-authorization or correctness-concurrency), plus a unique findingKey that combines that rule with the affected symbol and remains stable when line numbers or wording change. Set supersedesFindingKey only when this finding explicitly replaces a semantically equivalent finding key from an earlier review; otherwise set it to null. Each finding also has severity (blocking|warning|suggestion), file, optional line, title, explanation, and optional suggestedFix.`;
 
 function fallbackReview(sandbox: SandboxResult): ReviewResult {
   return {
@@ -14,6 +16,7 @@ function fallbackReview(sandbox: SandboxResult): ReviewResult {
     summary: sandbox.ok ? "Sandbox checks passed. AI review is disabled until OPENAI_API_KEY is configured." : "One or more sandbox checks failed.",
     findings: sandbox.ok ? [] : [{ findingKey: "sandbox-checks-failed", severity: "blocking", file: "", title: "Sandbox checks failed", explanation: "Inspect the sandbox command output before merging." }],
     sandbox,
+    authoritativeFindings: false,
   };
 }
 
@@ -58,6 +61,7 @@ async function generateReview(diff: string, sandbox: SandboxResult, repositoryCo
     return {
       ...review,
       sandbox,
+      authoritativeFindings: true,
       ai: { model, latencyMs: Date.now() - startedAt, ...(inputTokens !== undefined ? { inputTokens } : {}), ...(outputTokens !== undefined ? { outputTokens } : {}), ...(estimatedCostUsd !== undefined ? { estimatedCostUsd } : {}) },
     };
   } catch (error) {
@@ -77,10 +81,11 @@ const reviewSchema = {
       type: "array",
       items: {
         type: "object", additionalProperties: false,
-        required: ["ruleId", "findingKey", "severity", "file", "line", "title", "explanation", "suggestedFix"],
+        required: ["ruleId", "findingKey", "supersedesFindingKey", "severity", "file", "line", "title", "explanation", "suggestedFix"],
         properties: {
           ruleId: { type: "string" },
           findingKey: { type: "string" },
+          supersedesFindingKey: { type: ["string", "null"] },
           severity: { type: "string", enum: ["blocking", "warning", "suggestion"] },
           file: { type: "string" }, line: { type: ["number", "null"] }, title: { type: "string" },
           explanation: { type: "string" }, suggestedFix: { type: ["string", "null"] },
@@ -117,6 +122,13 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
     const markdown = `${formatReview(result)}${marker}`;
     await lease?.assertActive();
     await upsertPullRequestComment(request.owner, request.repo, request.pullNumber, token, markdown, request.id);
+    await lease?.assertActive();
+    if (result.authoritativeFindings !== false) {
+      await syncFindingReviewComments(request.owner, request.repo, request.pullNumber, request.headSha, token, result.findings.filter((finding) => finding.file).map((finding) => {
+        const findingId = findingIdentity(request, finding);
+        return { findingId, body: formatFindingComment(finding, findingId), path: finding.file, line: finding.line };
+      }));
+    }
     await lease?.assertActive();
     await finishCheckRun(request.owner, request.repo, check.id, token, result.verdict === "approve" ? "success" : result.verdict === "request_changes" ? "failure" : "neutral", "Review complete", markdown, JSON.stringify(result));
     return result;

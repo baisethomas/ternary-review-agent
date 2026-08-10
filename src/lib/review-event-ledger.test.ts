@@ -21,6 +21,7 @@ describe("ReviewEventLedger", () => {
 
     expect(reviewId).toBe("ternary/agent#8:head-sha");
     expect(findingIdentity(findingScope, finding)).toBe(findingIdentity(findingScope, { ...finding, file: "src/moved/auth.ts", line: 43, title: "Reworded title", explanation: "Updated wording." }));
+    expect(findingIdentity(findingScope, finding)).toBe(findingIdentity(findingScope, { ...finding, findingKey: "  AUTHORIZATION-BYPASS-HANDLER  " }));
     expect(findingIdentity(findingScope, { ...finding, findingKey: "different-symbol" })).not.toBe(findingIdentity(findingScope, finding));
   });
 

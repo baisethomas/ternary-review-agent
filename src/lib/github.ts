@@ -1,5 +1,6 @@
 import { createHmac, createSign, timingSafeEqual } from "node:crypto";
 import { isRetryableHttpStatus, NonRetryableReviewError } from "./review-errors";
+import { findingIdFromComment } from "./finding-comment";
 
 const githubApi = "https://api.github.com";
 
@@ -66,6 +67,24 @@ async function githubFetch<T>(path: string, token: string, init: RequestInit = {
     throw await githubResponseError(response);
   }
   return response.json() as Promise<T>;
+}
+
+async function githubGraphql<T>(query: string, variables: Record<string, unknown>, token: string): Promise<T> {
+  const response = await fetch(`${githubApi}/graphql`, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "User-Agent": "ternary-review-agent",
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+  if (!response.ok) throw await githubResponseError(response, "GitHub GraphQL API");
+  const result = await response.json() as { data?: T; errors?: Array<{ message: string }> };
+  if (result.errors?.length || !result.data) throw new Error(`GitHub GraphQL API: ${result.errors?.map((error) => error.message).join("; ") || "missing data"}`);
+  return result.data;
 }
 
 export type GitHubApp = {
@@ -282,4 +301,220 @@ export async function upsertPullRequestComment(owner: string, repo: string, pull
     if (comments.length < 100) break;
   }
   return postPullRequestComment(owner, repo, pullNumber, token, taggedBody);
+}
+
+export type GitHubReviewComment = {
+  id: number;
+  body: string | null;
+  path?: string;
+  line?: number | null;
+  subject_type?: "line" | "file";
+  in_reply_to_id?: number;
+  user?: { login: string; type?: string } | null;
+};
+type GitHubReviewThread = { id: string; isResolved: boolean; commentIds: number[] };
+type GitHubReviewThreadsConnection = { nodes: Array<{ id: string; isResolved: boolean; comments: { nodes: Array<{ databaseId: number }> } }>; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+type GitHubReviewThreadsPage = {
+  repository: { pullRequest: { reviewThreads: GitHubReviewThreadsConnection } | null };
+};
+
+export function getPullRequestReviewComment(owner: string, repo: string, commentId: number, token: string) {
+  return githubFetch<GitHubReviewComment>(`/repos/${owner}/${repo}/pulls/comments/${commentId}`, token);
+}
+
+export async function listPullRequestReviewCommentReactions(owner: string, repo: string, commentId: number, token: string) {
+  const reactions: Array<{ id: number; content: string }> = [];
+  for (let page = 1; ; page += 1) {
+    const batch = await githubFetch<Array<{ id: number; content: string }>>(`/repos/${owner}/${repo}/pulls/comments/${commentId}/reactions?per_page=100&page=${page}`, token);
+    reactions.push(...batch);
+    if (batch.length < 100) return reactions;
+  }
+}
+
+export async function listPullRequestReviewComments(owner: string, repo: string, pullNumber: number, token: string) {
+  const comments: GitHubReviewComment[] = [];
+  for (let page = 1; ; page += 1) {
+    const batch = await githubFetch<GitHubReviewComment[]>(`/repos/${owner}/${repo}/pulls/${pullNumber}/comments?per_page=100&page=${page}`, token);
+    comments.push(...batch);
+    if (batch.length < 100) return comments;
+  }
+}
+
+async function listPullRequestReviewThreads(owner: string, repo: string, pullNumber: number, token: string) {
+  const threads: GitHubReviewThread[] = [];
+  let after: string | null = null;
+  do {
+    const data: GitHubReviewThreadsPage = await githubGraphql<GitHubReviewThreadsPage>(`
+      query TernaryReviewThreads($owner: String!, $repo: String!, $number: Int!, $after: String) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $number) {
+            reviewThreads(first: 100, after: $after) {
+              nodes { id isResolved comments(first: 100) { nodes { databaseId } } }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }
+      }
+    `, { owner, repo, number: pullNumber, after }, token);
+    const connection: GitHubReviewThreadsConnection | undefined = data.repository.pullRequest?.reviewThreads;
+    if (!connection) return threads;
+    threads.push(...connection.nodes.map((thread) => ({ id: thread.id, isResolved: thread.isResolved, commentIds: thread.comments.nodes.map((comment) => comment.databaseId) })));
+    after = connection.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
+  } while (after);
+  return threads;
+}
+
+async function unresolvePullRequestReviewThread(threadId: string, token: string) {
+  return githubGraphql(`mutation TernaryUnresolveReviewThread($threadId: ID!) { unresolveReviewThread(input: { threadId: $threadId }) { thread { id isResolved } } }`, { threadId }, token);
+}
+
+async function resolvePullRequestReviewThread(threadId: string, token: string) {
+  return githubGraphql(`mutation TernaryResolveReviewThread($threadId: ID!) { resolveReviewThread(input: { threadId: $threadId }) { thread { id isResolved } } }`, { threadId }, token);
+}
+
+function ownedReviewComment(comment: GitHubReviewComment, botLogin: string) {
+  return !comment.in_reply_to_id
+    && comment.user?.type === "Bot"
+    && comment.user.login.toLowerCase() === botLogin.toLowerCase();
+}
+
+function ownedFindingComment(comment: GitHubReviewComment, findingId: string, botLogin: string) {
+  return ownedReviewComment(comment, botLogin) && findingIdFromComment(comment.body) === findingId;
+}
+
+function sameFindingLocation(comment: GitHubReviewComment, finding: { path: string; line?: number }) {
+  return comment.path === finding.path
+    && (finding.line ? comment.line === finding.line : comment.subject_type === "file");
+}
+
+async function createFindingReviewComment(
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  headSha: string,
+  token: string,
+  finding: { body: string; path: string; line?: number },
+  currentHeadIsExpected: () => Promise<boolean>,
+) {
+  const path = `/repos/${owner}/${repo}/pulls/${pullNumber}/comments`;
+  const shared = { body: finding.body, commit_id: headSha, path: finding.path };
+  try {
+    if (!await currentHeadIsExpected()) return null;
+    return await githubFetch<GitHubReviewComment>(path, token, { method: "POST", body: JSON.stringify(finding.line ? { ...shared, line: finding.line, side: "RIGHT" } : { ...shared, subject_type: "file" }) });
+  } catch (error) {
+    if (!(error instanceof Error) || !("status" in error) || error.status !== 422) throw error;
+    if (!finding.line) return null;
+    try {
+      if (!await currentHeadIsExpected()) return null;
+      return await githubFetch<GitHubReviewComment>(path, token, { method: "POST", body: JSON.stringify({ ...shared, subject_type: "file" }) });
+    } catch (fallbackError) {
+      if (fallbackError instanceof Error && "status" in fallbackError && fallbackError.status === 422) return null;
+      throw fallbackError;
+    }
+  }
+}
+
+async function resolveObsoleteFindingThreads(
+  currentCommentId: number | undefined,
+  matchingComments: readonly GitHubReviewComment[],
+  reviewThreads: readonly GitHubReviewThread[],
+  token: string,
+  currentHeadIsExpected: () => Promise<boolean>,
+) {
+  for (const comment of matchingComments) {
+    if (comment.id === currentCommentId) continue;
+    const thread = reviewThreads.find((candidate) => candidate.commentIds.includes(comment.id));
+    if (thread && !thread.isResolved) {
+      if (!await currentHeadIsExpected()) return;
+      await resolvePullRequestReviewThread(thread.id, token);
+    }
+  }
+}
+
+async function upsertFindingReviewComment(
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  headSha: string,
+  token: string,
+  finding: { findingId: string; body: string; path: string; line?: number },
+  existingComments: readonly GitHubReviewComment[],
+  reviewThreads: readonly GitHubReviewThread[],
+  botLogin: string,
+  currentHeadIsExpected: () => Promise<boolean>,
+) {
+  const matching = existingComments.filter((comment) => ownedFindingComment(comment, finding.findingId, botLogin));
+  const existingAtLocation = matching.find((comment) => sameFindingLocation(comment, finding));
+  if (existingAtLocation) {
+    if (!await currentHeadIsExpected()) return null;
+    const updated = await githubFetch(`/repos/${owner}/${repo}/pulls/comments/${existingAtLocation.id}`, token, { method: "PATCH", body: JSON.stringify({ body: finding.body }) });
+    const thread = reviewThreads.find((candidate) => candidate.commentIds.includes(existingAtLocation.id));
+    if (thread?.isResolved) {
+      if (!await currentHeadIsExpected()) return updated;
+      await unresolvePullRequestReviewThread(thread.id, token);
+    }
+    await resolveObsoleteFindingThreads(existingAtLocation.id, matching, reviewThreads, token, currentHeadIsExpected);
+    return updated;
+  }
+  if (matching.length) {
+    const created = await createFindingReviewComment(owner, repo, pullNumber, headSha, token, finding, currentHeadIsExpected);
+    if (created) {
+      await resolveObsoleteFindingThreads(created.id, matching, reviewThreads, token, currentHeadIsExpected);
+      return created;
+    }
+    if (!await currentHeadIsExpected()) return null;
+    const fallback = matching.find((comment) => reviewThreads.some((thread) => thread.commentIds.includes(comment.id) && !thread.isResolved)) ?? matching[0];
+    const updated = await githubFetch(`/repos/${owner}/${repo}/pulls/comments/${fallback.id}`, token, { method: "PATCH", body: JSON.stringify({ body: finding.body }) });
+    const fallbackThread = reviewThreads.find((candidate) => candidate.commentIds.includes(fallback.id));
+    if (fallbackThread?.isResolved) {
+      if (!await currentHeadIsExpected()) return updated;
+      await unresolvePullRequestReviewThread(fallbackThread.id, token);
+    }
+    await resolveObsoleteFindingThreads(fallback.id, matching, reviewThreads, token, currentHeadIsExpected);
+    return updated;
+  }
+  return createFindingReviewComment(owner, repo, pullNumber, headSha, token, finding, currentHeadIsExpected);
+}
+
+export async function syncFindingReviewComments(
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  headSha: string,
+  token: string,
+  findings: Array<{ findingId: string; body: string; path: string; line?: number }>,
+  options: { botLogin?: string; getCurrentHead?: () => Promise<string> } = {},
+) {
+  const getCurrentHead = options.getCurrentHead ?? (async () => (await getPullRequest(owner, repo, pullNumber, token)).head.sha);
+  const currentHeadIsExpected = async () => await getCurrentHead() === headSha;
+  if (!await currentHeadIsExpected()) return;
+  const existing = await listPullRequestReviewComments(owner, repo, pullNumber, token);
+  const hasMarkerCandidate = existing.some((comment) => findingIdFromComment(comment.body));
+  const botLogin = options.botLogin ?? (hasMarkerCandidate ? `${(await getGitHubApp()).slug}[bot]` : "");
+  const ownedMarkedComments = botLogin
+    ? existing.flatMap((comment) => {
+        const findingId = findingIdFromComment(comment.body);
+        return findingId && ownedReviewComment(comment, botLogin) ? [{ comment, findingId }] : [];
+      })
+    : [];
+  const reviewThreads = ownedMarkedComments.length ? await listPullRequestReviewThreads(owner, repo, pullNumber, token) : [];
+  if (!await currentHeadIsExpected()) return;
+  const currentFindingIds = new Set(findings.map((finding) => finding.findingId));
+  for (const { comment, findingId } of ownedMarkedComments) {
+    if (currentFindingIds.has(findingId)) continue;
+    const thread = reviewThreads.find((candidate) => candidate.commentIds.includes(comment.id));
+    if (thread && !thread.isResolved) {
+      if (!await currentHeadIsExpected()) return;
+      await resolvePullRequestReviewThread(thread.id, token);
+    }
+  }
+  for (const finding of findings) {
+    if (!await currentHeadIsExpected()) return;
+    await upsertFindingReviewComment(owner, repo, pullNumber, headSha, token, finding, existing, reviewThreads, botLogin, currentHeadIsExpected);
+  }
+}
+
+export async function repositoryPermission(owner: string, repo: string, username: string, token: string) {
+  const result = await githubFetch<{ permission: "admin" | "maintain" | "write" | "triage" | "read" | "none" }>(`/repos/${owner}/${repo}/collaborators/${encodeURIComponent(username)}/permission`, token);
+  return result.permission;
 }

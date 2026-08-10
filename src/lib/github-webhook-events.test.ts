@@ -7,6 +7,9 @@ const mocks = vi.hoisted(() => ({
   recordMerged: vi.fn(async () => undefined),
   recordClosed: vi.fn(async () => undefined),
   recordReopened: vi.fn(async () => undefined),
+  recordHeadChanged: vi.fn(async () => undefined),
+  ingestFeedback: vi.fn(async () => ({ accepted: true, findingId: "finding-auth" })),
+  getApp: vi.fn(async () => ({ slug: "ternary-review-agent" })),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -17,8 +20,11 @@ vi.mock("./review-event-ledger-service", () => ({
   recordPullRequestMergedEvent: mocks.recordMerged,
   recordPullRequestClosedEvent: mocks.recordClosed,
   recordPullRequestReopenedEvent: mocks.recordReopened,
+  recordPullRequestHeadChangedEvent: mocks.recordHeadChanged,
 }));
 vi.mock("./review-submission", () => ({ webhookReviewIdempotencyKeys: vi.fn(() => []) }));
+vi.mock("./github-finding-feedback", () => ({ ingestGitHubFindingFeedback: mocks.ingestFeedback }));
+vi.mock("./github", () => ({ getGitHubApp: mocks.getApp }));
 
 import { handleGitHubWebhook } from "./github-webhook-events";
 
@@ -126,5 +132,59 @@ describe("repository index webhook events", () => {
     expect(response.status).toBe(202);
     expect(mocks.recordReopened).toHaveBeenCalledWith(expect.objectContaining({ pullNumber: 8 }), { deliveryId: "delivery-reopened", reopenedAt: "2026-08-09T04:00:00.000Z" });
     expect(mocks.enqueueReview).toHaveBeenCalledOnce();
+  });
+
+  it("records the previous and current heads before reviewing a synchronized pull request", async () => {
+    mocks.enqueueReview.mockResolvedValueOnce({ id: "job-synchronized" });
+    await handleGitHubWebhook("pull_request", JSON.stringify({
+      action: "synchronize",
+      before: "head-before",
+      installation: { id: 7 },
+      repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" },
+      pull_request: { number: 8, draft: false, updated_at: "2026-08-09T05:00:00.000Z", head: { sha: "head-after" } },
+    }), "delivery-synchronize");
+
+    expect(mocks.recordHeadChanged).toHaveBeenCalledWith(expect.objectContaining({ headSha: "head-after" }), {
+      deliveryId: "delivery-synchronize", changedAt: "2026-08-09T05:00:00.000Z", previousHeadSha: "head-before",
+    });
+  });
+
+  it("ingests replies and resolved threads as stable finding feedback", async () => {
+    const common = { installation: { id: 7 }, repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" }, sender: { login: "maintainer" }, pull_request: { number: 8, head: { sha: "head" } } };
+    await handleGitHubWebhook("pull_request_review_comment", JSON.stringify({ ...common, action: "created", comment: { id: 11, in_reply_to_id: 10, body: "Intentional tradeoff" } }), "delivery-reply");
+    await handleGitHubWebhook("pull_request_review_thread", JSON.stringify({ ...common, action: "resolved", thread: { comments: [{ id: 10, body: "<!-- ternary-finding:finding-auth -->" }] } }), "delivery-resolved");
+
+    expect(mocks.ingestFeedback).toHaveBeenCalledWith(expect.objectContaining({ deliveryId: "delivery-reply", kind: "reply", rootCommentId: 10, reason: "Intentional tradeoff" }));
+    expect(mocks.ingestFeedback).toHaveBeenCalledWith(expect.objectContaining({ deliveryId: "delivery-resolved", kind: "resolved", rootCommentId: 10 }));
+  });
+
+  it("ignores thread mutations performed by the Ternary GitHub App", async () => {
+    const payload = {
+      action: "resolved", installation: { id: 7 },
+      repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" },
+      sender: { login: "ternary-review-agent[bot]", type: "Bot" }, pull_request: { number: 8, head: { sha: "head" } },
+      thread: { comments: [{ body: "<!-- ternary-finding:finding-auth -->" }] },
+    };
+
+    const response = await handleGitHubWebhook("pull_request_review_thread", JSON.stringify(payload), "delivery-bot-resolved");
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ accepted: false });
+    expect(mocks.ingestFeedback).not.toHaveBeenCalled();
+  });
+
+  it("maps authorized reactions to accepted feedback and active dismissal signals", async () => {
+    const common = { action: "created", installation: { id: 7 }, repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" }, sender: { login: "maintainer" }, comment: { id: 10, body: "<!-- ternary-finding:finding-auth -->", commit_id: "head", pull_request_url: "https://api.github.com/repos/ternary/agent/pulls/8" } };
+    await handleGitHubWebhook("reaction", JSON.stringify({ ...common, reaction: { id: 10, content: "+1" } }), "delivery-upvote");
+    await handleGitHubWebhook("reaction", JSON.stringify({ ...common, reaction: { id: 11, content: "-1" } }), "delivery-downvote");
+
+    expect(mocks.ingestFeedback).toHaveBeenCalledWith(expect.objectContaining({ kind: "accepted", deliveryId: "delivery-upvote" }));
+    expect(mocks.ingestFeedback).toHaveBeenCalledWith(expect.objectContaining({ kind: "reaction", deliveryId: "delivery-downvote", signal: { id: "github-reaction:11", type: "dismissal_reaction", active: true } }));
+  });
+
+  it("records a deleted dismissing reaction without overriding other active dismissal signals", async () => {
+    const payload = { action: "deleted", installation: { id: 7 }, repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" }, sender: { login: "maintainer" }, reaction: { id: 11, content: "-1" }, comment: { id: 10, body: "<!-- ternary-finding:finding-auth -->", commit_id: "head", pull_request_url: "https://api.github.com/repos/ternary/agent/pulls/8" } };
+    await handleGitHubWebhook("reaction", JSON.stringify(payload), "delivery-delete-downvote");
+    expect(mocks.ingestFeedback).toHaveBeenCalledWith(expect.objectContaining({ kind: "reaction", deliveryId: "delivery-delete-downvote", signal: { id: "github-reaction:11", type: "dismissal_reaction", active: false } }));
   });
 });

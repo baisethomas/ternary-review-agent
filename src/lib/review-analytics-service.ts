@@ -99,7 +99,7 @@ function eventIsSelected(event: ReviewEvent, selection: EventSelection) {
   const runKey = reviewEventRunKey(event);
   if (runKey) return selection.runKeys.has(runKey) || (event.type === "review.requested" && selection.reviewIds.has(event.reviewId));
   if (event.type === "pull_request.merged" || event.type === "pull_request.closed" || event.type === "pull_request.reopened") return selection.pullRequests.has(reviewPullRequestKey(event));
-  if (event.type === "finding.feedback_recorded") return selection.findingIds.has(event.payload.findingId);
+  if (event.type === "finding.feedback_recorded" || event.type === "finding.state_changed") return selection.findingIds.has(event.payload.findingId);
   return selection.reviewIds.has(event.reviewId);
 }
 

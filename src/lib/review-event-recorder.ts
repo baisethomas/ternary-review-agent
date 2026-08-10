@@ -1,10 +1,24 @@
 import { findingIdentity, reviewIdentity, type ReviewEvent, type ReviewEventLedger } from "./review-event-ledger";
 import type { ReviewQueueLifecycle, ReviewSubmission } from "./review-queue";
 import type { ReviewRequest, ReviewResult } from "./types";
+import { findingStateForFeedbackKind, projectFindingLifecycles } from "./finding-lifecycle";
 
 type EventClock = { eventId?: () => string; now?: () => number };
 type ReviewSource = ReviewSubmission;
 const sandboxEvidenceLimit = 24_000;
+
+function appendFindingStateChanged(
+  ledger: ReviewEventLedger,
+  request: ReviewRequest,
+  change: { idempotencyKey: string; findingId: string; state: Extract<ReviewEvent, { type: "finding.state_changed" }>["payload"]["state"]; occurredAt: string; reason?: string; source?: "dismissal_signal" },
+  clock: EventClock = {},
+) {
+  return ledger.append({
+    ...eventBase(request, change.idempotencyKey, { ...clock, now: () => Date.parse(change.occurredAt) }),
+    type: "finding.state_changed",
+    payload: { findingId: change.findingId, state: change.state, ...(change.reason ? { reason: change.reason } : {}), ...(change.source ? { source: change.source } : {}) },
+  });
+}
 
 function sandboxOutput(value: string, remaining: number) {
   const redacted = value
@@ -92,22 +106,79 @@ export async function recordPullRequestReopened(
   return { recorded: true as const, ...appended };
 }
 
-export function recordFindingFeedback(
+async function pullRequestEvents(ledger: ReviewEventLedger, request: ReviewRequest) {
+  const scope = { installationId: request.installationId, owner: request.owner, repo: request.repo };
+  const events: ReviewEvent[] = [];
+  let after: string | undefined;
+  do {
+    const page = await ledger.list(scope, { after, pullNumber: request.pullNumber, limit: 250 });
+    events.push(...page.events);
+    after = page.nextCursor ?? undefined;
+  } while (after);
+  return events;
+}
+
+export async function recordPullRequestHeadChanged(ledger: ReviewEventLedger, request: ReviewRequest, change: { deliveryId: string; changedAt: string; previousHeadSha?: string }, clock: EventClock = {}) {
+  const appended = await ledger.append({
+    ...eventBase(request, `github-delivery:${change.deliveryId}:pull_request.head_changed`, { ...clock, now: () => Date.parse(change.changedAt) }),
+    type: "pull_request.head_changed",
+    payload: { changedAt: change.changedAt, ...(change.previousHeadSha ? { previousHeadSha: change.previousHeadSha } : {}) },
+  });
+  const events = await pullRequestEvents(ledger, request);
+  for (const finding of projectFindingLifecycles(events, request.headSha).filter((item) => item.state === "stale")) {
+    await appendFindingStateChanged(ledger, request, {
+      idempotencyKey: `github-delivery:${change.deliveryId}:finding:${finding.findingId}:stale`, findingId: finding.findingId,
+      state: "stale", occurredAt: change.changedAt, reason: "Pull request head changed before the finding was reviewed again",
+    }, clock);
+  }
+  return { recorded: true as const, ...appended };
+}
+
+export async function recordFindingFeedback(
   ledger: ReviewEventLedger,
   request: ReviewRequest,
-  feedback: { feedbackId: string; findingId: string; kind: "accepted" | "dismissed" | "resolved" | "reopened" | "reaction" | "reply"; actor?: string; reason?: string },
+  feedback: { feedbackId: string; findingId: string; kind: "accepted" | "dismissed" | "resolved" | "reopened" | "reaction" | "reply"; actor?: string; reason?: string; signal?: { id: string; type: "dismissal_reaction"; active: boolean } },
   clock: EventClock = {},
 ) {
-  return ledger.append({
-    ...eventBase(request, `github-feedback:${feedback.feedbackId}`, clock),
+  const occurredAt = (clock.now ?? Date.now)();
+  const timedClock = { ...clock, now: () => occurredAt };
+  const appended = await ledger.append({
+    ...eventBase(request, `github-feedback:${feedback.feedbackId}`, timedClock),
     type: "finding.feedback_recorded",
     payload: {
       findingId: feedback.findingId,
       kind: feedback.kind,
       ...(feedback.actor ? { actor: feedback.actor } : {}),
       ...(feedback.reason ? { reason: feedback.reason } : {}),
+      ...(feedback.signal ? { signal: feedback.signal } : {}),
     },
   });
+  const recordedFeedback = appended.event as Extract<ReviewEvent, { type: "finding.feedback_recorded" }>;
+  let state = findingStateForFeedbackKind(feedback.kind);
+  if (feedback.signal) {
+    const events = await pullRequestEvents(ledger, request);
+    const previous = projectFindingLifecycles(events.filter((event) => event.idempotencyKey !== recordedFeedback.idempotencyKey)).find((finding) => finding.findingId === feedback.findingId)?.state;
+    const current = projectFindingLifecycles(events).find((finding) => finding.findingId === feedback.findingId)?.state;
+    state = feedback.signal.active ? "dismissed" : current && current !== previous ? current : null;
+  }
+  if (state) await appendFindingStateChanged(ledger, request, {
+    idempotencyKey: `github-feedback:${feedback.feedbackId}:state:${state}`, findingId: feedback.findingId, state,
+    occurredAt: recordedFeedback.occurredAt, ...(feedback.reason ? { reason: feedback.reason } : {}),
+    ...(feedback.signal ? { source: "dismissal_signal" as const } : {}),
+  }, clock);
+  return appended;
+}
+
+async function recordCompletionFindingStates(ledger: ReviewEventLedger, request: ReviewRequest & { id?: string }, completedEvent: Extract<ReviewEvent, { type: "review.completed" }>, clock: EventClock) {
+  const allEvents = await pullRequestEvents(ledger, request);
+  const previous = new Map(projectFindingLifecycles(allEvents.filter((event) => event.eventId !== completedEvent.eventId)).map((finding) => [finding.findingId, finding.state]));
+  for (const finding of projectFindingLifecycles(allEvents)) {
+    if (previous.get(finding.findingId) === finding.state) continue;
+    await appendFindingStateChanged(ledger, request, {
+      idempotencyKey: `job:${request.id ?? completedEvent.payload.jobId}:finding:${finding.findingId}:state:${finding.state}`,
+      findingId: finding.findingId, state: finding.state, occurredAt: completedEvent.occurredAt,
+    }, clock);
+  }
 }
 
 export function createReviewEventLifecycle(ledger: ReviewEventLedger, clock: EventClock = {}): ReviewQueueLifecycle {
@@ -132,6 +203,7 @@ export function createReviewEventLifecycle(ledger: ReviewEventLedger, clock: Eve
           verdict: result.verdict,
           summary: result.summary,
           findings: result.findings.map((finding) => ({ ...finding, findingId: findingIdentity(job, finding) })),
+          ...(result.authoritativeFindings !== undefined ? { authoritativeFindings: result.authoritativeFindings } : {}),
           sandbox: {
             sandboxId: result.sandbox.sandboxId,
             durationMs: result.sandbox.durationMs,
@@ -144,7 +216,8 @@ export function createReviewEventLifecycle(ledger: ReviewEventLedger, clock: Eve
           ...(result.ai ? { ai: result.ai } : {}),
         },
       };
-      await ledger.append(event);
+      const appended = await ledger.append(event);
+      await recordCompletionFindingStates(ledger, job, appended.event as Extract<ReviewEvent, { type: "review.completed" }>, clock);
     },
     async retryScheduled(job) {
       await ledger.append({

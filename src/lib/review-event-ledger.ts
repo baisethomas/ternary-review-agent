@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import type { RepositoryScope } from "./repository-index";
-import type { ReviewFinding, ReviewRequest } from "./types";
+import type { FindingState, ReviewFinding, ReviewRequest } from "./types";
 
 type ReviewEventBase<Type extends string, Payload> = {
+  sequence?: string;
   eventId: string;
   idempotencyKey: string;
   reviewId: string;
@@ -17,6 +18,7 @@ type ReviewEventBase<Type extends string, Payload> = {
 export type FindingSnapshot = {
   findingId: string;
   findingKey?: string;
+  supersedesFindingKey?: string;
   ruleId?: string;
   severity: "blocking" | "warning" | "suggestion";
   file: string;
@@ -37,12 +39,14 @@ export type ReviewEvent =
   | ReviewEventBase<"review.queued", { jobId: string }>
   | ReviewEventBase<"review.started", { jobId: string; attempt: number }>
   | ReviewEventBase<"review.retry_scheduled", { jobId: string; attempt: number; availableAt: string; error: string }>
-  | ReviewEventBase<"review.completed", { jobId: string; attempt: number; verdict: "approve" | "request_changes" | "comment"; summary: string; findings: FindingSnapshot[]; sandbox: SandboxEvidence; ai?: { model: string; latencyMs: number; inputTokens?: number; outputTokens?: number; estimatedCostUsd?: number } }>
+  | ReviewEventBase<"review.completed", { jobId: string; attempt: number; verdict: "approve" | "request_changes" | "comment"; summary: string; findings: FindingSnapshot[]; sandbox: SandboxEvidence; authoritativeFindings?: boolean; ai?: { model: string; latencyMs: number; inputTokens?: number; outputTokens?: number; estimatedCostUsd?: number } }>
   | ReviewEventBase<"review.failed", { jobId: string; attempt: number; error: string }>
   | ReviewEventBase<"pull_request.merged", { mergedBy?: string; mergedAt: string }>
   | ReviewEventBase<"pull_request.closed", { closedAt: string }>
   | ReviewEventBase<"pull_request.reopened", { reopenedAt: string }>
-  | ReviewEventBase<"finding.feedback_recorded", { findingId: string; kind: "accepted" | "dismissed" | "resolved" | "reopened" | "reaction" | "reply"; actor?: string; reason?: string }>;
+  | ReviewEventBase<"pull_request.head_changed", { changedAt: string; previousHeadSha?: string }>
+  | ReviewEventBase<"finding.state_changed", { findingId: string; state: FindingState; reason?: string; source?: "dismissal_signal" }>
+  | ReviewEventBase<"finding.feedback_recorded", { findingId: string; kind: "accepted" | "dismissed" | "resolved" | "reopened" | "reaction" | "reply"; actor?: string; reason?: string; signal?: { id: string; type: "dismissal_reaction"; active: boolean } }>;
 
 export type ReviewEventPage = { events: ReviewEvent[]; nextCursor: string | null };
 export type ReviewEventQuery = { after?: string; limit?: number; reviewId?: string; pullNumber?: number };
@@ -92,12 +96,13 @@ export function reviewIdentity(request: Pick<ReviewRequest, "owner" | "repo" | "
 
 export function findingIdentity(request: Pick<ReviewRequest, "owner" | "repo" | "pullNumber">, finding: ReviewFinding) {
   const pullRequestId = `${request.owner.toLowerCase()}/${request.repo.toLowerCase()}#${request.pullNumber}`;
-  const signature = (finding.findingKey ?? finding.title).toLowerCase();
+  const signature = (finding.findingKey ?? finding.title).trim().toLowerCase();
   return `${pullRequestId}:finding:${createHash("sha256").update(signature).digest("hex").slice(0, 24)}`;
 }
 
 export function reviewEventFactFingerprint(event: ReviewEvent) {
   const fact: Record<string, unknown> = { ...event };
+  delete fact.sequence;
   delete fact.eventId;
   delete fact.occurredAt;
   return JSON.stringify(fact);
@@ -105,6 +110,11 @@ export function reviewEventFactFingerprint(event: ReviewEvent) {
 
 function scopeKey(scope: RepositoryScope) {
   return `${scope.installationId}:${scope.owner.toLowerCase()}/${scope.repo.toLowerCase()}`;
+}
+
+export function reviewEventWithSequence(event: ReviewEvent, sequence: string | number) {
+  Object.defineProperty(event, "sequence", { value: String(sequence), enumerable: false });
+  return event;
 }
 
 export class InMemoryReviewEventLedger implements ReviewEventLedger {
@@ -137,7 +147,7 @@ export class InMemoryReviewEventLedger implements ReviewEventLedger {
         && (!query.pullNumber || item.event.pullNumber === query.pullNumber));
     const page = matching.slice(0, limit);
     return {
-      events: structuredClone(page.map((item) => item.event)),
+      events: page.map((item) => reviewEventWithSequence(structuredClone(item.event), item.sequence)),
       nextCursor: matching.length > limit ? String(page[page.length - 1].sequence) : null,
     };
   }

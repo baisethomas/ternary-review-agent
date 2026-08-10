@@ -17,8 +17,13 @@ export type SandboxResult = {
   sandboxId: string;
 };
 
+export type FindingState = "open" | "fixed" | "dismissed" | "superseded" | "stale";
+export type FindingStateTransition = { state: FindingState; occurredAt: string; headSha: string; reason?: string; actor?: string };
+
 export type ReviewFinding = {
+  findingId?: string;
   findingKey?: string;
+  supersedesFindingKey?: string;
   ruleId?: string;
   severity: "blocking" | "warning" | "suggestion";
   file: string;
@@ -26,6 +31,12 @@ export type ReviewFinding = {
   title: string;
   explanation: string;
   suggestedFix?: string;
+  state?: FindingState;
+  feedbackReason?: string;
+  firstSeenAt?: string;
+  lastSeenAt?: string;
+  lastHeadSha?: string;
+  history?: FindingStateTransition[];
 };
 
 export type ReviewResult = {
@@ -33,6 +44,7 @@ export type ReviewResult = {
   summary: string;
   findings: ReviewFinding[];
   sandbox: SandboxResult;
+  authoritativeFindings?: boolean;
   ai?: {
     model: string;
     latencyMs: number;

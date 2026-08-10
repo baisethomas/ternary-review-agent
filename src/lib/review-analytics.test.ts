@@ -39,6 +39,8 @@ describe("aggregateReviewAnalytics", () => {
         sandbox: { sandboxId: "sandbox-1", durationMs: 5_000, commands: [] },
       }),
       event("finding.feedback_recorded", "2026-08-01T00:00:12.000Z", { findingId: "finding-shared", kind: "accepted" }),
+      event("finding.state_changed", "2026-08-01T00:00:13.000Z", { findingId: "finding-shared", state: "open" }),
+      event("finding.state_changed", "2026-08-01T00:00:14.000Z", { findingId: "finding-warning", state: "fixed" }),
       event("pull_request.merged", "2026-08-01T01:00:00.000Z", { mergedAt: "2026-08-01T01:00:00.000Z" }),
       event("review.requested", "2026-08-02T00:00:00.000Z", { source: "dashboard" }, { reviewId: "ternary/agent#8:head-b", headSha: "head-b" }),
       event("review.queued", "2026-08-02T00:00:01.000Z", { jobId: "job-2" }, { reviewId: "ternary/agent#8:head-b", headSha: "head-b" }),
@@ -56,10 +58,29 @@ describe("aggregateReviewAnalytics", () => {
 
     expect(analytics.outcomes).toEqual({ reviews: 3, pass: 1, changesRequested: 1, comments: 0, failed: 1, passRate: 1 / 3, changeRate: 1 / 3, failureRate: 1 / 3 });
     expect(analytics.latency).toEqual({ queueSamples: 2, averageQueueMs: 2_500, sandboxSamples: 2, averageSandboxMs: 4_500, modelSamples: 0, averageModelMs: null });
-    expect(analytics.findings).toMatchObject({ total: 3, bySeverity: { blocking: 2, warning: 1, suggestion: 0 }, byCategory: { security: 2, correctness: 1 }, recurring: 1 });
+    expect(analytics.findings).toMatchObject({ total: 3, bySeverity: { blocking: 2, warning: 1, suggestion: 0 }, byCategory: { security: 2, correctness: 1 }, byState: { open: 1, fixed: 1, dismissed: 0, superseded: 0, stale: 0 }, recurring: 1 });
     expect(analytics.feedback).toMatchObject({ accepted: 1, dismissed: 0, resolved: 0, reopened: 0 });
     expect(analytics.mergeOutcomes).toEqual({ merged: 1, reviewed: 1, pending: 1, mergeRate: 1 });
     expect(analytics.coverage).toMatchObject({ queueTime: "complete", sandboxDuration: "complete", modelLatency: "unavailable", estimatedCost: "unavailable" });
+  });
+
+  it("ignores non-counter reaction and reply feedback without extending analytics shape", () => {
+    const analytics = aggregateReviewAnalytics([
+      event("finding.feedback_recorded", "2026-08-01T00:00:00.000Z", { findingId: "finding-one", kind: "reaction" }),
+      event("finding.feedback_recorded", "2026-08-01T00:00:01.000Z", { findingId: "finding-one", kind: "reply" }),
+    ]);
+
+    expect(analytics.feedback).toEqual({ accepted: 0, dismissed: 0, resolved: 0, reopened: 0 });
+    expect(Object.values(analytics.feedback).every(Number.isFinite)).toBe(true);
+  });
+
+  it("does not let a late-appended older state fact replace a newer lifecycle state", () => {
+    const analytics = aggregateReviewAnalytics([
+      event("finding.state_changed", "2026-08-02T00:00:00.000Z", { findingId: "finding-one", state: "open" }, { sequence: "2" }),
+      event("finding.state_changed", "2026-08-01T00:00:00.000Z", { findingId: "finding-one", state: "dismissed" }, { sequence: "3" }),
+    ]);
+
+    expect(analytics.findings.byState).toMatchObject({ open: 1, dismissed: 0 });
   });
 
   it("filters complete review lifecycles by repository, author, date, rule, model, and outcome", () => {
@@ -111,8 +132,9 @@ describe("aggregateReviewAnalytics", () => {
     });
     const merged = event("pull_request.merged", "2026-08-02T00:00:00.000Z", { mergedAt: "2026-08-02T00:00:00.000Z" }, { reviewId: "ternary/agent#8:new-head", headSha: "new-head" });
     const feedback = event("finding.feedback_recorded", "2026-08-02T00:01:00.000Z", { findingId: "stable-finding", kind: "accepted" }, { reviewId: "ternary/agent#8:new-head", headSha: "new-head" });
+    const state = event("finding.state_changed", "2026-08-02T00:02:00.000Z", { findingId: "stable-finding", state: "fixed" }, { reviewId: "ternary/agent#8:new-head", headSha: "new-head" });
 
-    expect(filterReviewEvents([requested, completed, merged, feedback], { author: "ada" })).toEqual([requested, completed, merged, feedback]);
+    expect(filterReviewEvents([requested, completed, merged, feedback, state], { author: "ada" })).toEqual([requested, completed, merged, feedback, state]);
   });
 
   it("marks open merge outcomes as delayed instead of finalized non-merges", () => {
@@ -123,6 +145,19 @@ describe("aggregateReviewAnalytics", () => {
       mergeOutcomes: { merged: 0, reviewed: 0, pending: 1, mergeRate: 0 },
       coverage: { feedback: "complete", mergeOutcomes: "delayed" },
     });
+  });
+
+  it("does not report historical finding lifecycle coverage as complete without state facts", () => {
+    const completed = event("review.completed", "2026-08-01T00:01:00.000Z", {
+      jobId: "historical", attempt: 1, verdict: "comment", summary: "Historical",
+      findings: [
+        { findingId: "historical-one", findingKey: "one", severity: "warning", file: "one.ts", title: "One", explanation: "One" },
+        { findingId: "historical-two", findingKey: "two", severity: "warning", file: "two.ts", title: "Two", explanation: "Two" },
+      ],
+      sandbox: { sandboxId: "historical", durationMs: 1, commands: [] },
+    });
+    expect(aggregateReviewAnalytics([completed]).coverage.findingState).toBe("unavailable");
+    expect(aggregateReviewAnalytics([completed, event("finding.state_changed", "2026-08-01T00:02:00.000Z", { findingId: "historical-one", state: "open" })]).coverage.findingState).toBe("partial");
   });
 
   it("includes closed-unmerged pull requests in finalized merge outcomes", () => {
@@ -155,7 +190,7 @@ describe("aggregateReviewAnalytics", () => {
   it("publishes a unique definition for every displayed metric family", () => {
     const keys = reviewAnalyticsMetricDefinitions.map((metric) => metric.key);
     expect(new Set(keys).size).toBe(keys.length);
-    expect(keys).toEqual(expect.arrayContaining(["reviews", "passRate", "changeRate", "failureRate", "queueTime", "sandboxDuration", "modelLatency", "estimatedCost", "findingSeverity", "findingCategory", "recurring", "feedback", "mergeRate"]));
+    expect(keys).toEqual(expect.arrayContaining(["reviews", "passRate", "changeRate", "failureRate", "queueTime", "sandboxDuration", "modelLatency", "estimatedCost", "findingSeverity", "findingCategory", "findingState", "recurring", "feedback", "mergeRate"]));
     expect(reviewAnalyticsMetricDefinitions.find((metric) => metric.key === "mergeRate")?.definition).toContain("finalized reviewed pull requests");
   });
 

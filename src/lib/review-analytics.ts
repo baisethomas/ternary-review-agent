@@ -1,4 +1,5 @@
 import type { ReviewEvent } from "./review-event-ledger";
+import type { FindingState } from "./types";
 import { ReviewAnalyticsAccumulator } from "./review-analytics-accumulator";
 import { reviewPullRequestKey } from "./review-analytics-identities";
 
@@ -29,6 +30,7 @@ export const reviewAnalyticsMetricDefinitions = [
   { key: "recurring", label: "Recurring findings", definition: "Stable findings observed on more than one commit of a pull request." },
   { key: "findingSeverity", label: "Finding severity", definition: "Count of findings emitted at each blocking, warning, or suggestion severity." },
   { key: "findingCategory", label: "Finding category", definition: "Finding count grouped by the category prefix of its stable finding key." },
+  { key: "findingState", label: "Finding lifecycle", definition: "Latest recorded state for each stable finding: open, fixed, dismissed, superseded, or stale." },
   { key: "feedback", label: "Finding feedback", definition: "Recorded accepted, dismissed, resolved, and reopened feedback events." },
   { key: "mergeRate", label: "Merge rate", definition: "Merged reviewed pull requests divided by finalized reviewed pull requests; open pull requests are reported separately as pending." },
 ] as const;
@@ -57,6 +59,7 @@ export type ReviewAnalytics = {
     total: number;
     bySeverity: Record<"blocking" | "warning" | "suggestion", number>;
     byCategory: Record<string, number>;
+    byState: Record<FindingState, number>;
     recurring: number;
   };
   feedback: Record<"accepted" | "dismissed" | "resolved" | "reopened", number>;
@@ -71,6 +74,7 @@ export type ReviewAnalytics = {
     rule: AnalyticsCoverage;
     model: AnalyticsCoverage;
     findings: AnalyticsCoverage;
+    findingState: AnalyticsCoverage;
     feedback: AnalyticsCoverage;
     recurrence: AnalyticsCoverage;
     mergeOutcomes: AnalyticsCoverage;
@@ -108,6 +112,7 @@ export function combineReviewAnalytics(items: readonly ReviewAnalytics[]): Revie
   const costTotal = items.reduce((total, item) => total + (item.cost.totalEstimatedUsd ?? 0), 0);
   const bySeverity = { blocking: 0, warning: 0, suggestion: 0 };
   const byCategory: Record<string, number> = {};
+  const byState: Record<FindingState, number> = { open: 0, fixed: 0, dismissed: 0, superseded: 0, stale: 0 };
   const feedback = { accepted: 0, dismissed: 0, resolved: 0, reopened: 0 };
   let findingTotal = 0;
   let recurring = 0;
@@ -119,12 +124,13 @@ export function combineReviewAnalytics(items: readonly ReviewAnalytics[]): Revie
     recurring += item.findings.recurring;
     for (const severity of Object.keys(bySeverity) as Array<keyof typeof bySeverity>) bySeverity[severity] += item.findings.bySeverity[severity];
     for (const [categoryName, count] of Object.entries(item.findings.byCategory)) byCategory[categoryName] = (byCategory[categoryName] ?? 0) + count;
+    for (const state of Object.keys(byState) as FindingState[]) byState[state] += item.findings.byState[state];
     for (const kind of Object.keys(feedback) as Array<keyof typeof feedback>) feedback[kind] += item.feedback[kind];
     merged += item.mergeOutcomes.merged;
     reviewed += item.mergeOutcomes.reviewed;
     pending += item.mergeOutcomes.pending;
   }
-  const coverageKeys: Array<keyof ReviewAnalytics["coverage"]> = ["queueTime", "sandboxDuration", "modelLatency", "estimatedCost", "reviewOutcomes", "author", "rule", "model", "findings", "feedback", "recurrence", "mergeOutcomes"];
+  const coverageKeys: Array<keyof ReviewAnalytics["coverage"]> = ["queueTime", "sandboxDuration", "modelLatency", "estimatedCost", "reviewOutcomes", "author", "rule", "model", "findings", "findingState", "feedback", "recurrence", "mergeOutcomes"];
   const coveragePopulation = Object.fromEntries(coverageKeys.map((key) => [key, items.reduce((total, item) => total + item.coveragePopulation[key], 0)])) as ReviewAnalytics["coveragePopulation"];
   const coverage = Object.fromEntries(coverageKeys.map((key) => [key, combinedCoverage(items.filter((item) => item.coveragePopulation[key] > 0).map((item) => item.coverage[key]))])) as ReviewAnalytics["coverage"];
   return {
@@ -135,7 +141,7 @@ export function combineReviewAnalytics(items: readonly ReviewAnalytics[]): Revie
       modelSamples, averageModelMs: weightedAverage(items, (item) => item.latency.modelSamples, (item) => item.latency.averageModelMs),
     },
     cost: { samples: costSamples, totalEstimatedUsd: costSamples ? costTotal : null, averageEstimatedUsd: costSamples ? costTotal / costSamples : null },
-    findings: { total: findingTotal, bySeverity, byCategory, recurring },
+    findings: { total: findingTotal, bySeverity, byCategory, byState, recurring },
     feedback,
     mergeOutcomes: { merged, reviewed, pending, mergeRate: rate(merged, reviewed) },
     coverage,
@@ -213,7 +219,7 @@ export function filterReviewEvents(events: readonly ReviewEvent[], filters: Revi
     const key = reviewEventRunKey(event);
     if (key) return selectedRuns.has(key) || (event.type === "review.requested" && !event.payload.jobId && selectedReviews.has(event.reviewId));
     if (event.type === "pull_request.merged" || event.type === "pull_request.closed" || event.type === "pull_request.reopened") return selectedPullRequests.has(reviewPullRequestKey(event));
-    if (event.type === "finding.feedback_recorded") return selectedFindingIds.has(event.payload.findingId);
+    if (event.type === "finding.feedback_recorded" || event.type === "finding.state_changed") return selectedFindingIds.has(event.payload.findingId);
     return selectedReviews.has(event.reviewId);
   });
 }

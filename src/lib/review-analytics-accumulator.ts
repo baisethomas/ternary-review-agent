@@ -1,6 +1,7 @@
 import type { ReviewAnalytics } from "./review-analytics";
 import { reviewPullRequestKey } from "./review-analytics-identities";
 import type { ReviewEvent } from "./review-event-ledger";
+import type { FindingState } from "./types";
 
 function rate(value: number, denominator: number) {
   return denominator ? value / denominator : 0;
@@ -12,6 +13,14 @@ function category(findingKey?: string) {
 }
 
 type PullRequestState = { state: "merged" | "closed" | "reopened"; occurredAt: string };
+type FindingStateFact = { state: FindingState; occurredAt: string; sequence?: string };
+
+function factIsLater(candidate: Pick<ReviewEvent, "occurredAt" | "sequence">, current: FindingStateFact) {
+  const occurredAtOrder = candidate.occurredAt.localeCompare(current.occurredAt);
+  if (occurredAtOrder) return occurredAtOrder > 0;
+  if (!candidate.sequence || !current.sequence) return true;
+  return BigInt(candidate.sequence) > BigInt(current.sequence);
+}
 
 export class ReviewAnalyticsAccumulator {
   private reviews = 0;
@@ -27,6 +36,7 @@ export class ReviewAnalyticsAccumulator {
   private costSamples = 0;
   private costTotalUsd = 0;
   private completedReviews = 0;
+  private authoritativeFindingReviews = 0;
   private completedWithRules = 0;
   private completedWithModel = 0;
   private findingsMissingStableKey = 0;
@@ -43,6 +53,8 @@ export class ReviewAnalyticsAccumulator {
   private readonly bySeverity = { blocking: 0, warning: 0, suggestion: 0 };
   private readonly byCategory: Record<string, number> = {};
   private readonly feedback = { accepted: 0, dismissed: 0, resolved: 0, reopened: 0 };
+  private readonly findingStates = new Map<string, FindingStateFact>();
+  private readonly completedFindingIds = new Set<string>();
   private readonly reviewedPullRequests = new Set<string>();
   private readonly pullRequestStates = new Map<string, PullRequestState>();
 
@@ -91,8 +103,13 @@ export class ReviewAnalyticsAccumulator {
       this.addCompleted(event);
       return;
     }
-    if (event.type === "finding.feedback_recorded" && event.payload.kind in this.feedback) {
+    if (event.type === "finding.feedback_recorded" && Object.hasOwn(this.feedback, event.payload.kind)) {
       this.feedback[event.payload.kind as keyof typeof this.feedback] += 1;
+      return;
+    }
+    if (event.type === "finding.state_changed") {
+      const current = this.findingStates.get(event.payload.findingId);
+      if (!current || factIsLater(event, current)) this.findingStates.set(event.payload.findingId, { state: event.payload.state, occurredAt: event.occurredAt, sequence: event.sequence });
       return;
     }
     if (event.type === "pull_request.merged" || event.type === "pull_request.closed" || event.type === "pull_request.reopened") {
@@ -119,8 +136,11 @@ export class ReviewAnalyticsAccumulator {
         this.costTotalUsd += event.payload.ai.estimatedCostUsd;
       }
     }
-    if (event.payload.findings.every((finding) => finding.ruleId)) this.completedWithRules += 1;
-    for (const finding of event.payload.findings) {
+    const authoritativeFindings = event.payload.authoritativeFindings !== false;
+    if (authoritativeFindings) this.authoritativeFindingReviews += 1;
+    if (authoritativeFindings && event.payload.findings.every((finding) => finding.ruleId)) this.completedWithRules += 1;
+    for (const finding of authoritativeFindings ? event.payload.findings : []) {
+      this.completedFindingIds.add(finding.findingId);
       this.bySeverity[finding.severity] += 1;
       const findingCategory = category(finding.findingKey);
       this.byCategory[findingCategory] = (this.byCategory[findingCategory] ?? 0) + 1;
@@ -138,6 +158,8 @@ export class ReviewAnalyticsAccumulator {
   result(): ReviewAnalytics {
     const findingTotal = Object.values(this.bySeverity).reduce((total, count) => total + count, 0);
     const recurring = [...this.findingHeads.values()].filter((finding) => finding.recurring).length;
+    const byState: Record<FindingState, number> = { open: 0, fixed: 0, dismissed: 0, superseded: 0, stale: 0 };
+    for (const fact of this.findingStates.values()) byState[fact.state] += 1;
     const finalized = [...this.pullRequestStates].filter(([pullRequest, state]) => this.reviewedPullRequests.has(pullRequest) && state.state !== "reopened");
     const merged = finalized.filter(([, state]) => state.state === "merged").length;
     const pending = Math.max(0, this.reviewedPullRequests.size - finalized.length);
@@ -166,7 +188,7 @@ export class ReviewAnalyticsAccumulator {
         totalEstimatedUsd: this.costSamples ? this.costTotalUsd : null,
         averageEstimatedUsd: this.costSamples ? this.costTotalUsd / this.costSamples : null,
       },
-      findings: { total: findingTotal, bySeverity: { ...this.bySeverity }, byCategory: { ...this.byCategory }, recurring },
+      findings: { total: findingTotal, bySeverity: { ...this.bySeverity }, byCategory: { ...this.byCategory }, byState, recurring },
       feedback: { ...this.feedback },
       mergeOutcomes: { merged, reviewed: finalized.length, pending, mergeRate: rate(merged, finalized.length) },
       coverage: {
@@ -178,7 +200,8 @@ export class ReviewAnalyticsAccumulator {
         author: this.reviews === 0 ? "unavailable" : this.requestedWithAuthor >= this.reviews ? "complete" : this.requestedWithAuthor ? "partial" : "unavailable",
         rule: this.completedReviews === 0 ? "unavailable" : this.completedWithRules >= this.completedReviews ? "complete" : this.completedWithRules ? "partial" : "unavailable",
         model: this.completedReviews === 0 ? "unavailable" : this.completedWithModel >= this.completedReviews ? "complete" : this.completedWithModel ? "partial" : "unavailable",
-        findings: this.completedReviews === 0 ? "unavailable" : "complete",
+        findings: this.authoritativeFindingReviews === 0 ? "unavailable" : this.authoritativeFindingReviews >= this.completedReviews ? "complete" : "partial",
+        findingState: this.completedFindingIds.size === 0 ? "unavailable" : this.findingStates.size === 0 ? "unavailable" : [...this.completedFindingIds].every((findingId) => this.findingStates.has(findingId)) ? "complete" : "partial",
         feedback: this.reviews === 0 ? "unavailable" : this.analyticsReadyReviews >= this.reviews ? "complete" : this.analyticsReadyReviews ? "partial" : "unavailable",
         recurrence: this.completedReviews === 0 ? "unavailable" : this.findingsMissingStableKey ? "partial" : "complete",
         mergeOutcomes: this.reviews === 0 ? "unavailable" : this.analyticsReadyReviews < this.reviews ? this.analyticsReadyReviews ? "partial" : "unavailable" : pending ? finalized.length ? "partial" : "delayed" : "complete",
@@ -193,6 +216,7 @@ export class ReviewAnalyticsAccumulator {
         rule: this.completedReviews,
         model: this.completedReviews,
         findings: this.completedReviews,
+        findingState: this.completedFindingIds.size,
         feedback: this.reviews,
         recurrence: this.completedReviews,
         mergeOutcomes: this.reviews,

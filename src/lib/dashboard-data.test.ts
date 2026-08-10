@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   pullRequest: vi.fn(),
 }));
 
+vi.mock("server-only", () => ({}));
 vi.mock("./github", () => ({
   createInstallationToken: mocks.token,
   getGitHubApp: vi.fn(),
