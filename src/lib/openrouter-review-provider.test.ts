@@ -52,9 +52,12 @@ describe("OpenRouter review provider", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await generateOpenRouterReview("diff body", sandbox, "repository context");
+    const { supersedesFindingKey, ...expectedFinding } = review.findings[0];
+    expect(supersedesFindingKey).toBeNull();
 
     expect(result).toMatchObject({
       ...review,
+      findings: [expectedFinding],
       sandbox,
       authoritativeFindings: true,
       ai: { model: "openai/gpt-5.6-terra-20260801", inputTokens: 120, outputTokens: 30, estimatedCostUsd: 0.0012 },
@@ -86,6 +89,31 @@ describe("OpenRouter review provider", () => {
   it("marks permanent OpenRouter failures as non-retryable", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "router-key");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("bad request", { status: 400 })));
+
+    await expect(generateOpenRouterReview("diff", sandbox, "context")).rejects.toBeInstanceOf(NonRetryableReviewError);
+  });
+
+  it("retries transient provider errors returned in an HTTP 200 envelope", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "router-key");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{
+        message: { role: "assistant", content: "" },
+        finish_reason: "error",
+        error: { code: 502, message: "Provider disconnected", metadata: { error_type: "provider_unavailable" } },
+      }],
+    }), { status: 200 })));
+
+    const error = await generateOpenRouterReview("diff", sandbox, "context").catch((caught) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(NonRetryableReviewError);
+    expect(error.message).toContain("provider_unavailable");
+  });
+
+  it("rejects syntactically valid review output that violates the runtime schema", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "router-key");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ verdict: "ship_it", summary: "Looks good", findings: [] }) } }],
+    }), { status: 200 })));
 
     await expect(generateOpenRouterReview("diff", sandbox, "context")).rejects.toBeInstanceOf(NonRetryableReviewError);
   });
