@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   recordMerged: vi.fn(async () => undefined),
   deleteRepositoryEvents: vi.fn(async () => undefined),
   deleteInstallationEvents: vi.fn(async () => undefined),
+  restoreRepositoryEvents: vi.fn(async () => undefined),
+  restoreInstallationEvents: vi.fn(async () => undefined),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -17,6 +19,8 @@ vi.mock("./review-event-ledger-service", () => ({
   recordPullRequestMergedEvent: mocks.recordMerged,
   deleteRepositoryReviewEvents: mocks.deleteRepositoryEvents,
   deleteInstallationReviewEvents: mocks.deleteInstallationEvents,
+  restoreRepositoryReviewEventAccess: mocks.restoreRepositoryEvents,
+  restoreInstallationReviewEventAccess: mocks.restoreInstallationEvents,
 }));
 vi.mock("./review-submission", () => ({ webhookReviewIdempotencyKeys: vi.fn(() => []) }));
 
@@ -35,6 +39,7 @@ describe("repository index webhook events", () => {
     expect(response.status).toBe(202);
     expect(mocks.dispatchIndex).toHaveBeenCalledWith({ action: "restoreRepository", installationId: 7, owner: "ternary", repo: "agent", changedAt: Date.parse("2026-08-09T00:00:00.000Z") });
     expect(mocks.dispatchIndex).toHaveBeenCalledWith({ action: "updateDefaultBranch", installationId: 7, owner: "ternary", repo: "agent", defaultBranch: "main", changedAt: Date.parse("2026-08-09T00:00:00.000Z") });
+    expect(mocks.restoreRepositoryEvents).toHaveBeenCalledWith({ installationId: 7, owner: "ternary", repo: "agent" });
   });
 
   it("restores a re-added paused repository without starting background indexing", async () => {
@@ -75,6 +80,7 @@ describe("repository index webhook events", () => {
   it("restores a suspended installation using its monotonic update time", async () => {
     await handleGitHubWebhook("installation", JSON.stringify({ action: "unsuspend", installation: { id: 7, updated_at: "2026-08-09T01:00:00.000Z" } }), "delivery-unsuspend");
     expect(mocks.dispatchIndex).toHaveBeenCalledWith({ action: "restoreInstallation", installationId: 7, changedAt: Date.parse("2026-08-09T01:00:00.000Z") });
+    expect(mocks.restoreInstallationEvents).toHaveBeenCalledWith(7);
   });
 
   it("records merge outcomes after a reviewed repository is paused", async () => {

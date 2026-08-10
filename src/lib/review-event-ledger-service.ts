@@ -26,6 +26,14 @@ export function deleteInstallationReviewEvents(installationId: number) {
   return reviewEventLedger().deleteInstallation(installationId);
 }
 
+export function restoreRepositoryReviewEventAccess(scope: { installationId: number; owner: string; repo: string }) {
+  return reviewEventLedger().restoreScope(scope);
+}
+
+export function restoreInstallationReviewEventAccess(installationId: number) {
+  return reviewEventLedger().restoreInstallation(installationId);
+}
+
 export function pruneExpiredReviewEvents(now = Date.now()) {
   const configuredDays = Number(process.env.REVIEW_EVENT_RETENTION_DAYS ?? 365);
   const retentionDays = Number.isFinite(configuredDays) && configuredDays > 0 ? configuredDays : 365;

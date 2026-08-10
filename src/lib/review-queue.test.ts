@@ -227,6 +227,34 @@ describe("ReviewQueue", () => {
     expect(transitions).toEqual(["failed"]);
   });
 
+  test("replays an unacknowledged recovery until its ledger transition succeeds", async () => {
+    let now = 4_700;
+    let failures = 1;
+    const store = new InMemoryReviewQueueStore();
+    const queue = new ReviewQueue({
+      store,
+      run: async () => undefined,
+      now: () => now,
+      id: () => "job-recovery-replay",
+      leaseMs: 50,
+      maxAttempts: 1,
+      lifecycle: {
+        queued: async () => undefined,
+        started: async () => undefined,
+        completed: async () => undefined,
+        retryScheduled: async () => undefined,
+        failed: async () => { if (failures-- > 0) throw new Error("Postgres unavailable"); },
+      },
+    });
+    await queue.enqueue(request);
+    await store.claim(now, 50, "abandoned");
+    now += 51;
+
+    await expect(queue.processNext()).rejects.toThrow("Postgres unavailable");
+    await expect(queue.processNext()).resolves.toBeNull();
+    await expect(queue.get("job-recovery-replay")).resolves.toMatchObject({ status: "failed", lastError: "Worker lease expired" });
+  });
+
   test("moves exhausted jobs to a visible failed state", async () => {
     let now = 5_000;
     const queue = new ReviewQueue({

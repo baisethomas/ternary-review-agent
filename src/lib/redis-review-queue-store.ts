@@ -152,9 +152,16 @@ for _, id in ipairs(expired) do
       if redis.call("GET", installationLock) == id then redis.call("DEL", installationLock) end
       if redis.call("GET", repositoryLock) == id then redis.call("DEL", repositoryLock) end
       table.insert(recovered, job)
+      redis.call("ZADD", KEYS[4], job.updatedAt, id)
     end
   end
   redis.call("ZREM", KEYS[1], id)
+end
+local pending = redis.call("ZRANGE", KEYS[4], 0, 99)
+recovered = {}
+for _, id in ipairs(pending) do
+  local encoded = redis.call("GET", ARGV[2] .. id)
+  if encoded then table.insert(recovered, cjson.decode(encoded)) else redis.call("ZREM", KEYS[4], id) end
 end
 return cjson.encode(recovered)
 `;
@@ -188,6 +195,7 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
   private get activeKey() { return `${this.prefix}:active`; }
   private get allKey() { return `${this.prefix}:all`; }
   private get terminalKey() { return `${this.prefix}:terminal`; }
+  private get recoveryKey() { return `${this.prefix}:recovery-pending`; }
   private get jobPrefix() { return `${this.prefix}:job:`; }
   private get lockPrefix() { return `${this.prefix}:lock:`; }
   private get idempotencyPrefix() { return `${this.prefix}:idempotency:`; }
@@ -241,10 +249,14 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
   async recoverExpired(now: number) {
     const recovered = await this.redis.eval<[number, string, string, number], string>(
       recoverScript,
-      [this.activeKey, this.scheduledKey, this.terminalKey],
+      [this.activeKey, this.scheduledKey, this.terminalKey, this.recoveryKey],
       [now, this.jobPrefix, this.lockPrefix, terminalJobRetentionSeconds],
     );
     return JSON.parse(recovered) as ReviewJob[];
+  }
+
+  async acknowledgeRecovery(id: string) {
+    await this.redis.zrem(this.recoveryKey, id);
   }
 
   pruneTerminal(completedBefore: number, limit: number) {

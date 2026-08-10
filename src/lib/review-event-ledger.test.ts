@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findingIdentity, InMemoryReviewEventLedger, InvalidReviewEventCursorError, reviewIdentity, ReviewEventConflictError, type ReviewEvent } from "./review-event-ledger";
+import { findingIdentity, InMemoryReviewEventLedger, InvalidReviewEventCursorError, ReviewEventAccessRevokedError, reviewIdentity, ReviewEventConflictError, type ReviewEvent } from "./review-event-ledger";
 
 const requested: ReviewEvent = {
   eventId: "event-1",
@@ -17,11 +17,11 @@ describe("ReviewEventLedger", () => {
   it("derives stable review and finding identities", () => {
     const reviewId = reviewIdentity({ owner: "Ternary", repo: "Agent", pullNumber: 8, headSha: "head-sha" });
     const findingScope = { owner: "Ternary", repo: "Agent", pullNumber: 8 };
-    const finding = { severity: "blocking" as const, file: "src/auth.ts", line: 42, title: "Authorization bypass", explanation: "The route trusts caller input." };
+    const finding = { findingKey: "authorization-bypass-handler", severity: "blocking" as const, file: "src/auth.ts", line: 42, title: "Authorization bypass", explanation: "The route trusts caller input." };
 
     expect(reviewId).toBe("ternary/agent#8:head-sha");
-    expect(findingIdentity(findingScope, finding)).toBe(findingIdentity(findingScope, { ...finding, line: 43, explanation: "Updated wording." }));
-    expect(findingIdentity(findingScope, { ...finding, title: "Different finding" })).not.toBe(findingIdentity(findingScope, finding));
+    expect(findingIdentity(findingScope, finding)).toBe(findingIdentity(findingScope, { ...finding, line: 43, title: "Reworded title", explanation: "Updated wording." }));
+    expect(findingIdentity(findingScope, { ...finding, findingKey: "different-symbol" })).not.toBe(findingIdentity(findingScope, finding));
   });
 
   it("appends an event once when the same delivery is retried", async () => {
@@ -57,6 +57,7 @@ describe("ReviewEventLedger", () => {
   it("rejects malformed cursors consistently", async () => {
     const ledger = new InMemoryReviewEventLedger();
     await expect(ledger.list(requested.scope, { after: "bogus" })).rejects.toBeInstanceOf(InvalidReviewEventCursorError);
+    await expect(ledger.list(requested.scope, { after: "9223372036854775808" })).rejects.toBeInstanceOf(InvalidReviewEventCursorError);
   });
 
   it("stores structured findings under stable identities", async () => {
@@ -108,6 +109,16 @@ describe("ReviewEventLedger", () => {
     await expect(ledger.list(requested.scope)).resolves.toEqual({ events: [], nextCursor: null });
     await expect(ledger.list(secondRepository.scope)).resolves.toEqual({ events: [], nextCursor: null });
     await expect(ledger.list(otherInstallation.scope)).resolves.toEqual({ events: [otherInstallation], nextCursor: null });
+  });
+
+  it("fences in-flight writes after revocation until access is restored", async () => {
+    const ledger = new InMemoryReviewEventLedger();
+    await ledger.append(requested);
+    await ledger.deleteScope(requested.scope);
+
+    await expect(ledger.append({ ...requested, eventId: "late", idempotencyKey: "late" })).rejects.toBeInstanceOf(ReviewEventAccessRevokedError);
+    await ledger.restoreScope(requested.scope);
+    await expect(ledger.append({ ...requested, eventId: "restored", idempotencyKey: "restored" })).resolves.toMatchObject({ inserted: true });
   });
 
   it("prunes expired facts across repositories while retaining newer history", async () => {

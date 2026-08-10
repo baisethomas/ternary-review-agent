@@ -6,6 +6,7 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
   private readonly jobs = new Map<string, ReviewJob>();
   private readonly locks = new Map<string, Lock>();
   private readonly idempotencyKeys = new Map<string, string>();
+  private readonly pendingRecoveries = new Map<string, ReviewJob>();
 
   async create(job: ReviewJob, idempotencyKeys: readonly string[] = []) {
     for (const key of idempotencyKeys) {
@@ -88,8 +89,13 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
       this.jobs.set(id, recoveredJob);
       this.releaseLocks(id);
       recovered.push(structuredClone(recoveredJob));
+      this.pendingRecoveries.set(id, structuredClone(recoveredJob));
     }
-    return recovered;
+    return [...this.pendingRecoveries.values()].map((job) => structuredClone(job));
+  }
+
+  async acknowledgeRecovery(id: string) {
+    this.pendingRecoveries.delete(id);
   }
 
   async get(id: string) {

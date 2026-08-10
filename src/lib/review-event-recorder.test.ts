@@ -15,7 +15,7 @@ describe("review event recorder", () => {
     const result: ReviewResult = {
       verdict: "request_changes",
       summary: "One issue",
-      findings: [{ severity: "blocking", file: "src/auth.ts", line: 42, title: "Authorization bypass", explanation: "Caller input is trusted." }],
+      findings: [{ findingKey: "authorization-bypass-handler", severity: "blocking", file: "src/auth.ts", line: 42, title: "Authorization bypass", explanation: "Caller input is trusted." }],
       sandbox: { ok: true, sandboxId: "sandbox-1", durationMs: 1200, commands: [{ command: "test", exitCode: 0, output: "ok" }] },
     };
 
@@ -37,7 +37,7 @@ describe("review event recorder", () => {
     const ledger = new InMemoryReviewEventLedger();
     await recordReviewRequested(ledger, request, { source: "github", deliveryId: "review-delivery" }, { eventId: () => "requested", now: () => 1_000 });
 
-    await expect(recordPullRequestMerged(ledger, request, { deliveryId: "merge-delivery", mergedAt: "2026-08-09T02:00:00.000Z" }, { eventId: () => "merged" }))
+    await expect(recordPullRequestMerged(ledger, { ...request, headSha: "later-head" }, { deliveryId: "merge-delivery", mergedAt: "2026-08-09T02:00:00.000Z" }, { eventId: () => "merged" }))
       .resolves.toMatchObject({ recorded: true });
     await expect(ledger.list({ installationId: request.installationId, owner: request.owner, repo: request.repo }))
       .resolves.toMatchObject({ events: [expect.objectContaining({ type: "review.requested" }), expect.objectContaining({ type: "pull_request.merged" })] });

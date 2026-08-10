@@ -16,6 +16,7 @@ type ReviewEventBase<Type extends string, Payload> = {
 
 export type FindingSnapshot = {
   findingId: string;
+  findingKey?: string;
   severity: "blocking" | "warning" | "suggestion";
   file: string;
   line?: number;
@@ -40,7 +41,7 @@ export type ReviewEvent =
   | ReviewEventBase<"pull_request.merged", { mergedBy?: string; mergedAt: string }>;
 
 export type ReviewEventPage = { events: ReviewEvent[]; nextCursor: string | null };
-export type ReviewEventQuery = { after?: string; limit?: number; reviewId?: string };
+export type ReviewEventQuery = { after?: string; limit?: number; reviewId?: string; pullNumber?: number };
 
 export interface ReviewEventLedger {
   append(event: ReviewEvent): Promise<{ event: ReviewEvent; inserted: boolean }>;
@@ -49,6 +50,8 @@ export interface ReviewEventLedger {
   deleteScope(scope: RepositoryScope): Promise<number>;
   deleteInstallation(installationId: number): Promise<number>;
   deleteExpired(occurredBefore: string): Promise<number>;
+  restoreScope(scope: RepositoryScope): Promise<void>;
+  restoreInstallation(installationId: number): Promise<void>;
 }
 
 export class ReviewEventConflictError extends Error {
@@ -65,9 +68,17 @@ export class InvalidReviewEventCursorError extends Error {
   }
 }
 
+export class ReviewEventAccessRevokedError extends Error {
+  constructor(scope: RepositoryScope) {
+    super(`Review event access is revoked for ${scope.installationId}:${scope.owner}/${scope.repo}`);
+    this.name = "ReviewEventAccessRevokedError";
+  }
+}
+
 export function parseReviewEventCursor(value?: string) {
   if (!value) return "0";
   if (!/^\d+$/.test(value)) throw new InvalidReviewEventCursorError();
+  if (BigInt(value) > BigInt("9223372036854775807")) throw new InvalidReviewEventCursorError();
   return value;
 }
 
@@ -77,7 +88,7 @@ export function reviewIdentity(request: Pick<ReviewRequest, "owner" | "repo" | "
 
 export function findingIdentity(request: Pick<ReviewRequest, "owner" | "repo" | "pullNumber">, finding: ReviewFinding) {
   const pullRequestId = `${request.owner.toLowerCase()}/${request.repo.toLowerCase()}#${request.pullNumber}`;
-  const signature = [finding.file.toLowerCase(), finding.title.toLowerCase()].join("\u0000");
+  const signature = [finding.file.toLowerCase(), (finding.findingKey ?? finding.title).toLowerCase()].join("\u0000");
   return `${pullRequestId}:finding:${createHash("sha256").update(signature).digest("hex").slice(0, 24)}`;
 }
 
@@ -95,9 +106,12 @@ function scopeKey(scope: RepositoryScope) {
 export class InMemoryReviewEventLedger implements ReviewEventLedger {
   private readonly events = new Map<string, Array<{ sequence: number; event: ReviewEvent }>>();
   private readonly idempotency = new Map<string, ReviewEvent>();
+  private readonly revokedScopes = new Set<string>();
+  private readonly revokedInstallations = new Set<number>();
   private sequence = 0;
 
   async append(event: ReviewEvent) {
+    if (this.revokedInstallations.has(event.scope.installationId) || this.revokedScopes.has(scopeKey(event.scope))) throw new ReviewEventAccessRevokedError(event.scope);
     const existing = this.idempotency.get(event.idempotencyKey);
     if (existing) {
       if (reviewEventFactFingerprint(existing) !== reviewEventFactFingerprint(event)) throw new ReviewEventConflictError(event.idempotencyKey);
@@ -114,7 +128,9 @@ export class InMemoryReviewEventLedger implements ReviewEventLedger {
     const after = BigInt(parseReviewEventCursor(query.after));
     const limit = Math.min(250, Math.max(1, query.limit ?? 100));
     const matching = (this.events.get(scopeKey(scope)) ?? [])
-      .filter((item) => BigInt(item.sequence) > after && (!query.reviewId || item.event.reviewId === query.reviewId));
+      .filter((item) => BigInt(item.sequence) > after
+        && (!query.reviewId || item.event.reviewId === query.reviewId)
+        && (!query.pullNumber || item.event.pullNumber === query.pullNumber));
     const page = matching.slice(0, limit);
     return {
       events: structuredClone(page.map((item) => item.event)),
@@ -128,10 +144,12 @@ export class InMemoryReviewEventLedger implements ReviewEventLedger {
   }
 
   async deleteScope(scope: RepositoryScope) {
+    this.revokedScopes.add(scopeKey(scope));
     return this.deleteMatching(scopeKey(scope), () => true);
   }
 
   async deleteInstallation(installationId: number) {
+    this.revokedInstallations.add(installationId);
     let deleted = 0;
     for (const key of [...this.events.keys()]) {
       if (key.startsWith(`${installationId}:`)) deleted += this.deleteMatching(key, () => true);
@@ -143,6 +161,14 @@ export class InMemoryReviewEventLedger implements ReviewEventLedger {
     let deleted = 0;
     for (const key of [...this.events.keys()]) deleted += this.deleteMatching(key, (event) => event.occurredAt < occurredBefore);
     return deleted;
+  }
+
+  async restoreScope(scope: RepositoryScope) {
+    this.revokedScopes.delete(scopeKey(scope));
+  }
+
+  async restoreInstallation(installationId: number) {
+    this.revokedInstallations.delete(installationId);
   }
 
   private deleteMatching(key: string, predicate: (event: ReviewEvent) => boolean) {

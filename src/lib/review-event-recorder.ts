@@ -40,8 +40,7 @@ export async function recordPullRequestMerged(
   clock: EventClock = {},
 ) {
   const scope = { installationId: request.installationId, owner: request.owner, repo: request.repo };
-  const reviewId = reviewIdentity(request);
-  const prior = await ledger.list(scope, { reviewId, limit: 1 });
+  const prior = await ledger.list(scope, { pullNumber: request.pullNumber, limit: 1 });
   if (!prior.events.length) return { recorded: false as const };
   const appended = await ledger.append({
     ...eventBase(request, `github-delivery:${merge.deliveryId}:pull_request.merged`, { ...clock, now: () => Date.parse(merge.mergedAt) }),

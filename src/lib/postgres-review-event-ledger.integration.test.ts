@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { neon } from "@neondatabase/serverless";
 import { describe, expect, it } from "vitest";
 import { PostgresReviewEventLedger } from "./postgres-review-event-ledger";
-import { ReviewEventConflictError, type ReviewEvent } from "./review-event-ledger";
+import { ReviewEventAccessRevokedError, ReviewEventConflictError, type ReviewEvent } from "./review-event-ledger";
 
 const enabled = process.env.RUN_POSTGRES_INTEGRATION_TESTS === "1";
 const connectionString = process.env.DATABASE_URL;
@@ -33,11 +33,15 @@ describe.skipIf(!enabled)("PostgresReviewEventLedger", () => {
       ]);
       expect(concurrent.map((result) => result.inserted).sort()).toEqual([false, true]);
       expect(concurrent[0].event.eventId).toBe(concurrent[1].event.eventId);
-      await expect(ledger.list({ installationId, owner: "ternary", repo: "ledger" })).resolves.toMatchObject({ events: [event] });
-      await expect(ledger.deleteScope(event.scope)).resolves.toBe(1);
+      await expect(ledger.list({ installationId, owner: "ternary", repo: "ledger" })).resolves.toMatchObject({ events: [event, concurrent[0].event] });
+      await expect(ledger.deleteScope(event.scope)).resolves.toBe(2);
+      await expect(ledger.append({ ...event, eventId: crypto.randomUUID(), idempotencyKey: `late:${crypto.randomUUID()}` })).rejects.toBeInstanceOf(ReviewEventAccessRevokedError);
+      await ledger.restoreScope(event.scope);
+      await expect(ledger.append({ ...event, eventId: crypto.randomUUID(), idempotencyKey: `restored:${crypto.randomUUID()}` })).resolves.toMatchObject({ inserted: true });
       await expect(ledger.list(otherScope.scope)).resolves.toMatchObject({ events: [otherScope] });
     } finally {
       await ledger.deleteInstallation(installationId);
+      await sql.query("DELETE FROM review_event_revocations WHERE installation_id = $1", [installationId]);
     }
   });
 });
