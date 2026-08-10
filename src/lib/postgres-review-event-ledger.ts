@@ -4,6 +4,7 @@ import {
   ReviewEventConflictError,
   ReviewEventAccessRevokedError,
   parseReviewEventCursor,
+  reviewEventWithSequence,
   reviewEventFactFingerprint,
   type ReviewEvent,
   type ReviewEventLedger,
@@ -88,7 +89,7 @@ export class PostgresReviewEventLedger implements ReviewEventLedger {
     ) as EventRow[];
     const page = rows.slice(0, limit);
     return {
-      events: page.map((row) => row.event),
+      events: page.map((row) => reviewEventWithSequence(row.event, row.sequence)),
       nextCursor: rows.length > limit ? String(page[page.length - 1].sequence) : null,
     };
   }

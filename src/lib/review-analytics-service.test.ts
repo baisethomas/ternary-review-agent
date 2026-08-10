@@ -70,6 +70,20 @@ describe("review analytics service", () => {
     expect(exported.map((event) => event.type)).toEqual(["review.requested", "pull_request.merged", "review.completed"]);
   });
 
+  it("retains stable finding lifecycle facts when the filtered review has a newer head", async () => {
+    mocks.catalog.mockResolvedValue({ repositories: [repositories[0]] });
+    const base = { scope: { installationId: 7, owner: "Ternary", repo: "Agent" }, pullNumber: 8, headSha: "head-a", reviewId: "ternary/agent#8:head-a" };
+    const requested = { ...base, eventId: "requested", idempotencyKey: "requested", type: "review.requested" as const, occurredAt: "2026-08-01T00:00:00.000Z", payload: { source: "github" as const, author: "Ada", jobId: "job-1" } };
+    const completed = { ...base, eventId: "completed", idempotencyKey: "completed", type: "review.completed" as const, occurredAt: "2026-08-01T00:00:01.000Z", payload: { jobId: "job-1", attempt: 1, verdict: "request_changes" as const, summary: "Finding", findings: [{ findingId: "finding-auth", findingKey: "security-auth", severity: "warning" as const, file: "auth.ts", title: "Auth", explanation: "Missing" }], sandbox: { sandboxId: "sandbox", durationMs: 1_000, commands: [] } } };
+    const state = { ...base, headSha: "head-b", reviewId: "ternary/agent#8:head-b", eventId: "state", idempotencyKey: "state", type: "finding.state_changed" as const, occurredAt: "2026-08-02T00:00:00.000Z", payload: { findingId: "finding-auth", state: "fixed" as const } };
+    mocks.pages.mockImplementation(() => (async function* () { yield [requested, completed]; yield [state]; })());
+
+    const exported: ReviewEvent[] = [];
+    for await (const page of await analyticsEventPages({ author: "ada" })) exported.push(...page);
+
+    expect(exported).toContainEqual(state);
+  });
+
   it("exports a pull-request outcome once when multiple unfinished runs match", async () => {
     mocks.catalog.mockResolvedValue({ repositories: [repositories[0]] });
     const base = { scope: { installationId: 7, owner: "Ternary", repo: "Agent" }, pullNumber: 8, headSha: "head", reviewId: "ternary/agent#8:head" };

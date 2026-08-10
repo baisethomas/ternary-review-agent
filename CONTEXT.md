@@ -31,3 +31,7 @@ _Avoid_: Review history, activity log
 **Finding**:
 A stable review observation whose identity persists while its state and location are reconciled across later pull-request commits.
 _Avoid_: Comment, issue, warning
+
+**Finding State**:
+The current projection of a Finding as open, fixed, dismissed, superseded, or stale, derived from immutable Review Events and GitHub developer feedback.
+_Avoid_: Comment status, mutable finding row

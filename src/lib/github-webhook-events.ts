@@ -2,12 +2,15 @@ import "server-only";
 import { isRepositoryWatched } from "./repository-watch";
 import { enqueueAndDispatchReview } from "./review-queue-service";
 import { webhookReviewIdempotencyKeys } from "./review-submission";
-import { recordPullRequestClosedEvent, recordPullRequestMergedEvent, recordPullRequestReopenedEvent } from "./review-event-ledger-service";
+import { recordPullRequestClosedEvent, recordPullRequestHeadChangedEvent, recordPullRequestMergedEvent, recordPullRequestReopenedEvent } from "./review-event-ledger-service";
 import { dispatchRepositoryIndexTask } from "./repository-index-dispatcher";
 import type { WebhookReviewRequest } from "./types";
+import { ingestGitHubFindingFeedback } from "./github-finding-feedback";
+import { getGitHubApp } from "./github";
 
 type PullRequestWebhook = {
   action: string;
+  before?: string;
   installation?: { id: number };
   repository: { name: string; owner: { login: string }; clone_url: string };
   pull_request: { number: number; draft: boolean; user?: { login: string }; updated_at?: string; merged?: boolean; merged_at?: string; closed_at?: string; merged_by?: { login: string }; head: { sha: string } };
@@ -29,6 +32,11 @@ type InstallationRepositoriesWebhook = {
   repositories_removed?: InstallationRepository[];
 };
 type InstallationWebhook = { action: string; installation: { id: number; updated_at?: string } };
+type FeedbackRepository = { name: string; owner: { login: string }; clone_url: string };
+type WebhookSender = { login: string; type?: string };
+type ReviewCommentWebhook = { action: string; installation?: { id: number }; repository: FeedbackRepository; sender: WebhookSender; pull_request: { number: number; head: { sha: string } }; comment: { id: number; body?: string | null; in_reply_to_id?: number } };
+type ReviewThreadWebhook = { action: "resolved" | "unresolved"; installation?: { id: number }; repository: FeedbackRepository; sender: WebhookSender; pull_request: { number: number; head: { sha: string } }; thread: { comments?: Array<{ id?: number; body?: string | null }> } };
+type ReactionWebhook = { action: "created" | "deleted"; installation?: { id: number }; repository: FeedbackRepository; sender: { login: string }; reaction: { id: number; content: string }; comment?: { id?: number; body?: string | null; commit_id?: string; pull_request_url?: string } };
 type WebhookHandler = (rawBody: string, deliveryId: string) => Promise<Response>;
 
 const reviewActions = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
@@ -91,6 +99,13 @@ const handlePullRequest: WebhookHandler = async (rawBody, deliveryId) => {
   if (payload.action === "reopened" && reviewRequest && payload.pull_request.updated_at) {
     await recordPullRequestReopenedEvent(reviewRequest, { deliveryId, reopenedAt: payload.pull_request.updated_at });
   }
+  if (payload.action === "synchronize" && reviewRequest) {
+    await recordPullRequestHeadChangedEvent(reviewRequest, {
+      deliveryId,
+      changedAt: payload.pull_request.updated_at ?? new Date().toISOString(),
+      ...(payload.before ? { previousHeadSha: payload.before } : {}),
+    });
+  }
   if (payload.action === "closed" && payload.installation?.id) {
     if (!reviewRequest) throw new Error("Closed pull request did not include an installation");
     if (payload.pull_request.merged && payload.pull_request.merged_at) {
@@ -120,11 +135,56 @@ const handlePullRequest: WebhookHandler = async (rawBody, deliveryId) => {
   return Response.json({ accepted: true, delivery: deliveryId, jobId: job.id }, { status: 202 });
 };
 
+function feedbackRequest(payload: { installation?: { id: number }; repository: FeedbackRepository }, pullNumber: number, headSha: string) {
+  if (!payload.installation?.id) return null;
+  return { owner: payload.repository.owner.login, repo: payload.repository.name, pullNumber, installationId: payload.installation.id, headSha, cloneUrl: payload.repository.clone_url };
+}
+
+const handleReviewComment: WebhookHandler = async (rawBody, deliveryId) => {
+  const payload = JSON.parse(rawBody) as ReviewCommentWebhook;
+  const request = feedbackRequest(payload, payload.pull_request.number, payload.pull_request.head.sha);
+  if (!request || !["created", "edited"].includes(payload.action) || !payload.comment.in_reply_to_id) return Response.json({ accepted: false, reason: "Review comment is not finding feedback" });
+  const result = await ingestGitHubFindingFeedback({ request, deliveryId, actor: payload.sender.login, kind: "reply", rootCommentId: payload.comment.in_reply_to_id, reason: payload.comment.body ?? undefined });
+  return Response.json(result, { status: result.accepted ? 202 : 200 });
+};
+
+const handleReviewThread: WebhookHandler = async (rawBody, deliveryId) => {
+  const payload = JSON.parse(rawBody) as ReviewThreadWebhook;
+  if (payload.sender.type === "Bot" && payload.sender.login.toLowerCase() === `${(await getGitHubApp()).slug}[bot]`.toLowerCase()) {
+    return Response.json({ accepted: false, reason: "Ternary thread reconciliation is not developer feedback" });
+  }
+  const request = feedbackRequest(payload, payload.pull_request.number, payload.pull_request.head.sha);
+  const rootCommentId = payload.thread.comments?.[0]?.id;
+  if (!request || !rootCommentId) return Response.json({ accepted: false, reason: "Review thread is not finding feedback" });
+  const result = await ingestGitHubFindingFeedback({ request, deliveryId, actor: payload.sender.login, kind: payload.action === "resolved" ? "resolved" : "reopened", rootCommentId, reason: payload.action === "resolved" ? "GitHub review thread resolved" : "GitHub review thread reopened" });
+  return Response.json(result, { status: result.accepted ? 202 : 200 });
+};
+
+const handleReaction: WebhookHandler = async (rawBody, deliveryId) => {
+  const payload = JSON.parse(rawBody) as ReactionWebhook;
+  const pullNumber = Number(payload.comment?.pull_request_url?.match(/\/pulls\/(\d+)$/)?.[1]);
+  const request = feedbackRequest(payload, pullNumber, payload.comment?.commit_id ?? "unknown");
+  if (!request || !Number.isInteger(pullNumber) || !payload.comment?.id) return Response.json({ accepted: false, reason: "Reaction is not finding feedback" });
+  const positive = new Set(["+1", "heart", "hooray", "rocket"]);
+  const negative = new Set(["-1", "confused"]);
+  const isDismissal = negative.has(payload.reaction.content);
+  const kind = payload.action === "created" && positive.has(payload.reaction.content) ? "accepted" : "reaction";
+  const result = await ingestGitHubFindingFeedback({
+    request, deliveryId, actor: payload.sender.login, kind, rootCommentId: payload.comment.id,
+    reason: `${payload.action} ${payload.reaction.content} reaction`,
+    ...(isDismissal ? { signal: { id: `github-reaction:${payload.reaction.id}`, type: "dismissal_reaction" as const, active: payload.action === "created" } } : {}),
+  });
+  return Response.json(result, { status: result.accepted ? 202 : 200 });
+};
+
 const handlers: Record<string, WebhookHandler> = {
   push: handlePush,
   installation_repositories: handleInstallationRepositories,
   installation: handleInstallation,
   pull_request: handlePullRequest,
+  pull_request_review_comment: handleReviewComment,
+  pull_request_review_thread: handleReviewThread,
+  reaction: handleReaction,
 };
 
 export async function handleGitHubWebhook(event: string | null, rawBody: string, deliveryId: string) {

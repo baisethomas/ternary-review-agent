@@ -15,6 +15,7 @@ import { getWatchedRepositories, normalizeRepositoryName } from "./repository-wa
 import { selectReviewRepositories } from "./review-repository-selection";
 import { listDashboardReviewJobs } from "./review-queue-service";
 import { applyReviewJobState, findReviewJob, indexReviewJobs } from "./dashboard-review-state";
+import { loadFindingLifecycles } from "./finding-lifecycle-service";
 
 export type DashboardRepository = {
   id: number;
@@ -224,12 +225,15 @@ export async function getDashboardData(requestedRepository?: string): Promise<Da
   if (selectedRecord && selectedRepository) {
     const openPullRequests = await listOpenPullRequests(selectedRepository.owner, selectedRepository.name, selectedRecord.token);
     pullRequests = await Promise.all(openPullRequests.map(async (pull) => {
-      const [details, checks] = await Promise.all([
+      const [details, checks, findingLifecycles] = await Promise.all([
         getPullRequest(selectedRepository.owner, selectedRepository.name, pull.number, selectedRecord.token),
         listTernaryCheckRuns(selectedRepository.owner, selectedRepository.name, pull.head.sha, selectedRecord.token),
+        loadFindingLifecycles({ installationId: selectedRepository.installationId, owner: selectedRepository.owner, repo: selectedRepository.name }, pull.number, pull.head.sha).catch(() => []),
       ]);
       const latestCheck = checks.check_runs.sort((a, b) => Date.parse(b.started_at ?? "") - Date.parse(a.started_at ?? ""))[0];
       const queueJob = findReviewJob(reviewJobIndex, selectedRepository.owner, selectedRepository.name, pull.number, pull.head.sha);
+      const check = applyReviewJobState(parseCheck(latestCheck), queueJob);
+      if (findingLifecycles.length) check.findings = findingLifecycles;
       return {
         key: `${selectedRepository.fullName}#${pull.number}`,
         owner: selectedRepository.owner,
@@ -248,7 +252,7 @@ export async function getDashboardData(requestedRepository?: string): Promise<Da
         headBranch: pull.head.ref,
         baseBranch: pull.base.ref,
         headSha: pull.head.sha,
-        check: applyReviewJobState(parseCheck(latestCheck), queueJob),
+        check,
       } satisfies DashboardPullRequest;
     }));
   }
