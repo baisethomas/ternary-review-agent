@@ -32,12 +32,12 @@ function reviewResult(value: unknown): ReviewResult {
   return value as ReviewResult;
 }
 
-export function recordReviewRequested(ledger: ReviewEventLedger, request: ReviewRequest, source: ReviewSource, clock: EventClock = {}) {
+export function recordReviewRequested(ledger: ReviewEventLedger, request: ReviewRequest & { id?: string }, source: ReviewSource, clock: EventClock = {}) {
   const idempotencyKey = source.idempotencyKey ?? (source.deliveryId ? `github-delivery:${source.deliveryId}:review.requested` : `${reviewIdentity(request)}:review.requested`);
   return ledger.append({
     ...eventBase(request, idempotencyKey, clock),
     type: "review.requested",
-    payload: { source: source.source, ...(source.deliveryId ? { deliveryId: source.deliveryId } : {}) },
+    payload: { source: source.source, analyticsVersion: 1, ...(source.deliveryId ? { deliveryId: source.deliveryId } : {}), ...(request.author ? { author: request.author } : {}), ...(request.id ? { jobId: request.id } : {}) },
   });
 }
 
@@ -54,6 +54,40 @@ export async function recordPullRequestMerged(
     ...eventBase(request, `github-delivery:${merge.deliveryId}:pull_request.merged`, { ...clock, now: () => Date.parse(merge.mergedAt) }),
     type: "pull_request.merged",
     payload: { mergedAt: merge.mergedAt, ...(merge.mergedBy ? { mergedBy: merge.mergedBy } : {}) },
+  });
+  return { recorded: true as const, ...appended };
+}
+
+export async function recordPullRequestClosed(
+  ledger: ReviewEventLedger,
+  request: ReviewRequest,
+  close: { deliveryId: string; closedAt: string },
+  clock: EventClock = {},
+) {
+  const scope = { installationId: request.installationId, owner: request.owner, repo: request.repo };
+  const prior = await ledger.list(scope, { pullNumber: request.pullNumber, limit: 1 });
+  if (!prior.events.length) return { recorded: false as const };
+  const appended = await ledger.append({
+    ...eventBase(request, `github-delivery:${close.deliveryId}:pull_request.closed`, { ...clock, now: () => Date.parse(close.closedAt) }),
+    type: "pull_request.closed",
+    payload: { closedAt: close.closedAt },
+  });
+  return { recorded: true as const, ...appended };
+}
+
+export async function recordPullRequestReopened(
+  ledger: ReviewEventLedger,
+  request: ReviewRequest,
+  reopen: { deliveryId: string; reopenedAt: string },
+  clock: EventClock = {},
+) {
+  const scope = { installationId: request.installationId, owner: request.owner, repo: request.repo };
+  const prior = await ledger.list(scope, { pullNumber: request.pullNumber, limit: 1 });
+  if (!prior.events.length) return { recorded: false as const };
+  const appended = await ledger.append({
+    ...eventBase(request, `github-delivery:${reopen.deliveryId}:pull_request.reopened`, { ...clock, now: () => Date.parse(reopen.reopenedAt) }),
+    type: "pull_request.reopened",
+    payload: { reopenedAt: reopen.reopenedAt },
   });
   return { recorded: true as const, ...appended };
 }
@@ -107,6 +141,7 @@ export function createReviewEventLifecycle(ledger: ReviewEventLedger, clock: Eve
               return commands;
             }, []),
           },
+          ...(result.ai ? { ai: result.ai } : {}),
         },
       };
       await ledger.append(event);

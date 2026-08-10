@@ -1,0 +1,132 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({ catalog: vi.fn(), pages: vi.fn() }));
+vi.mock("server-only", () => ({}));
+vi.mock("./dashboard-data", () => ({ getRepositoryDashboardData: mocks.catalog }));
+vi.mock("./review-event-query-service", () => ({ reviewEventPagesForScope: mocks.pages }));
+
+import { analyticsEventPages, loadReviewAnalytics } from "./review-analytics-service";
+import type { ReviewEvent } from "./review-event-ledger";
+
+const repositories = [
+  { installationId: 7, owner: "Ternary", name: "Agent", fullName: "Ternary/Agent", watched: true },
+  { installationId: 7, owner: "Ternary", name: "History", fullName: "Ternary/History", watched: false },
+  { installationId: 8, owner: "Other", name: "Tool", fullName: "Other/Tool", watched: true },
+];
+
+const unfinishedLegacyRequest = {
+  eventId: "legacy-request", idempotencyKey: "legacy-request", reviewId: "ternary/agent#8:head", type: "review.requested" as const,
+  occurredAt: "2026-08-01T00:00:00.000Z", scope: { installationId: 7, owner: "Ternary", repo: "Agent" }, pullNumber: 8, headSha: "head",
+  payload: { source: "github" as const, author: "Ada" },
+};
+
+describe("review analytics service", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.catalog.mockResolvedValue({ repositories });
+    mocks.pages.mockImplementation(() => (async function* () { yield []; })());
+  });
+
+  it("keeps paused repository history in organization analytics", async () => {
+    const data = await loadReviewAnalytics({ organization: "ternary" });
+
+    expect(mocks.pages).toHaveBeenCalledTimes(2);
+    expect(mocks.pages).toHaveBeenCalledWith({ installationId: 7, owner: "Ternary", repo: "History" });
+    expect(data.repositories).toEqual(["Ternary/Agent", "Ternary/History", "Other/Tool"]);
+    expect(data.organizations).toEqual(["Other", "Ternary"]);
+  });
+
+  it("streams one repository at a time for exports", async () => {
+    const pages = await analyticsEventPages({ organization: "ternary" });
+    const iterator = pages[Symbol.asyncIterator]();
+
+    await iterator.next();
+    expect(mocks.pages).toHaveBeenCalledTimes(1);
+    await iterator.next();
+    expect(mocks.pages).toHaveBeenCalledTimes(2);
+  });
+
+  it("exports matching unfinished reviews recorded before job identity was added", async () => {
+    mocks.catalog.mockResolvedValue({ repositories: [repositories[0]] });
+    mocks.pages.mockImplementation(() => (async function* () { yield [unfinishedLegacyRequest]; })());
+    const pages = await analyticsEventPages({ author: "ada" });
+    const exported = [];
+    for await (const page of pages) exported.push(...page);
+
+    expect(exported).toEqual([unfinishedLegacyRequest]);
+  });
+
+  it("retains a merge recorded before a matching filtered review completes", async () => {
+    mocks.catalog.mockResolvedValue({ repositories: [repositories[0]] });
+    const base = { scope: { installationId: 7, owner: "Ternary", repo: "Agent" }, pullNumber: 8, headSha: "head", reviewId: "ternary/agent#8:head" };
+    const requested = { ...base, eventId: "requested", idempotencyKey: "requested", type: "review.requested" as const, occurredAt: "2026-08-01T00:00:00.000Z", payload: { source: "github" as const, jobId: "job-1" } };
+    const merged = { ...base, eventId: "merged", idempotencyKey: "merged", type: "pull_request.merged" as const, occurredAt: "2026-08-01T00:00:01.000Z", payload: { mergedAt: "2026-08-01T00:00:01.000Z" } };
+    const completed = { ...base, eventId: "completed", idempotencyKey: "completed", type: "review.completed" as const, occurredAt: "2026-08-01T00:00:02.000Z", payload: { jobId: "job-1", attempt: 1, verdict: "approve" as const, summary: "Pass", findings: [], sandbox: { sandboxId: "sandbox", durationMs: 1_000, commands: [] } } };
+    mocks.pages.mockImplementation(() => (async function* () { yield [requested, merged]; yield [completed]; })());
+    const pages = await analyticsEventPages({ outcome: "approve" });
+    const exported = [];
+    for await (const page of pages) exported.push(...page);
+
+    expect(exported.map((event) => event.type)).toEqual(["review.requested", "pull_request.merged", "review.completed"]);
+  });
+
+  it("exports a pull-request outcome once when multiple unfinished runs match", async () => {
+    mocks.catalog.mockResolvedValue({ repositories: [repositories[0]] });
+    const base = { scope: { installationId: 7, owner: "Ternary", repo: "Agent" }, pullNumber: 8, headSha: "head", reviewId: "ternary/agent#8:head" };
+    const requested = (jobId: string, eventId: string) => ({ ...base, eventId, idempotencyKey: eventId, type: "review.requested" as const, occurredAt: `2026-08-01T00:00:0${jobId === "job-1" ? "0" : "2"}.000Z`, payload: { source: "github" as const, author: "Ada", jobId } });
+    const merged = { ...base, eventId: "merged", idempotencyKey: "merged", type: "pull_request.merged" as const, occurredAt: "2026-08-01T00:00:01.000Z", payload: { mergedAt: "2026-08-01T00:00:01.000Z" } };
+    mocks.pages.mockImplementation(() => (async function* () { yield [requested("job-1", "requested-1"), merged]; yield [requested("job-2", "requested-2")]; })());
+    const pages = await analyticsEventPages({ author: "ada" });
+    const exported = [];
+    for await (const page of pages) exported.push(...page);
+
+    expect(exported.filter((event) => event.eventId === "merged")).toHaveLength(1);
+    expect(exported.filter((event) => event.type === "review.requested")).toHaveLength(2);
+  });
+
+  it("aggregates high-volume history page by page without retaining event pages", async () => {
+    mocks.catalog.mockResolvedValue({ repositories: [repositories[0]] });
+    mocks.pages.mockImplementation(() => (async function* () {
+      for (let page = 0; page < 100; page += 1) {
+        const scope = { installationId: 7, owner: "Ternary", repo: "Agent" };
+        yield Array.from({ length: 100 }, (_, index) => {
+          const jobId = `job-${page}-${Math.floor(index / 2)}`;
+          const queued = index % 2 === 0;
+          return {
+            eventId: `${queued ? "queued" : "started"}-${jobId}`,
+            idempotencyKey: `${queued ? "queued" : "started"}-${jobId}`,
+            reviewId: `review-${jobId}`,
+            type: queued ? "review.queued" as const : "review.started" as const,
+            occurredAt: queued ? "2026-08-01T00:00:00.000Z" : "2026-08-01T00:00:01.000Z",
+            scope,
+            pullNumber: 8,
+            headSha: "head",
+            payload: queued ? { jobId } : { jobId, attempt: 1 },
+          } as ReviewEvent;
+        });
+      }
+    })());
+
+    const data = await loadReviewAnalytics();
+
+    expect(data.analytics.latency.queueSamples).toBe(5_000);
+    expect(data.analytics.latency.averageQueueMs).toBe(1_000);
+    expect(mocks.pages).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds dashboard ledger loading to one repository at a time", async () => {
+    let releaseFirst: (() => void) | undefined;
+    const firstRepository = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    mocks.pages.mockImplementation((scope: { repo: string }) => (async function* () {
+      if (scope.repo === "Agent") await firstRepository;
+      yield [];
+    })());
+
+    const loading = loadReviewAnalytics();
+    await vi.waitFor(() => expect(mocks.pages).toHaveBeenCalledTimes(1));
+    releaseFirst?.();
+    await loading;
+
+    expect(mocks.pages).toHaveBeenCalledTimes(repositories.length);
+  });
+});

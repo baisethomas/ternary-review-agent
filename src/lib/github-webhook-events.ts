@@ -2,7 +2,7 @@ import "server-only";
 import { isRepositoryWatched } from "./repository-watch";
 import { enqueueAndDispatchReview } from "./review-queue-service";
 import { webhookReviewIdempotencyKeys } from "./review-submission";
-import { recordPullRequestMergedEvent } from "./review-event-ledger-service";
+import { recordPullRequestClosedEvent, recordPullRequestMergedEvent, recordPullRequestReopenedEvent } from "./review-event-ledger-service";
 import { dispatchRepositoryIndexTask } from "./repository-index-dispatcher";
 import type { WebhookReviewRequest } from "./types";
 
@@ -10,7 +10,7 @@ type PullRequestWebhook = {
   action: string;
   installation?: { id: number };
   repository: { name: string; owner: { login: string }; clone_url: string };
-  pull_request: { number: number; draft: boolean; merged?: boolean; merged_at?: string; merged_by?: { login: string }; head: { sha: string } };
+  pull_request: { number: number; draft: boolean; user?: { login: string }; updated_at?: string; merged?: boolean; merged_at?: string; closed_at?: string; merged_by?: { login: string }; head: { sha: string } };
 };
 
 type PushWebhook = {
@@ -80,16 +80,27 @@ const handleInstallation: WebhookHandler = async (rawBody, deliveryId) => {
 const handlePullRequest: WebhookHandler = async (rawBody, deliveryId) => {
   const payload = JSON.parse(rawBody) as PullRequestWebhook;
   const fullName = `${payload.repository.owner.login}/${payload.repository.name}`;
-  if (payload.action === "closed" && payload.pull_request.merged && payload.pull_request.merged_at && payload.installation?.id) {
-    await recordPullRequestMergedEvent({
-      owner: payload.repository.owner.login,
-      repo: payload.repository.name,
-      pullNumber: payload.pull_request.number,
-      installationId: payload.installation.id,
-      headSha: payload.pull_request.head.sha,
-      cloneUrl: payload.repository.clone_url,
-    }, { deliveryId, mergedAt: payload.pull_request.merged_at, mergedBy: payload.pull_request.merged_by?.login });
-    return Response.json({ accepted: true, delivery: deliveryId, merged: true }, { status: 202 });
+  const reviewRequest = payload.installation?.id ? {
+    owner: payload.repository.owner.login,
+    repo: payload.repository.name,
+    pullNumber: payload.pull_request.number,
+    installationId: payload.installation.id,
+    headSha: payload.pull_request.head.sha,
+    cloneUrl: payload.repository.clone_url,
+  } : null;
+  if (payload.action === "reopened" && reviewRequest && payload.pull_request.updated_at) {
+    await recordPullRequestReopenedEvent(reviewRequest, { deliveryId, reopenedAt: payload.pull_request.updated_at });
+  }
+  if (payload.action === "closed" && payload.installation?.id) {
+    if (!reviewRequest) throw new Error("Closed pull request did not include an installation");
+    if (payload.pull_request.merged && payload.pull_request.merged_at) {
+      await recordPullRequestMergedEvent(reviewRequest, { deliveryId, mergedAt: payload.pull_request.merged_at, mergedBy: payload.pull_request.merged_by?.login });
+      return Response.json({ accepted: true, delivery: deliveryId, merged: true }, { status: 202 });
+    }
+    if (payload.pull_request.closed_at) {
+      await recordPullRequestClosedEvent(reviewRequest, { deliveryId, closedAt: payload.pull_request.closed_at });
+      return Response.json({ accepted: true, delivery: deliveryId, merged: false }, { status: 202 });
+    }
   }
   if (!reviewActions.has(payload.action) || payload.pull_request.draft || !payload.installation?.id) {
     return Response.json({ accepted: false, reason: "Pull request does not require a review" });
@@ -103,6 +114,7 @@ const handlePullRequest: WebhookHandler = async (rawBody, deliveryId) => {
     headSha: payload.pull_request.head.sha,
     cloneUrl: payload.repository.clone_url,
     webhookDeliveryId: deliveryId,
+    author: payload.pull_request.user?.login,
   };
   const job = await enqueueAndDispatchReview(review, webhookReviewIdempotencyKeys(review), deliveryId);
   return Response.json({ accepted: true, delivery: deliveryId, jobId: job.id }, { status: 202 });

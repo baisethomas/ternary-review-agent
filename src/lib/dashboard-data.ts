@@ -239,8 +239,8 @@ export async function getDashboardData(requestedRepository?: string): Promise<Da
         title: pull.title,
         url: pull.html_url,
         draft: pull.draft,
-        author: pull.user.login,
-        authorAvatar: pull.user.avatar_url,
+        author: pull.user?.login ?? "Deleted user",
+        authorAvatar: pull.user?.avatar_url ?? "",
         updatedAt: pull.updated_at,
         additions: details.additions,
         deletions: details.deletions,
@@ -278,5 +278,6 @@ export async function resolveReviewRequest(owner: string, repo: string, pullNumb
     installationId: match.installation.id,
     headSha: pull.head.sha,
     cloneUrl: match.repository.clone_url,
+    author: pull.user?.login,
   };
 }

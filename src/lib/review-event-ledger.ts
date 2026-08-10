@@ -17,6 +17,7 @@ type ReviewEventBase<Type extends string, Payload> = {
 export type FindingSnapshot = {
   findingId: string;
   findingKey?: string;
+  ruleId?: string;
   severity: "blocking" | "warning" | "suggestion";
   file: string;
   line?: number;
@@ -32,13 +33,15 @@ export type SandboxEvidence = {
 };
 
 export type ReviewEvent =
-  | ReviewEventBase<"review.requested", { source: "github" | "dashboard" | "api"; deliveryId?: string }>
+  | ReviewEventBase<"review.requested", { source: "github" | "dashboard" | "api"; deliveryId?: string; author?: string; jobId?: string; analyticsVersion?: 1 }>
   | ReviewEventBase<"review.queued", { jobId: string }>
   | ReviewEventBase<"review.started", { jobId: string; attempt: number }>
   | ReviewEventBase<"review.retry_scheduled", { jobId: string; attempt: number; availableAt: string; error: string }>
-  | ReviewEventBase<"review.completed", { jobId: string; attempt: number; verdict: "approve" | "request_changes" | "comment"; summary: string; findings: FindingSnapshot[]; sandbox: SandboxEvidence }>
+  | ReviewEventBase<"review.completed", { jobId: string; attempt: number; verdict: "approve" | "request_changes" | "comment"; summary: string; findings: FindingSnapshot[]; sandbox: SandboxEvidence; ai?: { model: string; latencyMs: number; inputTokens?: number; outputTokens?: number; estimatedCostUsd?: number } }>
   | ReviewEventBase<"review.failed", { jobId: string; attempt: number; error: string }>
   | ReviewEventBase<"pull_request.merged", { mergedBy?: string; mergedAt: string }>
+  | ReviewEventBase<"pull_request.closed", { closedAt: string }>
+  | ReviewEventBase<"pull_request.reopened", { reopenedAt: string }>
   | ReviewEventBase<"finding.feedback_recorded", { findingId: string; kind: "accepted" | "dismissed" | "resolved" | "reopened" | "reaction" | "reply"; actor?: string; reason?: string }>;
 
 export type ReviewEventPage = { events: ReviewEvent[]; nextCursor: string | null };

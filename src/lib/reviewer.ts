@@ -6,7 +6,7 @@ import { getRepositoryReviewContext } from "./repository-context-service";
 import type { ReviewLease } from "./review-queue";
 import type { ReviewFinding, ReviewRequest, ReviewResult, SandboxResult } from "./types";
 
-const systemPrompt = `You are Ternary, a senior code review agent. Review only material problems introduced by this pull request. Prioritize correctness, security, concurrency, data loss, and missing tests. Do not report style preferences. Return strict JSON with: verdict (approve|request_changes|comment), summary, and findings. Each finding has a unique findingKey that remains stable when line numbers or wording change (derive it from the issue category and affected symbol), severity (blocking|warning|suggestion), file, optional line, title, explanation, and optional suggestedFix.`;
+const systemPrompt = `You are Ternary, a senior code review agent. Review only material problems introduced by this pull request. Prioritize correctness, security, concurrency, data loss, and missing tests. Do not report style preferences. Return strict JSON with: verdict (approve|request_changes|comment), summary, and findings. Each finding has a ruleId for its stable review-rule family (for example security-authorization or correctness-concurrency), plus a unique findingKey that combines that rule with the affected symbol and remains stable when line numbers or wording change. Each finding also has severity (blocking|warning|suggestion), file, optional line, title, explanation, and optional suggestedFix.`;
 
 function fallbackReview(sandbox: SandboxResult): ReviewResult {
   return {
@@ -21,11 +21,13 @@ async function generateReview(diff: string, sandbox: SandboxResult, repositoryCo
   if (!process.env.OPENAI_API_KEY) return fallbackReview(sandbox);
   const maxDiffChars = Number(process.env.MAX_DIFF_CHARS ?? 160_000);
   const input = `PR DIFF:\n${diff.slice(0, maxDiffChars)}\n\nREPOSITORY CONTEXT:\n${repositoryContext || "No matching repository context was available."}\n\nSANDBOX RESULT:\n${JSON.stringify(sandbox)}`;
+  const model = process.env.OPENAI_MODEL ?? "gpt-5.6-sol";
+  const startedAt = Date.now();
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
     body: JSON.stringify({
-      model: process.env.OPENAI_MODEL ?? "gpt-5.6-sol",
+      model,
       instructions: systemPrompt,
       input,
       text: { format: { type: "json_schema", name: "code_review", strict: true, schema: reviewSchema } },
@@ -36,16 +38,28 @@ async function generateReview(diff: string, sandbox: SandboxResult, repositoryCo
     const retryable = isRetryableHttpStatus(response.status);
     throw retryable ? new Error(message) : new NonRetryableReviewError(message);
   }
-  const payload = await response.json() as { output_text?: string; output?: Array<{ content?: Array<{ type: string; text?: string }> }> };
+  const payload = await response.json() as { output_text?: string; output?: Array<{ content?: Array<{ type: string; text?: string }> }>; usage?: { input_tokens?: number; output_tokens?: number } };
   const text = payload.output_text ?? payload.output?.flatMap((item) => item.content ?? []).find((item) => item.type === "output_text")?.text;
   if (!text) throw new NonRetryableReviewError("AI response did not include review output");
   try {
     const review = JSON.parse(text) as Omit<ReviewResult, "sandbox">;
     const findingKeys = review.findings.map((finding) => finding.findingKey?.toLowerCase() ?? null);
-    if (findingKeys.some((key) => !key) || new Set(findingKeys).size !== findingKeys.length) {
-      throw new NonRetryableReviewError("AI response included missing or duplicate finding keys");
+    const ruleIds = review.findings.map((finding) => finding.ruleId?.toLowerCase() ?? null);
+    if (findingKeys.some((key) => !key) || new Set(findingKeys).size !== findingKeys.length || ruleIds.some((ruleId) => !ruleId)) {
+      throw new NonRetryableReviewError("AI response included missing rule IDs or missing/duplicate finding keys");
     }
-    return { ...review, sandbox };
+    const inputTokens = payload.usage?.input_tokens;
+    const outputTokens = payload.usage?.output_tokens;
+    const inputRate = process.env.OPENAI_INPUT_COST_PER_MILLION ? Number(process.env.OPENAI_INPUT_COST_PER_MILLION) : undefined;
+    const outputRate = process.env.OPENAI_OUTPUT_COST_PER_MILLION ? Number(process.env.OPENAI_OUTPUT_COST_PER_MILLION) : undefined;
+    const estimatedCostUsd = inputTokens !== undefined && outputTokens !== undefined && inputRate !== undefined && outputRate !== undefined && Number.isFinite(inputRate) && Number.isFinite(outputRate)
+      ? (inputTokens * inputRate + outputTokens * outputRate) / 1_000_000
+      : undefined;
+    return {
+      ...review,
+      sandbox,
+      ai: { model, latencyMs: Date.now() - startedAt, ...(inputTokens !== undefined ? { inputTokens } : {}), ...(outputTokens !== undefined ? { outputTokens } : {}), ...(estimatedCostUsd !== undefined ? { estimatedCostUsd } : {}) },
+    };
   } catch (error) {
     if (error instanceof NonRetryableReviewError) throw error;
     throw new NonRetryableReviewError("AI response was not valid review JSON", { cause: error });
@@ -63,8 +77,9 @@ const reviewSchema = {
       type: "array",
       items: {
         type: "object", additionalProperties: false,
-        required: ["findingKey", "severity", "file", "line", "title", "explanation", "suggestedFix"],
+        required: ["ruleId", "findingKey", "severity", "file", "line", "title", "explanation", "suggestedFix"],
         properties: {
+          ruleId: { type: "string" },
           findingKey: { type: "string" },
           severity: { type: "string", enum: ["blocking", "warning", "suggestion"] },
           file: { type: "string" }, line: { type: ["number", "null"] }, title: { type: "string" },
