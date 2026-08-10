@@ -58,6 +58,24 @@ export async function recordPullRequestMerged(
   return { recorded: true as const, ...appended };
 }
 
+export function recordFindingFeedback(
+  ledger: ReviewEventLedger,
+  request: ReviewRequest,
+  feedback: { feedbackId: string; findingId: string; kind: "accepted" | "dismissed" | "resolved" | "reopened" | "reaction" | "reply"; actor?: string; reason?: string },
+  clock: EventClock = {},
+) {
+  return ledger.append({
+    ...eventBase(request, `github-feedback:${feedback.feedbackId}`, clock),
+    type: "finding.feedback_recorded",
+    payload: {
+      findingId: feedback.findingId,
+      kind: feedback.kind,
+      ...(feedback.actor ? { actor: feedback.actor } : {}),
+      ...(feedback.reason ? { reason: feedback.reason } : {}),
+    },
+  });
+}
+
 export function createReviewEventLifecycle(ledger: ReviewEventLedger, clock: EventClock = {}): ReviewQueueLifecycle {
   return {
     async queued(job) {

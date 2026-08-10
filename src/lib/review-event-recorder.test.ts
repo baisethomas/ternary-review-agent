@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryReviewEventLedger, reviewIdentity } from "./review-event-ledger";
-import { createReviewEventLifecycle, recordPullRequestMerged, recordReviewRequested } from "./review-event-recorder";
+import { createReviewEventLifecycle, recordFindingFeedback, recordPullRequestMerged, recordReviewRequested } from "./review-event-recorder";
 import type { ReviewJob } from "./review-queue";
 import type { ReviewRequest, ReviewResult } from "./types";
 
@@ -41,5 +41,17 @@ describe("review event recorder", () => {
       .resolves.toMatchObject({ recorded: true });
     await expect(ledger.list({ installationId: request.installationId, owner: request.owner, repo: request.repo }))
       .resolves.toMatchObject({ events: [expect.objectContaining({ type: "review.requested" }), expect.objectContaining({ type: "pull_request.merged" })] });
+  });
+
+  it("records developer feedback idempotently against a stable finding", async () => {
+    const ledger = new InMemoryReviewEventLedger();
+    const feedback = { feedbackId: "reaction-1", findingId: "ternary/agent#8:finding:auth", kind: "dismissed" as const, actor: "octocat", reason: "False positive" };
+
+    await recordFindingFeedback(ledger, request, feedback, { eventId: () => "feedback-1", now: () => 1_500 });
+    await recordFindingFeedback(ledger, request, feedback, { eventId: () => "feedback-retry", now: () => 1_600 });
+
+    await expect(ledger.list({ installationId: 7, owner: "ternary", repo: "agent" })).resolves.toMatchObject({
+      events: [expect.objectContaining({ type: "finding.feedback_recorded", payload: expect.objectContaining({ findingId: feedback.findingId, kind: "dismissed" }) })],
+    });
   });
 });

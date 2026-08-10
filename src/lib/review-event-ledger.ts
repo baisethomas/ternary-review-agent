@@ -38,7 +38,8 @@ export type ReviewEvent =
   | ReviewEventBase<"review.retry_scheduled", { jobId: string; attempt: number; availableAt: string; error: string }>
   | ReviewEventBase<"review.completed", { jobId: string; attempt: number; verdict: "approve" | "request_changes" | "comment"; summary: string; findings: FindingSnapshot[]; sandbox: SandboxEvidence }>
   | ReviewEventBase<"review.failed", { jobId: string; attempt: number; error: string }>
-  | ReviewEventBase<"pull_request.merged", { mergedBy?: string; mergedAt: string }>;
+  | ReviewEventBase<"pull_request.merged", { mergedBy?: string; mergedAt: string }>
+  | ReviewEventBase<"finding.feedback_recorded", { findingId: string; kind: "accepted" | "dismissed" | "resolved" | "reopened" | "reaction" | "reply"; actor?: string; reason?: string }>;
 
 export type ReviewEventPage = { events: ReviewEvent[]; nextCursor: string | null };
 export type ReviewEventQuery = { after?: string; limit?: number; reviewId?: string; pullNumber?: number };
