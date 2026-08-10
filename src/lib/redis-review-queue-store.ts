@@ -122,7 +122,7 @@ return 1
 
 const recoverScript = `
 local expired = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", ARGV[1])
-local recovered = 0
+local recovered = {}
 for _, id in ipairs(expired) do
   local jobKey = ARGV[2] .. id
   local encoded = redis.call("GET", jobKey)
@@ -151,7 +151,7 @@ for _, id in ipairs(expired) do
       end
       if redis.call("GET", installationLock) == id then redis.call("DEL", installationLock) end
       if redis.call("GET", repositoryLock) == id then redis.call("DEL", repositoryLock) end
-      recovered = recovered + 1
+      table.insert(recovered, cjson.encode(job))
     end
   end
   redis.call("ZREM", KEYS[1], id)
@@ -239,7 +239,7 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
   }
 
   recoverExpired(now: number) {
-    return this.redis.eval<[number, string, string, number], number>(
+    return this.redis.eval<[number, string, string, number], ReviewJob[]>(
       recoverScript,
       [this.activeKey, this.scheduledKey, this.terminalKey],
       [now, this.jobPrefix, this.lockPrefix, terminalJobRetentionSeconds],
@@ -260,6 +260,16 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
 
   async list(limit: number) {
     const ids = await this.redis.zrange<string[]>(this.allKey, 0, Math.max(0, limit - 1), { rev: true });
+    const jobs = await Promise.all(ids.map((id) => this.get(id)));
+    return jobs.filter((job): job is ReviewJob => Boolean(job));
+  }
+
+  async listActive() {
+    const [scheduledIds, runningIds] = await Promise.all([
+      this.redis.zrange<string[]>(this.scheduledKey, 0, -1),
+      this.redis.zrange<string[]>(this.activeKey, 0, -1),
+    ]);
+    const ids = [...new Set([...scheduledIds, ...runningIds])];
     const jobs = await Promise.all(ids.map((id) => this.get(id)));
     return jobs.filter((job): job is ReviewJob => Boolean(job));
   }

@@ -1,5 +1,5 @@
 import { isDashboardAuthenticated } from "@/lib/dashboard-auth";
-import { PausedRepositoryReviewError, submitDashboardReview } from "@/lib/dashboard-review-service";
+import { PausedRepositoryReviewError, ReviewSubmissionConflictError, submitDashboardReview } from "@/lib/dashboard-review-service";
 import { isValidInvocationId } from "@/lib/review-submission";
 
 export const maxDuration = 300;
@@ -14,6 +14,7 @@ export async function POST(request: Request) {
     const { review, job } = await submitDashboardReview(body.owner, body.repo, Number(body.pullNumber), body.invocationId);
     return Response.json({ accepted: true, headSha: review.headSha, jobId: job.id }, { status: 202 });
   } catch (error) {
+    if (error instanceof ReviewSubmissionConflictError) return Response.json({ error: error.message }, { status: 409 });
     const message = error instanceof Error ? error.message : "Unable to start review";
     return Response.json({ error: message }, { status: error instanceof PausedRepositoryReviewError ? 409 : 400 });
   }

@@ -16,6 +16,6 @@ export async function POST(request: Request) {
   const invocationId = request.headers.get("idempotency-key");
   if (!isValidInvocationId(invocationId)) return Response.json({ error: "A valid Idempotency-Key header is required" }, { status: 400 });
   const review = body as ReviewRequest;
-  const job = await enqueueAndTryDispatchReview(review, manualReviewIdempotencyKey(review, invocationId));
+  const job = await enqueueAndTryDispatchReview(review, manualReviewIdempotencyKey(review, invocationId), invocationId);
   return Response.json({ accepted: true, jobId: job.id }, { status: 202 });
 }

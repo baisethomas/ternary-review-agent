@@ -1,5 +1,7 @@
 import { verifyWebhookSignature } from "@/lib/github";
 import { handleGitHubWebhook } from "@/lib/github-webhook-events";
+import { announceDashboardChange } from "@/lib/dashboard-change-service";
+import { after } from "next/server";
 
 export const maxDuration = 300;
 
@@ -10,5 +12,7 @@ export async function POST(request: Request) {
   }
   const deliveryId = request.headers.get("x-github-delivery");
   if (!deliveryId) return Response.json({ error: "Missing GitHub delivery ID" }, { status: 400 });
-  return handleGitHubWebhook(request.headers.get("x-github-event"), rawBody, deliveryId);
+  const response = await handleGitHubWebhook(request.headers.get("x-github-event"), rawBody, deliveryId);
+  after(() => announceDashboardChange());
+  return response;
 }

@@ -1,4 +1,5 @@
 import { createInstallationToken, finishCheckRun, getOrCreateCheckRun, getPullRequestDiff, upsertPullRequestComment } from "./github";
+import { announceDashboardChange } from "./dashboard-change-service";
 import { isRetryableHttpStatus, NonRetryableReviewError, ReviewLeaseLostError } from "./review-errors";
 import { runInSandbox } from "./sandbox";
 import { getRepositoryReviewContext } from "./repository-context-service";
@@ -82,6 +83,7 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
   const token = await createInstallationToken(request.installationId);
   await lease?.assertActive();
   const check = await getOrCreateCheckRun(request.owner, request.repo, request.headSha, token, request.id);
+  await announceDashboardChange();
   try {
     const [diff, sandbox] = await Promise.all([
       getPullRequestDiff(request.owner, request.repo, request.pullNumber, token),
@@ -102,6 +104,8 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
     await lease?.assertActive();
     await finishCheckRun(request.owner, request.repo, check.id, token, "failure", "Review failed", message);
     throw error;
+  } finally {
+    await announceDashboardChange();
   }
 }
 

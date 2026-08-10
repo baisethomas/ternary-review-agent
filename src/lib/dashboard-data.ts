@@ -13,6 +13,8 @@ import {
 import type { ReviewFinding, ReviewRequest, ReviewResult } from "./types";
 import { getWatchedRepositories, normalizeRepositoryName } from "./repository-watch";
 import { selectReviewRepositories } from "./review-repository-selection";
+import { listDashboardReviewJobs } from "./review-queue-service";
+import { applyReviewJobState, findReviewJob, indexReviewJobs } from "./dashboard-review-state";
 
 export type DashboardRepository = {
   id: number;
@@ -29,7 +31,7 @@ export type DashboardRepository = {
 };
 
 export type DashboardCheck = {
-  status: "not_reviewed" | "reviewing" | "passed" | "reviewed" | "changes" | "failed";
+  status: "not_reviewed" | "queued" | "reviewing" | "passed" | "reviewed" | "changes" | "failed";
   conclusion: GitHubCheckRun["conclusion"];
   title: string;
   summary: string;
@@ -209,7 +211,9 @@ export async function getRepositoryDashboardData(): Promise<RepositoryDashboardD
 }
 
 export async function getDashboardData(requestedRepository?: string): Promise<DashboardData> {
-  const { app, installedRepositories, repositories } = await getRepositoryCatalog();
+  const [catalog, reviewJobs] = await Promise.all([getRepositoryCatalog(), listDashboardReviewJobs().catch(() => [])]);
+  const { app, installedRepositories, repositories } = catalog;
+  const reviewJobIndex = indexReviewJobs(reviewJobs);
   const reviewSelection = selectReviewRepositories(repositories, requestedRepository);
   const selectedRepository = reviewSelection.selectedRepository;
   const selectedRecord = selectedRepository
@@ -225,6 +229,7 @@ export async function getDashboardData(requestedRepository?: string): Promise<Da
         listTernaryCheckRuns(selectedRepository.owner, selectedRepository.name, pull.head.sha, selectedRecord.token),
       ]);
       const latestCheck = checks.check_runs.sort((a, b) => Date.parse(b.started_at ?? "") - Date.parse(a.started_at ?? ""))[0];
+      const queueJob = findReviewJob(reviewJobIndex, selectedRepository.owner, selectedRepository.name, pull.number, pull.head.sha);
       return {
         key: `${selectedRepository.fullName}#${pull.number}`,
         owner: selectedRepository.owner,
@@ -243,7 +248,7 @@ export async function getDashboardData(requestedRepository?: string): Promise<Da
         headBranch: pull.head.ref,
         baseBranch: pull.base.ref,
         headSha: pull.head.sha,
-        check: parseCheck(latestCheck),
+        check: applyReviewJobState(parseCheck(latestCheck), queueJob),
       } satisfies DashboardPullRequest;
     }));
   }

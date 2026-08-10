@@ -29,6 +29,17 @@ describe("repository index webhook events", () => {
     expect(mocks.dispatchIndex).toHaveBeenCalledWith({ action: "updateDefaultBranch", installationId: 7, owner: "ternary", repo: "agent", defaultBranch: "main", changedAt: Date.parse("2026-08-09T00:00:00.000Z") });
   });
 
+  it("uses the repository full name when an installation event omits the owner object", async () => {
+    const response = await handleGitHubWebhook("installation_repositories", JSON.stringify({
+      action: "added",
+      installation: { id: 7, updated_at: "2026-08-09T00:00:00.000Z", account: { login: "ternary" } },
+      repositories_added: [{ name: "agent", full_name: "ternary/agent", default_branch: "main" }],
+    }), "delivery-added-without-owner");
+
+    expect(response.status).toBe(202);
+    expect(mocks.dispatchIndex).toHaveBeenCalledWith({ action: "restoreRepository", installationId: 7, owner: "ternary", repo: "agent", changedAt: Date.parse("2026-08-09T00:00:00.000Z") });
+  });
+
   it("restores a re-added paused repository without starting background indexing", async () => {
     mocks.watched.mockResolvedValueOnce(false);
     await handleGitHubWebhook("installation_repositories", JSON.stringify({
