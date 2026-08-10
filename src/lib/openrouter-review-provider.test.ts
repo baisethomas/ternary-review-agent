@@ -45,6 +45,7 @@ describe("OpenRouter review provider", () => {
       }],
     };
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      model: "openai/gpt-5.6-terra-20260801",
       choices: [{ message: { content: JSON.stringify(review) } }],
       usage: { prompt_tokens: 120, completion_tokens: 30, cost: 0.0012 },
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
@@ -56,7 +57,7 @@ describe("OpenRouter review provider", () => {
       ...review,
       sandbox,
       authoritativeFindings: true,
-      ai: { model: "openai/gpt-5.6-terra", inputTokens: 120, outputTokens: 30, estimatedCostUsd: 0.0012 },
+      ai: { model: "openai/gpt-5.6-terra-20260801", inputTokens: 120, outputTokens: 30, estimatedCostUsd: 0.0012 },
     });
     const [url, request] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("https://openrouter.ai/api/v1/chat/completions");

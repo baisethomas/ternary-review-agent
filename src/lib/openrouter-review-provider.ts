@@ -73,6 +73,7 @@ export async function generateOpenRouterReview(
     throw isRetryableHttpStatus(response.status) ? new Error(message) : new NonRetryableReviewError(message);
   }
   const payload = await response.json() as {
+    model?: string;
     choices?: Array<{ message?: { content?: string | null } }>;
     usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
   };
@@ -93,7 +94,7 @@ export async function generateOpenRouterReview(
       sandbox,
       authoritativeFindings: true,
       ai: {
-        model,
+        model: payload.model ?? model,
         latencyMs: Date.now() - startedAt,
         ...(inputTokens !== undefined ? { inputTokens } : {}),
         ...(outputTokens !== undefined ? { outputTokens } : {}),
