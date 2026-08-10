@@ -88,6 +88,40 @@ describe("ReviewQueue", () => {
     await expect(queue.get("job-completion-outbox")).resolves.toMatchObject({ status: "completed" });
   });
 
+  test("replays an acknowledged retry fact without rerunning after queue finalization is interrupted", async () => {
+    class InterruptedTransitionStore extends InMemoryReviewQueueStore {
+      private interruptions = 1;
+      override async acknowledgeTransition(job: Parameters<InMemoryReviewQueueStore["acknowledgeTransition"]>[0]) {
+        if (this.interruptions-- > 0) throw new Error("Worker stopped before Redis finalization");
+        return super.acknowledgeTransition(job);
+      }
+    }
+    let runs = 0;
+    let retryWrites = 0;
+    const queue = new ReviewQueue({
+      store: new InterruptedTransitionStore(),
+      run: async () => { runs += 1; throw new Error("GitHub unavailable"); },
+      now: () => 1_250,
+      id: () => "job-retry-outbox",
+      retryDelayMs: 100,
+      lifecycle: {
+        queued: async () => undefined,
+        started: async () => undefined,
+        completed: async () => undefined,
+        retryScheduled: async () => { retryWrites += 1; },
+        failed: async () => undefined,
+      },
+    });
+    await queue.enqueue(request);
+
+    await expect(queue.processNext()).rejects.toThrow("Worker stopped before Redis finalization");
+    await expect(queue.processNext()).resolves.toBeNull();
+
+    expect(runs).toBe(1);
+    expect(retryWrites).toBe(2);
+    await expect(queue.get("job-retry-outbox")).resolves.toMatchObject({ status: "retrying", attempts: 1, lastError: "GitHub unavailable" });
+  });
+
   test("uses the persisted request when an idempotent retry resolves to an existing job", async () => {
     let sequence = 0;
     const persistedHeads: string[] = [];

@@ -27,9 +27,9 @@ export type ReviewJob = ReviewRequest & {
   submission?: ReviewSubmission;
 };
 
-export type PendingReviewCompletion = {
+export type PendingReviewTransition = {
   job: ReviewJob;
-  result: unknown;
+  result?: unknown;
 };
 
 export interface ReviewQueueStore {
@@ -38,10 +38,9 @@ export interface ReviewQueueStore {
   pendingActivations(limit: number): Promise<ReviewJob[]>;
   failActivation(job: ReviewJob, failedAt: number, error: string): Promise<boolean>;
   claim(now: number, leaseMs: number, leaseId: string): Promise<ReviewJob | null>;
-  finish(job: ReviewJob): Promise<boolean>;
-  stageCompletion(completion: PendingReviewCompletion): Promise<boolean>;
-  pendingCompletions(limit: number): Promise<PendingReviewCompletion[]>;
-  acknowledgeCompletion(job: ReviewJob): Promise<boolean>;
+  stageTransition(transition: PendingReviewTransition): Promise<boolean>;
+  pendingTransitions(limit: number): Promise<PendingReviewTransition[]>;
+  acknowledgeTransition(job: ReviewJob): Promise<boolean>;
   renew(id: string, leaseId: string, leaseExpiresAt: number): Promise<boolean>;
   recoverExpired(now: number): Promise<ReviewJob[]>;
   acknowledgeRecovery(id: string): Promise<void>;
@@ -146,14 +145,14 @@ export class ReviewQueue {
         await this.store.failActivation(pending, this.now(), errorMessage(error));
       }
     }
-    const pendingCompletions = await this.store.pendingCompletions(100);
-    for (const completion of pendingCompletions) {
+    const pendingTransitions = await this.store.pendingTransitions(100);
+    for (const transition of pendingTransitions) {
       try {
-        await this.lifecycle.completed(completion.job, completion.result);
+        await this.recordTransition(transition);
       } catch (error) {
         if (!(error instanceof ReviewEventAccessRevokedError)) throw error;
       }
-      await this.store.acknowledgeCompletion(completion.job);
+      await this.store.acknowledgeTransition(transition.job);
     }
     const now = this.now();
     const recovered = await this.store.recoverExpired(now);
@@ -207,11 +206,10 @@ export class ReviewQueue {
         lastError: errorMessage(error),
       };
       try {
-        if (!accessRevoked) {
-          if (exhausted) await this.lifecycle.failed(failed);
-          else await this.lifecycle.retryScheduled(failed);
-        }
-        return await this.store.finish(failed) ? failed : this.store.get(job.id);
+        const staged = await this.store.stageTransition({ job: failed });
+        if (!staged) return this.store.get(job.id);
+        if (!accessRevoked) await this.recordTransition({ job: failed });
+        return await this.store.acknowledgeTransition(failed) ? failed : this.store.get(job.id);
       } finally {
         clearInterval(heartbeat);
       }
@@ -220,14 +218,14 @@ export class ReviewQueue {
     const completedAt = this.now();
     const completed = { ...job, status: "completed" as const, updatedAt: completedAt, completedAt };
     try {
-      const staged = await this.store.stageCompletion({ job: completed, result });
+      const staged = await this.store.stageTransition({ job: completed, result });
       if (!staged) return this.store.get(job.id);
       try {
         await this.lifecycle.completed(completed, result);
       } catch (error) {
         if (!(error instanceof ReviewEventAccessRevokedError)) throw error;
       }
-      return await this.store.acknowledgeCompletion(completed) ? completed : this.store.get(job.id);
+      return await this.store.acknowledgeTransition(completed) ? completed : this.store.get(job.id);
     } finally {
       clearInterval(heartbeat);
     }
@@ -237,6 +235,12 @@ export class ReviewQueue {
     await this.lifecycle.requested?.(job);
     await this.lifecycle.queued(job);
     await this.store.activate(job);
+  }
+
+  private async recordTransition(transition: PendingReviewTransition) {
+    if (transition.job.status === "completed") return this.lifecycle.completed(transition.job, transition.result);
+    if (transition.job.status === "failed") return this.lifecycle.failed(transition.job);
+    return this.lifecycle.retryScheduled(transition.job);
   }
 
   get(id: string) {

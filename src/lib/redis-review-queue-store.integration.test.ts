@@ -198,7 +198,7 @@ describe.skipIf(!enabled || !redis)("RedisReviewQueueStore", () => {
     expect(runs).toBe(1);
     expect(writes).toBe(2);
     await expect(queue.get("redis-completion-job")).resolves.toMatchObject({ status: "completed" });
-    expect(await redis!.zcard(`${completionPrefix}:completion-pending`)).toBe(0);
+    expect(await redis!.zcard(`${completionPrefix}:transition-pending`)).toBe(0);
   });
 
   test("removes a revoked dormant job before processing healthy work", async () => {

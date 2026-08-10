@@ -1,4 +1,4 @@
-import type { PendingReviewCompletion, ReviewJob, ReviewQueueStore } from "./review-queue";
+import type { PendingReviewTransition, ReviewJob, ReviewQueueStore } from "./review-queue";
 
 type Lock = { jobId: string; expiresAt: number };
 
@@ -7,7 +7,7 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
   private readonly locks = new Map<string, Lock>();
   private readonly idempotencyKeys = new Map<string, string>();
   private readonly pendingRecoveries = new Map<string, ReviewJob>();
-  private readonly completions = new Map<string, PendingReviewCompletion>();
+  private readonly transitions = new Map<string, PendingReviewTransition>();
   private readonly ready = new Set<string>();
   private readonly activations = new Set<string>();
 
@@ -84,32 +84,24 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
     return null;
   }
 
-  async finish(job: ReviewJob) {
-    const current = this.jobs.get(job.id);
-    if (!current || current.leaseId !== job.leaseId) return false;
-    this.jobs.set(job.id, structuredClone({ ...job, leaseId: undefined, leaseExpiresAt: undefined }));
-    this.releaseLocks(job.id);
+  async stageTransition(transition: PendingReviewTransition) {
+    const current = this.jobs.get(transition.job.id);
+    if (!current || current.status !== "running" || current.leaseId !== transition.job.leaseId) return false;
+    this.transitions.set(transition.job.id, structuredClone(transition));
     return true;
   }
 
-  async stageCompletion(completion: PendingReviewCompletion) {
-    const current = this.jobs.get(completion.job.id);
-    if (!current || current.status !== "running" || current.leaseId !== completion.job.leaseId) return false;
-    this.completions.set(completion.job.id, structuredClone(completion));
-    return true;
+  async pendingTransitions(limit: number) {
+    return [...this.transitions.values()].slice(0, limit).map((transition) => structuredClone(transition));
   }
 
-  async pendingCompletions(limit: number) {
-    return [...this.completions.values()].slice(0, limit).map((completion) => structuredClone(completion));
-  }
-
-  async acknowledgeCompletion(job: ReviewJob) {
-    const pending = this.completions.get(job.id);
+  async acknowledgeTransition(job: ReviewJob) {
+    const pending = this.transitions.get(job.id);
     if (!pending) return false;
     const current = this.jobs.get(job.id);
     if (!current || current.leaseId !== pending.job.leaseId) return false;
     this.jobs.set(job.id, structuredClone({ ...job, leaseId: undefined, leaseExpiresAt: undefined }));
-    this.completions.delete(job.id);
+    this.transitions.delete(job.id);
     this.releaseLocks(job.id);
     return true;
   }
@@ -127,7 +119,7 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
   async recoverExpired(now: number) {
     const recovered: ReviewJob[] = [];
     for (const [id, job] of this.jobs) {
-      if (job.status !== "running" || this.completions.has(id) || !job.leaseExpiresAt || job.leaseExpiresAt > now) continue;
+      if (job.status !== "running" || this.transitions.has(id) || !job.leaseExpiresAt || job.leaseExpiresAt > now) continue;
       const exhausted = job.attempts >= job.maxAttempts;
       const recoveredJob: ReviewJob = {
         ...job,
