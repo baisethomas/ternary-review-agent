@@ -101,7 +101,7 @@ export type GitHubPullRequest = {
   additions: number;
   deletions: number;
   changed_files: number;
-  user: { login: string; avatar_url: string };
+  user: { login: string; avatar_url: string } | null;
   head: { ref: string; sha: string };
   base: { ref: string };
 };

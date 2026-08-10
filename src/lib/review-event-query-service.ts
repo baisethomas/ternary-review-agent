@@ -2,6 +2,7 @@ import "server-only";
 import { getInstalledRepository } from "./dashboard-data";
 import { reviewEventLedger } from "./review-event-ledger-service";
 import type { ReviewEventQuery } from "./review-event-ledger";
+import type { RepositoryScope } from "./repository-index";
 
 export class RepositoryReviewEventsAccessError extends Error {
   constructor(repository: string) {
@@ -26,6 +27,10 @@ export async function listRepositoryReviewEvents(repository: string, query: Revi
 
 export async function repositoryReviewEventPages(repository: string, reviewId?: string) {
   const scope = await authorizedScope(repository);
+  return reviewEventPagesForScope(scope, reviewId);
+}
+
+export function reviewEventPagesForScope(scope: RepositoryScope, reviewId?: string) {
   return (async function* () {
     let after: string | undefined;
     do {

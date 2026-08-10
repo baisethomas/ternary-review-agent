@@ -5,6 +5,8 @@ const mocks = vi.hoisted(() => ({
   watched: vi.fn(async () => true),
   enqueueReview: vi.fn(),
   recordMerged: vi.fn(async () => undefined),
+  recordClosed: vi.fn(async () => undefined),
+  recordReopened: vi.fn(async () => undefined),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -13,6 +15,8 @@ vi.mock("./repository-watch", () => ({ isRepositoryWatched: mocks.watched }));
 vi.mock("./review-queue-service", () => ({ enqueueAndDispatchReview: mocks.enqueueReview }));
 vi.mock("./review-event-ledger-service", () => ({
   recordPullRequestMergedEvent: mocks.recordMerged,
+  recordPullRequestClosedEvent: mocks.recordClosed,
+  recordPullRequestReopenedEvent: mocks.recordReopened,
 }));
 vi.mock("./review-submission", () => ({ webhookReviewIdempotencyKeys: vi.fn(() => []) }));
 
@@ -83,7 +87,6 @@ describe("repository index webhook events", () => {
   });
 
   it("records merge outcomes after a reviewed repository is paused", async () => {
-    mocks.watched.mockResolvedValueOnce(false);
     const response = await handleGitHubWebhook("pull_request", JSON.stringify({
       action: "closed",
       installation: { id: 7 },
@@ -96,5 +99,32 @@ describe("repository index webhook events", () => {
       deliveryId: "delivery-merged", mergedAt: "2026-08-09T02:00:00.000Z", mergedBy: "octocat",
     });
     expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("records closed-without-merge outcomes separately from open pull requests", async () => {
+    const response = await handleGitHubWebhook("pull_request", JSON.stringify({
+      action: "closed",
+      installation: { id: 7 },
+      repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" },
+      pull_request: { number: 8, draft: false, merged: false, closed_at: "2026-08-09T02:00:00.000Z", head: { sha: "head" } },
+    }), "delivery-closed");
+
+    expect(response.status).toBe(202);
+    expect(mocks.recordClosed).toHaveBeenCalledWith(expect.objectContaining({ installationId: 7, pullNumber: 8 }), { deliveryId: "delivery-closed", closedAt: "2026-08-09T02:00:00.000Z" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("records a reopened transition before submitting its new review", async () => {
+    mocks.enqueueReview.mockResolvedValueOnce({ id: "job-reopened" });
+    const response = await handleGitHubWebhook("pull_request", JSON.stringify({
+      action: "reopened",
+      installation: { id: 7 },
+      repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" },
+      pull_request: { number: 8, draft: false, updated_at: "2026-08-09T04:00:00.000Z", head: { sha: "head" } },
+    }), "delivery-reopened");
+
+    expect(response.status).toBe(202);
+    expect(mocks.recordReopened).toHaveBeenCalledWith(expect.objectContaining({ pullNumber: 8 }), { deliveryId: "delivery-reopened", reopenedAt: "2026-08-09T04:00:00.000Z" });
+    expect(mocks.enqueueReview).toHaveBeenCalledOnce();
   });
 });

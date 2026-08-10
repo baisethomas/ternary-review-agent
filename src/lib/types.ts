@@ -5,6 +5,7 @@ export type ReviewRequest = {
   installationId: number;
   headSha: string;
   cloneUrl: string;
+  author?: string;
 };
 
 export type WebhookReviewRequest = ReviewRequest & { webhookDeliveryId: string };
@@ -18,6 +19,7 @@ export type SandboxResult = {
 
 export type ReviewFinding = {
   findingKey?: string;
+  ruleId?: string;
   severity: "blocking" | "warning" | "suggestion";
   file: string;
   line?: number;
@@ -31,4 +33,11 @@ export type ReviewResult = {
   summary: string;
   findings: ReviewFinding[];
   sandbox: SandboxResult;
+  ai?: {
+    model: string;
+    latencyMs: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    estimatedCostUsd?: number;
+  };
 };

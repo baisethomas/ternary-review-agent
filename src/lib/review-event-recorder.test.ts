@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryReviewEventLedger, reviewIdentity } from "./review-event-ledger";
-import { createReviewEventLifecycle, recordFindingFeedback, recordPullRequestMerged, recordReviewRequested } from "./review-event-recorder";
+import { createReviewEventLifecycle, recordFindingFeedback, recordPullRequestClosed, recordPullRequestMerged, recordPullRequestReopened, recordReviewRequested } from "./review-event-recorder";
 import type { ReviewJob } from "./review-queue";
 import type { ReviewRequest, ReviewResult } from "./types";
 
@@ -15,19 +15,20 @@ describe("review event recorder", () => {
     const result: ReviewResult = {
       verdict: "request_changes",
       summary: "One issue",
-      findings: [{ findingKey: "authorization-bypass-handler", severity: "blocking", file: "src/auth.ts", line: 42, title: "Authorization bypass", explanation: "Caller input is trusted." }],
+      findings: [{ ruleId: "security-authorization", findingKey: "authorization-bypass-handler", severity: "blocking", file: "src/auth.ts", line: 42, title: "Authorization bypass", explanation: "Caller input is trusted." }],
       sandbox: { ok: true, sandboxId: "sandbox-1", durationMs: 1200, commands: [{ command: "test", exitCode: 0, output: "Authorization: Bearer secret-token" }] },
     };
 
-    await recordReviewRequested(ledger, request, { source: "github", deliveryId: "delivery-1" }, { eventId: () => "requested", now: () => 1_000 });
+    await recordReviewRequested(ledger, { ...request, id: job.id }, { source: "github", deliveryId: "delivery-1" }, { eventId: () => "requested", now: () => 1_000 });
     await lifecycle.completed({ ...job, status: "completed", completedAt: 1_200, updatedAt: 1_200 }, result);
     const page = await ledger.list({ installationId: 7, owner: "ternary", repo: "agent" });
 
     expect(page.events.map((event) => event.type)).toEqual(["review.requested", "review.completed"]);
     expect(page.events.every((event) => event.reviewId === reviewIdentity(request))).toBe(true);
+    expect(page.events[0]).toMatchObject({ payload: { jobId: job.id } });
     expect(page.events[1]).toMatchObject({
       payload: {
-        findings: [expect.objectContaining({ findingId: expect.stringContaining(":finding:") })],
+        findings: [expect.objectContaining({ findingId: expect.stringContaining(":finding:"), ruleId: "security-authorization" })],
         sandbox: { commands: [{ command: "test", exitCode: 0, output: "Authorization: Bearer [REDACTED]" }] },
       },
     });
@@ -52,6 +53,28 @@ describe("review event recorder", () => {
 
     await expect(ledger.list({ installationId: 7, owner: "ternary", repo: "agent" })).resolves.toMatchObject({
       events: [expect.objectContaining({ type: "finding.feedback_recorded", payload: expect.objectContaining({ findingId: feedback.findingId, kind: "dismissed" }) })],
+    });
+  });
+
+  it("records a reviewed pull request closing without merge", async () => {
+    const ledger = new InMemoryReviewEventLedger();
+    await recordReviewRequested(ledger, request, { source: "github", deliveryId: "review-delivery" });
+
+    await expect(recordPullRequestClosed(ledger, request, { deliveryId: "closed-delivery", closedAt: "2026-08-09T03:00:00.000Z" }))
+      .resolves.toMatchObject({ recorded: true });
+    await expect(ledger.list({ installationId: 7, owner: "ternary", repo: "agent" })).resolves.toMatchObject({
+      events: [expect.objectContaining({ type: "review.requested" }), expect.objectContaining({ type: "pull_request.closed", payload: { closedAt: "2026-08-09T03:00:00.000Z" } })],
+    });
+  });
+
+  it("records a reviewed pull request reopening", async () => {
+    const ledger = new InMemoryReviewEventLedger();
+    await recordReviewRequested(ledger, request, { source: "github", deliveryId: "review-delivery" });
+
+    await expect(recordPullRequestReopened(ledger, request, { deliveryId: "reopened-delivery", reopenedAt: "2026-08-09T04:00:00.000Z" }))
+      .resolves.toMatchObject({ recorded: true });
+    await expect(ledger.list({ installationId: 7, owner: "ternary", repo: "agent" })).resolves.toMatchObject({
+      events: [expect.objectContaining({ type: "review.requested" }), expect.objectContaining({ type: "pull_request.reopened", payload: { reopenedAt: "2026-08-09T04:00:00.000Z" } })],
     });
   });
 });

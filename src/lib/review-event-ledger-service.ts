@@ -1,7 +1,7 @@
 import "server-only";
 import { neon } from "@neondatabase/serverless";
 import { PostgresReviewEventLedger } from "./postgres-review-event-ledger";
-import { recordPullRequestMerged } from "./review-event-recorder";
+import { recordPullRequestClosed, recordPullRequestMerged, recordPullRequestReopened } from "./review-event-recorder";
 import type { ReviewRequest } from "./types";
 
 let ledger: PostgresReviewEventLedger | null = null;
@@ -16,6 +16,14 @@ export function reviewEventLedger() {
 
 export function recordPullRequestMergedEvent(request: ReviewRequest, merge: { deliveryId: string; mergedAt: string; mergedBy?: string }) {
   return recordPullRequestMerged(reviewEventLedger(), request, merge);
+}
+
+export function recordPullRequestClosedEvent(request: ReviewRequest, close: { deliveryId: string; closedAt: string }) {
+  return recordPullRequestClosed(reviewEventLedger(), request, close);
+}
+
+export function recordPullRequestReopenedEvent(request: ReviewRequest, reopen: { deliveryId: string; reopenedAt: string }) {
+  return recordPullRequestReopened(reviewEventLedger(), request, reopen);
 }
 
 export function deleteRepositoryReviewEvents(scope: { installationId: number; owner: string; repo: string }, changedAt = Date.now(), forceAuthoritative = true) {
