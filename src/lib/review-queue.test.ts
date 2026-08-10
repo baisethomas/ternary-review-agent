@@ -59,6 +59,28 @@ describe("ReviewQueue", () => {
     expect(transitions).toEqual(["queued", "started", "completed"]);
   });
 
+  test("notifies observers for immediately acknowledged completed and failed jobs", async () => {
+    let sequence = 0;
+    const acknowledged: ReviewJob[] = [];
+    const queue = new ReviewQueue({
+      store: new InMemoryReviewQueueStore(),
+      run: async (job) => { if (job.pullNumber === 43) throw new NonRetryableReviewError("Permanent failure"); },
+      now: () => 1_150,
+      id: () => `observer-job-${++sequence}`,
+      onTransitionsAcknowledged: async (jobs) => { acknowledged.push(...jobs); },
+    });
+    await queue.enqueue(request);
+    await queue.enqueue({ ...request, installationId: 8, owner: "other", repo: "failed", pullNumber: 43 });
+
+    await queue.processNext();
+    await queue.processNext();
+
+    expect(acknowledged).toEqual([
+      expect.objectContaining({ id: "observer-job-1", status: "completed" }),
+      expect.objectContaining({ id: "observer-job-2", status: "failed" }),
+    ]);
+  });
+
   test("replays a completed result without rerunning the review when ledger persistence fails", async () => {
     let runs = 0;
     let completionWrites = 0;

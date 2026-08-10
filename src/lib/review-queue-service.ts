@@ -10,7 +10,7 @@ import { dispatchReviewWorker } from "./review-worker-dispatcher";
 import type { ReviewRequest } from "./types";
 import type { ReviewJob, ReviewSubmission } from "./review-queue";
 import { attachActiveReviewGuard, claimActiveReviewGuard, releaseActiveReviewGuard, takeoverActiveReviewGuard } from "./active-review-guard";
-import { activeReviewJobOwner, releaseTerminalActiveReviews, submitActiveReview } from "./active-review-submission";
+import { releaseTerminalActiveReviews, submitActiveReview } from "./active-review-submission";
 
 let queue: ReviewQueue | null = null;
 
@@ -110,10 +110,6 @@ export async function processReviewQueue(maxJobs = 1) {
     const job = await reviewQueue().processNext();
     if (!job) break;
     processed.push(job);
-    if (job.status === "completed" || job.status === "failed") {
-      await releaseActiveReviewGuard(job, activeReviewJobOwner(job.id)).catch((error) => console.error(`Unable to release active review guard for ${job.id}`, error));
-    }
-    await announceDashboardChange();
   }
   return processed;
 }

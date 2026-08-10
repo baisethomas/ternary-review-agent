@@ -205,7 +205,11 @@ export class ReviewQueue {
         const staged = await this.store.stageTransition({ job: failed });
         if (!staged) return this.store.get(job.id);
         if (!accessRevoked) await this.recordTransition({ job: failed });
-        return await this.store.acknowledgeTransition(failed) ? failed : this.store.get(job.id);
+        if (await this.store.acknowledgeTransition(failed)) {
+          await this.onTransitionsAcknowledged([failed]);
+          return failed;
+        }
+        return this.store.get(job.id);
       } finally {
         clearInterval(heartbeat);
       }
@@ -221,7 +225,11 @@ export class ReviewQueue {
       } catch (error) {
         if (!(error instanceof ReviewEventAccessRevokedError)) throw error;
       }
-      return await this.store.acknowledgeTransition(completed) ? completed : this.store.get(job.id);
+      if (await this.store.acknowledgeTransition(completed)) {
+        await this.onTransitionsAcknowledged([completed]);
+        return completed;
+      }
+      return this.store.get(job.id);
     } finally {
       clearInterval(heartbeat);
     }
