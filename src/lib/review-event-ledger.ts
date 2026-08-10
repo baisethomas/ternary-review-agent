@@ -35,10 +35,9 @@ export type ReviewEvent =
   | ReviewEventBase<"review.queued", { jobId: string }>
   | ReviewEventBase<"review.started", { jobId: string; attempt: number }>
   | ReviewEventBase<"review.retry_scheduled", { jobId: string; attempt: number; availableAt: string; error: string }>
-  | ReviewEventBase<"review.completed", { jobId: string; verdict: "approve" | "request_changes" | "comment"; summary: string; findings: FindingSnapshot[]; sandbox: SandboxEvidence }>
+  | ReviewEventBase<"review.completed", { jobId: string; attempt: number; verdict: "approve" | "request_changes" | "comment"; summary: string; findings: FindingSnapshot[]; sandbox: SandboxEvidence }>
   | ReviewEventBase<"review.failed", { jobId: string; attempt: number; error: string }>
-  | ReviewEventBase<"pull_request.merged", { mergedBy?: string; mergedAt: string }>
-  | ReviewEventBase<"finding.feedback_recorded", { findingId: string; kind: "accepted" | "dismissed" | "resolved" | "reopened" | "reaction" | "reply"; actor?: string; reason?: string }>;
+  | ReviewEventBase<"pull_request.merged", { mergedBy?: string; mergedAt: string }>;
 
 export type ReviewEventPage = { events: ReviewEvent[]; nextCursor: string | null };
 export type ReviewEventQuery = { after?: string; limit?: number; reviewId?: string };
@@ -59,13 +58,27 @@ export class ReviewEventConflictError extends Error {
   }
 }
 
+export class InvalidReviewEventCursorError extends Error {
+  constructor() {
+    super("Invalid review event cursor");
+    this.name = "InvalidReviewEventCursorError";
+  }
+}
+
+export function parseReviewEventCursor(value?: string) {
+  if (!value) return "0";
+  if (!/^\d+$/.test(value)) throw new InvalidReviewEventCursorError();
+  return value;
+}
+
 export function reviewIdentity(request: Pick<ReviewRequest, "owner" | "repo" | "pullNumber" | "headSha">) {
   return `${request.owner.toLowerCase()}/${request.repo.toLowerCase()}#${request.pullNumber}:${request.headSha}`;
 }
 
-export function findingIdentity(reviewId: string, finding: ReviewFinding) {
-  const fact = [finding.file, finding.line ?? "", finding.severity, finding.title, finding.explanation].join("\u0000");
-  return `${reviewId}:finding:${createHash("sha256").update(fact).digest("hex").slice(0, 24)}`;
+export function findingIdentity(request: Pick<ReviewRequest, "owner" | "repo" | "pullNumber">, finding: ReviewFinding) {
+  const pullRequestId = `${request.owner.toLowerCase()}/${request.repo.toLowerCase()}#${request.pullNumber}`;
+  const signature = [finding.file.toLowerCase(), finding.title.toLowerCase()].join("\u0000");
+  return `${pullRequestId}:finding:${createHash("sha256").update(signature).digest("hex").slice(0, 24)}`;
 }
 
 export function reviewEventFactFingerprint(event: ReviewEvent) {
@@ -98,10 +111,10 @@ export class InMemoryReviewEventLedger implements ReviewEventLedger {
   }
 
   async list(scope: RepositoryScope, query: ReviewEventQuery = {}): Promise<ReviewEventPage> {
-    const after = query.after ? Number(query.after) : 0;
+    const after = BigInt(parseReviewEventCursor(query.after));
     const limit = Math.min(250, Math.max(1, query.limit ?? 100));
     const matching = (this.events.get(scopeKey(scope)) ?? [])
-      .filter((item) => item.sequence > after && (!query.reviewId || item.event.reviewId === query.reviewId));
+      .filter((item) => BigInt(item.sequence) > after && (!query.reviewId || item.event.reviewId === query.reviewId));
     const page = matching.slice(0, limit);
     return {
       events: structuredClone(page.map((item) => item.event)),

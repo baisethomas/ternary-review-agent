@@ -2,6 +2,7 @@ import type { NeonQueryFunction } from "@neondatabase/serverless";
 import type { RepositoryScope } from "./repository-index";
 import {
   ReviewEventConflictError,
+  parseReviewEventCursor,
   reviewEventFactFingerprint,
   type ReviewEvent,
   type ReviewEventLedger,
@@ -16,36 +17,26 @@ function normalizedScope(scope: RepositoryScope) {
   return { installationId: scope.installationId, owner: scope.owner.toLowerCase(), repo: scope.repo.toLowerCase() };
 }
 
-function cursor(value?: string) {
-  if (!value) return 0;
-  if (!/^\d+$/.test(value)) throw new Error("Invalid review event cursor");
-  return value;
-}
-
 export class PostgresReviewEventLedger implements ReviewEventLedger {
   constructor(private readonly sql: Sql) {}
 
   async append(event: ReviewEvent) {
     const scope = normalizedScope(event.scope);
     const fingerprint = reviewEventFactFingerprint(event);
-    const rows = await this.sql.query(
-      `WITH inserted AS (
-        INSERT INTO review_events (
-          event_id, idempotency_key, installation_id, owner, repo,
-          review_id, event_type, occurred_at, fact_fingerprint, event
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-        ON CONFLICT (idempotency_key) DO NOTHING
-        RETURNING sequence, event, fact_fingerprint, TRUE AS inserted
-      )
-      SELECT sequence, event, fact_fingerprint, inserted FROM inserted
-      UNION ALL
-      SELECT sequence, event, fact_fingerprint, FALSE AS inserted
-      FROM review_events
-      WHERE idempotency_key = $2 AND NOT EXISTS (SELECT 1 FROM inserted)
-      LIMIT 1`,
+    const inserted = await this.sql.query(
+      `INSERT INTO review_events (
+        event_id, idempotency_key, installation_id, owner, repo,
+        review_id, event_type, occurred_at, fact_fingerprint, event
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+      ON CONFLICT (idempotency_key) DO NOTHING
+      RETURNING sequence, event, fact_fingerprint, TRUE AS inserted`,
       [event.eventId, event.idempotencyKey, scope.installationId, scope.owner, scope.repo, event.reviewId, event.type, event.occurredAt, fingerprint, JSON.stringify(event)],
     ) as EventRow[];
-    const row = rows[0];
+    const existing = inserted.length ? [] : await this.sql.query(
+      "SELECT sequence, event, fact_fingerprint, FALSE AS inserted FROM review_events WHERE idempotency_key = $1",
+      [event.idempotencyKey],
+    ) as EventRow[];
+    const row = inserted[0] ?? existing[0];
     if (!row) throw new Error("Review event append did not return a row");
     if (row.fact_fingerprint !== fingerprint) throw new ReviewEventConflictError(event.idempotencyKey);
     return { event: row.event, inserted: Boolean(row.inserted) };
@@ -54,7 +45,7 @@ export class PostgresReviewEventLedger implements ReviewEventLedger {
   async list(scope: RepositoryScope, query: ReviewEventQuery = {}): Promise<ReviewEventPage> {
     const normalized = normalizedScope(scope);
     const limit = Math.min(250, Math.max(1, query.limit ?? 100));
-    const parameters: unknown[] = [normalized.installationId, normalized.owner, normalized.repo, cursor(query.after)];
+    const parameters: unknown[] = [normalized.installationId, normalized.owner, normalized.repo, parseReviewEventCursor(query.after)];
     const reviewFilter = query.reviewId ? `AND review_id = $${parameters.push(query.reviewId)}` : "";
     parameters.push(limit + 1);
     const rows = await this.sql.query(

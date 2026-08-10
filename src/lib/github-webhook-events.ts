@@ -76,7 +76,6 @@ const handlePullRequest: WebhookHandler = async (rawBody, deliveryId) => {
   const payload = JSON.parse(rawBody) as PullRequestWebhook;
   const fullName = `${payload.repository.owner.login}/${payload.repository.name}`;
   if (payload.action === "closed" && payload.pull_request.merged && payload.pull_request.merged_at && payload.installation?.id) {
-    if (!await isRepositoryWatched(fullName)) return Response.json({ accepted: false, reason: "Repository is paused in Ternary" }, { status: 202 });
     await recordPullRequestMergedEvent({
       owner: payload.repository.owner.login,
       repo: payload.repository.name,

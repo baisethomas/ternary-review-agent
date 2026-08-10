@@ -4,4 +4,6 @@ Ternary will store immutable Review Events in Postgres and keep Redis focused on
 
 ## Consequences
 
-The Vercel application requires a managed Postgres connection and an explicit schema migration before ledger writes become mandatory. Queue jobs and GitHub checks remain projections of the ledger rather than its persistence mechanism.
+The Vercel application requires a managed Postgres connection and an explicit schema migration before ledger writes become mandatory. Redis queue jobs and GitHub checks remain operational surfaces rather than historical persistence mechanisms.
+
+Lifecycle events describe immutable review-attempt facts, not Redis acknowledgements. An attempt that produced and published a review remains completed even if its queue acknowledgement loses a lease; a recovered attempt receives its own attempt-numbered event. Consumers derive current review state by ordering attempts rather than treating Redis status as the historical source.

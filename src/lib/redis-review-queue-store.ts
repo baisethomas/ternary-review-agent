@@ -122,7 +122,7 @@ return 1
 
 const recoverScript = `
 local expired = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", ARGV[1])
-local recovered = 0
+local recovered = {}
 for _, id in ipairs(expired) do
   local jobKey = ARGV[2] .. id
   local encoded = redis.call("GET", jobKey)
@@ -151,12 +151,12 @@ for _, id in ipairs(expired) do
       end
       if redis.call("GET", installationLock) == id then redis.call("DEL", installationLock) end
       if redis.call("GET", repositoryLock) == id then redis.call("DEL", repositoryLock) end
-      recovered = recovered + 1
+      table.insert(recovered, job)
     end
   end
   redis.call("ZREM", KEYS[1], id)
 end
-return recovered
+return cjson.encode(recovered)
 `;
 
 const renewScript = `
@@ -238,12 +238,13 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
     return renewed === 1;
   }
 
-  recoverExpired(now: number) {
-    return this.redis.eval<[number, string, string, number], number>(
+  async recoverExpired(now: number) {
+    const recovered = await this.redis.eval<[number, string, string, number], string>(
       recoverScript,
       [this.activeKey, this.scheduledKey, this.terminalKey],
       [now, this.jobPrefix, this.lockPrefix, terminalJobRetentionSeconds],
     );
+    return JSON.parse(recovered) as ReviewJob[];
   }
 
   pruneTerminal(completedBefore: number, limit: number) {

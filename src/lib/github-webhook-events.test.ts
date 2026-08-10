@@ -77,7 +77,8 @@ describe("repository index webhook events", () => {
     expect(mocks.dispatchIndex).toHaveBeenCalledWith({ action: "restoreInstallation", installationId: 7, changedAt: Date.parse("2026-08-09T01:00:00.000Z") });
   });
 
-  it("records merge outcomes for watched pull requests", async () => {
+  it("records merge outcomes after a reviewed repository is paused", async () => {
+    mocks.watched.mockResolvedValueOnce(false);
     const response = await handleGitHubWebhook("pull_request", JSON.stringify({
       action: "closed",
       installation: { id: 7 },

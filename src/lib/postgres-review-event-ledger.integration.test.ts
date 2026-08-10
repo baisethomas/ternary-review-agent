@@ -25,6 +25,14 @@ describe.skipIf(!enabled)("PostgresReviewEventLedger", () => {
       await expect(ledger.append({ ...event, eventId: crypto.randomUUID() })).resolves.toMatchObject({ event, inserted: false });
       await expect(ledger.append({ ...event, eventId: crypto.randomUUID(), headSha: "conflict" })).rejects.toBeInstanceOf(ReviewEventConflictError);
       await ledger.append(otherScope);
+      const concurrentEvent = { ...event, eventId: crypto.randomUUID(), idempotencyKey: `integration:${crypto.randomUUID()}`, payload: { jobId: "concurrent" } } satisfies ReviewEvent;
+      const competingLedger = new PostgresReviewEventLedger(neon(connectionString));
+      const concurrent = await Promise.all([
+        ledger.append(concurrentEvent),
+        competingLedger.append({ ...concurrentEvent, eventId: crypto.randomUUID() }),
+      ]);
+      expect(concurrent.map((result) => result.inserted).sort()).toEqual([false, true]);
+      expect(concurrent[0].event.eventId).toBe(concurrent[1].event.eventId);
       await expect(ledger.list({ installationId, owner: "ternary", repo: "ledger" })).resolves.toMatchObject({ events: [event] });
       await expect(ledger.deleteScope(event.scope)).resolves.toBe(1);
       await expect(ledger.list(otherScope.scope)).resolves.toMatchObject({ events: [otherScope] });

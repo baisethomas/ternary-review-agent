@@ -199,6 +199,34 @@ describe("ReviewQueue", () => {
     abandoned.resolve();
   });
 
+  test("reports lease-expiry recovery as a durable lifecycle transition", async () => {
+    let now = 4_500;
+    const transitions: string[] = [];
+    const store = new InMemoryReviewQueueStore();
+    const queue = new ReviewQueue({
+      store,
+      run: async () => undefined,
+      now: () => now,
+      id: () => "job-recovery-event",
+      leaseMs: 50,
+      maxAttempts: 1,
+      lifecycle: {
+        queued: async () => undefined,
+        started: async () => undefined,
+        completed: async () => undefined,
+        retryScheduled: async () => { transitions.push("retrying"); },
+        failed: async () => { transitions.push("failed"); },
+      },
+    });
+
+    await queue.enqueue(request);
+    await store.claim(now, 50, "abandoned");
+    now += 51;
+    await queue.processNext();
+
+    expect(transitions).toEqual(["failed"]);
+  });
+
   test("moves exhausted jobs to a visible failed state", async () => {
     let now = 5_000;
     const queue = new ReviewQueue({

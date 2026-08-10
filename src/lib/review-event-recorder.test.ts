@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryReviewEventLedger, reviewIdentity } from "./review-event-ledger";
-import { createReviewEventLifecycle, recordReviewRequested } from "./review-event-recorder";
+import { createReviewEventLifecycle, recordPullRequestMerged, recordReviewRequested } from "./review-event-recorder";
 import type { ReviewJob } from "./review-queue";
 import type { ReviewRequest, ReviewResult } from "./types";
 
@@ -31,5 +31,15 @@ describe("review event recorder", () => {
         sandbox: { commands: [{ command: "test", exitCode: 0 }] },
       },
     });
+  });
+
+  it("records a merge for a previously reviewed PR even after Watch is paused", async () => {
+    const ledger = new InMemoryReviewEventLedger();
+    await recordReviewRequested(ledger, request, { source: "github", deliveryId: "review-delivery" }, { eventId: () => "requested", now: () => 1_000 });
+
+    await expect(recordPullRequestMerged(ledger, request, { deliveryId: "merge-delivery", mergedAt: "2026-08-09T02:00:00.000Z" }, { eventId: () => "merged" }))
+      .resolves.toMatchObject({ recorded: true });
+    await expect(ledger.list({ installationId: request.installationId, owner: request.owner, repo: request.repo }))
+      .resolves.toMatchObject({ events: [expect.objectContaining({ type: "review.requested" }), expect.objectContaining({ type: "pull_request.merged" })] });
   });
 });

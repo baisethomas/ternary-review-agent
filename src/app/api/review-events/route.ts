@@ -2,6 +2,7 @@ import { hasBearerToken } from "@/lib/api-auth";
 import { isDashboardAuthenticated } from "@/lib/dashboard-auth";
 import { reviewEventsCsv } from "@/lib/review-event-export";
 import { allRepositoryReviewEvents, listRepositoryReviewEvents, RepositoryReviewEventsAccessError } from "@/lib/review-event-query-service";
+import { InvalidReviewEventCursorError } from "@/lib/review-event-ledger";
 
 export async function GET(request: Request) {
   if (!hasBearerToken(request, "INTERNAL_API_TOKEN") && !await isDashboardAuthenticated()) {
@@ -20,6 +21,7 @@ export async function GET(request: Request) {
     if (!Number.isInteger(limit) || limit < 1 || limit > 250) return Response.json({ error: "limit must be between 1 and 250" }, { status: 400 });
     return Response.json(await listRepositoryReviewEvents(repository, { after: url.searchParams.get("after") ?? undefined, limit, reviewId }));
   } catch (error) {
+    if (error instanceof InvalidReviewEventCursorError) return Response.json({ error: error.message }, { status: 400 });
     if (error instanceof RepositoryReviewEventsAccessError) return Response.json({ error: error.message }, { status: 404 });
     throw error;
   }

@@ -21,7 +21,7 @@ Ternary's evaluation of one pull request at one head commit within a Repository 
 _Avoid_: Run, job, check
 
 **Review Event**:
-An immutable, uniquely identified fact about a Review, Finding, or developer response at a specific time.
+An immutable, uniquely identified fact about a Review or Finding at a specific time.
 _Avoid_: Log entry, status row
 
 **Review Event Ledger**:

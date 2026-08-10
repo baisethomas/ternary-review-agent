@@ -33,17 +33,22 @@ export function recordReviewRequested(ledger: ReviewEventLedger, request: Review
   });
 }
 
-export function recordPullRequestMerged(
+export async function recordPullRequestMerged(
   ledger: ReviewEventLedger,
   request: ReviewRequest,
   merge: { deliveryId: string; mergedAt: string; mergedBy?: string },
   clock: EventClock = {},
 ) {
-  return ledger.append({
+  const scope = { installationId: request.installationId, owner: request.owner, repo: request.repo };
+  const reviewId = reviewIdentity(request);
+  const prior = await ledger.list(scope, { reviewId, limit: 1 });
+  if (!prior.events.length) return { recorded: false as const };
+  const appended = await ledger.append({
     ...eventBase(request, `github-delivery:${merge.deliveryId}:pull_request.merged`, { ...clock, now: () => Date.parse(merge.mergedAt) }),
     type: "pull_request.merged",
     payload: { mergedAt: merge.mergedAt, ...(merge.mergedBy ? { mergedBy: merge.mergedBy } : {}) },
   });
+  return { recorded: true as const, ...appended };
 }
 
 export function createReviewEventLifecycle(ledger: ReviewEventLedger, clock: EventClock = {}): ReviewQueueLifecycle {
@@ -56,15 +61,15 @@ export function createReviewEventLifecycle(ledger: ReviewEventLedger, clock: Eve
     },
     async completed(job, output) {
       const result = reviewResult(output);
-      const reviewId = reviewIdentity(job);
       const event: ReviewEvent = {
-        ...eventBase(job, `job:${job.id}:completed`, { ...clock, now: () => job.completedAt ?? job.updatedAt }),
+        ...eventBase(job, `job:${job.id}:completed:${job.attempts}`, { ...clock, now: () => job.completedAt ?? job.updatedAt }),
         type: "review.completed",
         payload: {
           jobId: job.id,
+          attempt: job.attempts,
           verdict: result.verdict,
           summary: result.summary,
-          findings: result.findings.map((finding) => ({ ...finding, findingId: findingIdentity(reviewId, finding) })),
+          findings: result.findings.map((finding) => ({ ...finding, findingId: findingIdentity(job, finding) })),
           sandbox: {
             sandboxId: result.sandbox.sandboxId,
             durationMs: result.sandbox.durationMs,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findingIdentity, InMemoryReviewEventLedger, reviewIdentity, ReviewEventConflictError, type ReviewEvent } from "./review-event-ledger";
+import { findingIdentity, InMemoryReviewEventLedger, InvalidReviewEventCursorError, reviewIdentity, ReviewEventConflictError, type ReviewEvent } from "./review-event-ledger";
 
 const requested: ReviewEvent = {
   eventId: "event-1",
@@ -16,11 +16,12 @@ const requested: ReviewEvent = {
 describe("ReviewEventLedger", () => {
   it("derives stable review and finding identities", () => {
     const reviewId = reviewIdentity({ owner: "Ternary", repo: "Agent", pullNumber: 8, headSha: "head-sha" });
+    const findingScope = { owner: "Ternary", repo: "Agent", pullNumber: 8 };
     const finding = { severity: "blocking" as const, file: "src/auth.ts", line: 42, title: "Authorization bypass", explanation: "The route trusts caller input." };
 
     expect(reviewId).toBe("ternary/agent#8:head-sha");
-    expect(findingIdentity(reviewId, finding)).toBe(findingIdentity(reviewId, { ...finding }));
-    expect(findingIdentity(reviewId, { ...finding, line: 43 })).not.toBe(findingIdentity(reviewId, finding));
+    expect(findingIdentity(findingScope, finding)).toBe(findingIdentity(findingScope, { ...finding, line: 43, explanation: "Updated wording." }));
+    expect(findingIdentity(findingScope, { ...finding, title: "Different finding" })).not.toBe(findingIdentity(findingScope, finding));
   });
 
   it("appends an event once when the same delivery is retried", async () => {
@@ -53,7 +54,12 @@ describe("ReviewEventLedger", () => {
     await expect(ledger.list(requested.scope, { after: first.nextCursor!, limit: 2 })).resolves.toEqual({ events: [started], nextCursor: null });
   });
 
-  it("stores structured findings and feedback under stable identities", async () => {
+  it("rejects malformed cursors consistently", async () => {
+    const ledger = new InMemoryReviewEventLedger();
+    await expect(ledger.list(requested.scope, { after: "bogus" })).rejects.toBeInstanceOf(InvalidReviewEventCursorError);
+  });
+
+  it("stores structured findings under stable identities", async () => {
     const ledger = new InMemoryReviewEventLedger();
     const completed: ReviewEvent = {
       ...requested,
@@ -62,24 +68,17 @@ describe("ReviewEventLedger", () => {
       type: "review.completed",
       payload: {
         jobId: "job-1",
+        attempt: 1,
         verdict: "request_changes",
         summary: "One material issue",
         findings: [{ findingId: "finding-auth-1", severity: "blocking", file: "src/auth.ts", line: 42, title: "Authorization bypass", explanation: "The route trusts caller input." }],
         sandbox: { sandboxId: "sandbox-1", durationMs: 1_200, commands: [{ command: "npm test", exitCode: 0 }] },
       },
     };
-    const feedback: ReviewEvent = {
-      ...requested,
-      eventId: "event-feedback",
-      idempotencyKey: "github-reaction:reaction-1",
-      type: "finding.feedback_recorded",
-      payload: { findingId: "finding-auth-1", kind: "dismissed", actor: "octocat", reason: "False positive" },
-    };
     await ledger.append(completed);
-    await ledger.append(feedback);
 
     const result = await ledger.list(requested.scope, { reviewId: requested.reviewId });
-    expect(result.events).toEqual([completed, feedback]);
+    expect(result.events).toEqual([completed]);
     expect(result.events[0].payload).toMatchObject({ findings: [expect.objectContaining({ findingId: "finding-auth-1" })] });
   });
 

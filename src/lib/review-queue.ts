@@ -24,7 +24,7 @@ export interface ReviewQueueStore {
   claim(now: number, leaseMs: number, leaseId: string): Promise<ReviewJob | null>;
   finish(job: ReviewJob): Promise<boolean>;
   renew(id: string, leaseId: string, leaseExpiresAt: number): Promise<boolean>;
-  recoverExpired(now: number): Promise<number>;
+  recoverExpired(now: number): Promise<ReviewJob[]>;
   pruneTerminal(completedBefore: number, limit: number): Promise<number>;
   get(id: string): Promise<ReviewJob | null>;
   list(limit: number): Promise<ReviewJob[]>;
@@ -113,7 +113,11 @@ export class ReviewQueue {
 
   async processNext() {
     const now = this.now();
-    await this.store.recoverExpired(now);
+    const recovered = await this.store.recoverExpired(now);
+    for (const recoveredJob of recovered) {
+      if (recoveredJob.status === "failed") await this.lifecycle.failed(recoveredJob);
+      else await this.lifecycle.retryScheduled(recoveredJob);
+    }
     const job = await this.store.claim(now, this.leaseMs, this.leaseId());
     if (!job) return null;
 
