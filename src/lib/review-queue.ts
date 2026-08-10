@@ -165,8 +165,10 @@ export class ReviewQueue {
         completedAt: exhausted ? failedAt : undefined,
         lastError: errorMessage(error),
       };
-      if (exhausted && !accessRevoked) await this.lifecycle.failed(failed);
-      else await this.lifecycle.retryScheduled(failed);
+      if (!accessRevoked) {
+        if (exhausted) await this.lifecycle.failed(failed);
+        else await this.lifecycle.retryScheduled(failed);
+      }
       return await this.store.finish(failed) ? failed : this.store.get(job.id);
     } finally {
       clearInterval(heartbeat);

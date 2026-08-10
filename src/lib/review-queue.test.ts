@@ -267,8 +267,8 @@ describe("ReviewQueue", () => {
         queued: async () => undefined,
         started: async (job) => { if (job.repo === "review-agent") throw new ReviewEventAccessRevokedError(job); },
         completed: async () => undefined,
-        retryScheduled: async () => undefined,
-        failed: async () => undefined,
+        retryScheduled: async () => { throw new Error("Revoked work must not emit retry events"); },
+        failed: async () => { throw new Error("Revoked work must not emit failure events"); },
       },
     });
     const revoked = await queue.enqueue(request);
