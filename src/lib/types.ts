@@ -17,6 +17,7 @@ export type SandboxResult = {
 };
 
 export type ReviewFinding = {
+  findingKey?: string;
   severity: "blocking" | "warning" | "suggestion";
   file: string;
   line?: number;

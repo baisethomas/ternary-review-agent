@@ -19,11 +19,11 @@ export type ActiveReviewSubmissionDependencies = {
 const claimOwner = (submissionId: string) => `claim:${submissionId}`;
 export const activeReviewJobOwner = (jobId: string) => `job:${jobId}`;
 
-export async function releaseRecoveredActiveReviews(
+export async function releaseTerminalActiveReviews(
   jobs: readonly ReviewJob[],
   release: ActiveReviewSubmissionDependencies["release"],
 ) {
-  await Promise.all(jobs.filter((job) => job.status === "failed").map((job) => release(job, activeReviewJobOwner(job.id))));
+  await Promise.all(jobs.filter((job) => job.status === "failed" || job.status === "completed").map((job) => release(job, activeReviewJobOwner(job.id))));
 }
 
 export async function submitActiveReview(

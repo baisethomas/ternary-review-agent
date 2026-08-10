@@ -2,6 +2,7 @@ import { Redis } from "@upstash/redis";
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { RedisReviewQueueStore } from "./redis-review-queue-store";
 import { ReviewQueue, type ReviewJob } from "./review-queue";
+import { ReviewEventAccessRevokedError } from "./review-event-ledger";
 import { submitReview, webhookReviewIdempotencyKeys } from "./review-submission";
 import type { ReviewRequest } from "./types";
 
@@ -171,4 +172,60 @@ describe.skipIf(!enabled || !redis)("RedisReviewQueueStore", () => {
     expect(await redis!.zscore(`${prefix}:all`, oldTerminal.id)).toBeNull();
     await expect(store.get(oldTerminal.id)).resolves.toBeNull();
   }, 20_000);
+
+  test("replays a staged completion without rerunning review work", async () => {
+    const completionPrefix = `${prefix}:completion-replay`;
+    const completionStore = new RedisReviewQueueStore(redis!, completionPrefix);
+    let runs = 0;
+    let writes = 0;
+    const queue = new ReviewQueue({
+      store: completionStore,
+      now: () => Date.now(),
+      id: () => "redis-completion-job",
+      leaseId: () => "redis-completion-lease",
+      run: async () => { runs += 1; return { verdict: "approve" }; },
+      lifecycle: {
+        queued: async () => undefined,
+        started: async () => undefined,
+        completed: async () => { writes += 1; if (writes === 1) throw new Error("ledger unavailable"); },
+        retryScheduled: async () => { throw new Error("must not retry completed work"); },
+        failed: async () => { throw new Error("must not fail completed work"); },
+      },
+    });
+    await queue.enqueue(request);
+
+    await expect(queue.processNext()).rejects.toThrow("ledger unavailable");
+    await expect(queue.processNext()).resolves.toBeNull();
+
+    expect(runs).toBe(1);
+    expect(writes).toBe(2);
+    await expect(queue.get("redis-completion-job")).resolves.toMatchObject({ status: "completed" });
+    expect(await redis!.zcard(`${completionPrefix}:transition-pending`)).toBe(0);
+  });
+
+  test("removes a revoked dormant job before processing healthy work", async () => {
+    const activationPrefix = `${prefix}:activation-revocation`;
+    const activationStore = new RedisReviewQueueStore(redis!, activationPrefix);
+    let sequence = 0;
+    const queue = new ReviewQueue({
+      store: activationStore,
+      now: () => Date.now(),
+      id: () => `redis-activation-job-${++sequence}`,
+      run: async () => undefined,
+      lifecycle: {
+        requested: async (job) => { if (job.repo === "revoked") throw new ReviewEventAccessRevokedError(job); },
+        queued: async () => undefined,
+        started: async () => undefined,
+        completed: async () => undefined,
+        retryScheduled: async () => undefined,
+        failed: async () => undefined,
+      },
+    });
+    await expect(queue.enqueue({ ...request, repo: "revoked" })).rejects.toBeInstanceOf(ReviewEventAccessRevokedError);
+    const healthy = await queue.enqueue({ ...request, installationId: request.installationId + 1, repo: "healthy" });
+
+    await expect(queue.processNext()).resolves.toMatchObject({ id: healthy.id, status: "completed" });
+    await expect(queue.get("redis-activation-job-1")).resolves.toMatchObject({ status: "failed" });
+    expect(await redis!.zcard(`${activationPrefix}:activation-pending`)).toBe(0);
+  });
 });

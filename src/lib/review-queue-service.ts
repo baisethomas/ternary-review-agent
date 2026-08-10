@@ -3,12 +3,14 @@ import { Redis } from "@upstash/redis";
 import { RedisReviewQueueStore } from "./redis-review-queue-store";
 import { announceDashboardChange } from "./dashboard-change-service";
 import { ReviewQueue } from "./review-queue";
+import { createReviewEventLifecycle } from "./review-event-recorder";
+import { pruneExpiredReviewEvents, reviewEventLedger } from "./review-event-ledger-service";
 import { runReview } from "./reviewer";
 import { dispatchReviewWorker } from "./review-worker-dispatcher";
 import type { ReviewRequest } from "./types";
-import type { ReviewJob } from "./review-queue";
+import type { ReviewJob, ReviewSubmission } from "./review-queue";
 import { attachActiveReviewGuard, claimActiveReviewGuard, releaseActiveReviewGuard, takeoverActiveReviewGuard } from "./active-review-guard";
-import { activeReviewJobOwner, releaseRecoveredActiveReviews, submitActiveReview } from "./active-review-submission";
+import { releaseTerminalActiveReviews, submitActiveReview } from "./active-review-submission";
 
 let queue: ReviewQueue | null = null;
 
@@ -17,12 +19,17 @@ function createQueue() {
   const token = process.env.KV_REST_API_TOKEN;
   if (!url || !token) throw new Error("Review queue storage is not configured");
   const store = new RedisReviewQueueStore(new Redis({ url, token }));
-  return new ReviewQueue({ store, run: runReview, onRecovered: handleRecoveredJobs });
+  return new ReviewQueue({
+    store,
+    run: runReview,
+    lifecycle: createReviewEventLifecycle(reviewEventLedger()),
+    onTransitionsAcknowledged: handleAcknowledgedTransitions,
+  });
 }
 
-async function handleRecoveredJobs(jobs: ReviewJob[]) {
-  await releaseRecoveredActiveReviews(jobs, (job, owner) => releaseActiveReviewGuard(job, owner).catch((error) => {
-    console.error(`Unable to release recovered review guard ${owner}`, error);
+async function handleAcknowledgedTransitions(jobs: ReviewJob[]) {
+  await releaseTerminalActiveReviews(jobs, (job, owner) => releaseActiveReviewGuard(job, owner).catch((error) => {
+    console.error(`Unable to release terminal review guard ${owner}`, error);
     return false;
   }));
   await announceDashboardChange();
@@ -31,6 +38,20 @@ async function handleRecoveredJobs(jobs: ReviewJob[]) {
 function reviewQueue() {
   queue ??= createQueue();
   return queue;
+}
+
+function requestedIdempotencyKey(idempotencyKeys?: string | readonly string[]) {
+  const first = typeof idempotencyKeys === "string" ? idempotencyKeys : idempotencyKeys?.[0];
+  return first ? `${first}:review.requested` : undefined;
+}
+
+function submission(request: ReviewRequest, source: ReviewSubmission["source"], idempotencyKeys?: string | readonly string[]): ReviewSubmission {
+  const deliveryId = "webhookDeliveryId" in request ? String(request.webhookDeliveryId) : undefined;
+  return { source, ...(deliveryId ? { deliveryId } : { idempotencyKey: requestedIdempotencyKey(idempotencyKeys) }) };
+}
+
+export async function enqueueReview(request: ReviewRequest, idempotencyKeys?: string | readonly string[]) {
+  return withDashboardAnnouncement(() => reviewQueue().enqueue(request, idempotencyKeys, submission(request, "api", idempotencyKeys)));
 }
 
 async function withDashboardAnnouncement<T>(operation: () => Promise<T>) {
@@ -51,17 +72,22 @@ export async function enqueueAndDispatchReview(request: ReviewRequest, idempoten
   return submitActiveReview(
     request,
     submissionId,
-    () => withDashboardAnnouncement(() => reviewQueue().enqueue(request, idempotencyKeys)),
+    () => withDashboardAnnouncement(() => reviewQueue().enqueue(request, idempotencyKeys, submission(request, "github", idempotencyKeys))),
     activeReviewDependencies,
     (job) => dispatchReviewWorker(job.availableAt),
   );
 }
 
-export async function enqueueAndTryDispatchReview(request: ReviewRequest, idempotencyKey: string, submissionId: string) {
+export async function enqueueAndTryDispatchReview(
+  request: ReviewRequest,
+  idempotencyKey: string,
+  submissionId: string,
+  source: "dashboard" | "api" = "api",
+) {
   return submitActiveReview(
     request,
     submissionId,
-    () => withDashboardAnnouncement(() => reviewQueue().enqueue(request, idempotencyKey)),
+    () => withDashboardAnnouncement(() => reviewQueue().enqueue(request, idempotencyKey, submission(request, source, idempotencyKey))),
     activeReviewDependencies,
     async (job) => {
       try {
@@ -84,12 +110,12 @@ export async function processReviewQueue(maxJobs = 1) {
     const job = await reviewQueue().processNext();
     if (!job) break;
     processed.push(job);
-    if (job.status === "completed" || job.status === "failed") {
-      await releaseActiveReviewGuard(job, activeReviewJobOwner(job.id)).catch((error) => console.error(`Unable to release active review guard for ${job.id}`, error));
-    }
-    await announceDashboardChange();
   }
   return processed;
+}
+
+export function pruneReviewEventHistory() {
+  return pruneExpiredReviewEvents();
 }
 
 export function listReviewJobs(limit = 100) {

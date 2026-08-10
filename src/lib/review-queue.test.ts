@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { InMemoryReviewQueueStore } from "./in-memory-review-queue-store";
 import { ReviewQueue, type ReviewJob } from "./review-queue";
 import { NonRetryableReviewError } from "./review-errors";
+import { ReviewEventAccessRevokedError } from "./review-event-ledger";
 import { submitReview, submitReviewBestEffort } from "./review-submission";
 import { webhookReviewIdempotencyKeys } from "./review-submission";
 import { runReviewWorkerCycle } from "./review-worker-cycle";
@@ -34,6 +35,186 @@ describe("ReviewQueue", () => {
 
     await queue.processNext();
     await expect(queue.get("job-1")).resolves.toMatchObject({ status: "completed", attempts: 1, completedAt: 1_000 });
+  });
+
+  test("reports durable lifecycle transitions in queue order", async () => {
+    const transitions: string[] = [];
+    const queue = new ReviewQueue({
+      store: new InMemoryReviewQueueStore(),
+      run: async () => ({ verdict: "approve" }),
+      now: () => 1_100,
+      id: () => "job-events",
+      lifecycle: {
+        queued: async () => { transitions.push("queued"); },
+        started: async () => { transitions.push("started"); },
+        completed: async () => { transitions.push("completed"); },
+        retryScheduled: async () => { transitions.push("retrying"); },
+        failed: async () => { transitions.push("failed"); },
+      },
+    });
+
+    await queue.enqueue(request);
+    await queue.processNext();
+
+    expect(transitions).toEqual(["queued", "started", "completed"]);
+  });
+
+  test("notifies observers for immediately acknowledged completed and failed jobs", async () => {
+    let sequence = 0;
+    const acknowledged: ReviewJob[] = [];
+    const queue = new ReviewQueue({
+      store: new InMemoryReviewQueueStore(),
+      run: async (job) => { if (job.pullNumber === 43) throw new NonRetryableReviewError("Permanent failure"); },
+      now: () => 1_150,
+      id: () => `observer-job-${++sequence}`,
+      onTransitionsAcknowledged: async (jobs) => { acknowledged.push(...jobs); },
+    });
+    await queue.enqueue(request);
+    await queue.enqueue({ ...request, installationId: 8, owner: "other", repo: "failed", pullNumber: 43 });
+
+    await queue.processNext();
+    await queue.processNext();
+
+    expect(acknowledged).toEqual([
+      expect.objectContaining({ id: "observer-job-1", status: "completed" }),
+      expect.objectContaining({ id: "observer-job-2", status: "failed" }),
+    ]);
+  });
+
+  test("replays a completed result without rerunning the review when ledger persistence fails", async () => {
+    let runs = 0;
+    let completionWrites = 0;
+    const queue = new ReviewQueue({
+      store: new InMemoryReviewQueueStore(),
+      run: async () => { runs += 1; return { verdict: "approve" }; },
+      now: () => 1_200,
+      id: () => "job-completion-outbox",
+      lifecycle: {
+        queued: async () => undefined,
+        started: async () => undefined,
+        completed: async () => {
+          completionWrites += 1;
+          if (completionWrites === 1) throw new Error("Postgres unavailable");
+        },
+        retryScheduled: async () => { throw new Error("A completed review must not be retried"); },
+        failed: async () => { throw new Error("A completed review must not be marked failed"); },
+      },
+    });
+    await queue.enqueue(request);
+
+    await expect(queue.processNext()).rejects.toThrow("Postgres unavailable");
+    await expect(queue.processNext()).resolves.toBeNull();
+
+    expect(runs).toBe(1);
+    expect(completionWrites).toBe(2);
+    await expect(queue.get("job-completion-outbox")).resolves.toMatchObject({ status: "completed" });
+  });
+
+  test("replays an acknowledged retry fact without rerunning after queue finalization is interrupted", async () => {
+    class InterruptedTransitionStore extends InMemoryReviewQueueStore {
+      private interruptions = 1;
+      override async acknowledgeTransition(job: Parameters<InMemoryReviewQueueStore["acknowledgeTransition"]>[0]) {
+        if (this.interruptions-- > 0) throw new Error("Worker stopped before Redis finalization");
+        return super.acknowledgeTransition(job);
+      }
+    }
+    let runs = 0;
+    let retryWrites = 0;
+    const queue = new ReviewQueue({
+      store: new InterruptedTransitionStore(),
+      run: async () => { runs += 1; throw new Error("GitHub unavailable"); },
+      now: () => 1_250,
+      id: () => "job-retry-outbox",
+      retryDelayMs: 100,
+      lifecycle: {
+        queued: async () => undefined,
+        started: async () => undefined,
+        completed: async () => undefined,
+        retryScheduled: async () => { retryWrites += 1; },
+        failed: async () => undefined,
+      },
+    });
+    await queue.enqueue(request);
+
+    await expect(queue.processNext()).rejects.toThrow("Worker stopped before Redis finalization");
+    await expect(queue.processNext()).resolves.toBeNull();
+
+    expect(runs).toBe(1);
+    expect(retryWrites).toBe(2);
+    await expect(queue.get("job-retry-outbox")).resolves.toMatchObject({ status: "retrying", attempts: 1, lastError: "GitHub unavailable" });
+  });
+
+  test("uses the persisted request when an idempotent retry resolves to an existing job", async () => {
+    let sequence = 0;
+    const persistedHeads: string[] = [];
+    const queue = new ReviewQueue({
+      store: new InMemoryReviewQueueStore(),
+      run: async () => undefined,
+      now: () => 1_300,
+      id: () => `idempotent-job-${++sequence}`,
+      lifecycle: {
+        requested: async (job) => { persistedHeads.push(job.headSha); },
+        queued: async () => undefined,
+        started: async () => undefined,
+        completed: async () => undefined,
+        retryScheduled: async () => undefined,
+        failed: async () => undefined,
+      },
+    });
+
+    const first = await queue.enqueue(request, "same-invocation", { source: "dashboard" });
+    const retry = await queue.enqueue({ ...request, headSha: "new-current-head" }, "same-invocation", { source: "dashboard" });
+
+    expect(retry.id).toBe(first.id);
+    expect(persistedHeads).toEqual(["abc123", "abc123"]);
+  });
+
+  test("recovers a dormant job only after its required ledger facts succeed", async () => {
+    const store = new InMemoryReviewQueueStore();
+    let queuedWrites = 0;
+    let runs = 0;
+    const queue = new ReviewQueue({
+      store,
+      run: async () => { runs += 1; },
+      now: () => 1_400,
+      id: () => "ledger-gated-job",
+      lifecycle: {
+        queued: async () => { queuedWrites += 1; if (queuedWrites === 1) throw new Error("Postgres unavailable"); },
+        started: async () => undefined,
+        completed: async () => undefined,
+        retryScheduled: async () => undefined,
+        failed: async () => undefined,
+      },
+    });
+
+    await expect(queue.enqueue(request, "ledger-gated-key")).rejects.toThrow("Postgres unavailable");
+    expect(runs).toBe(0);
+
+    await expect(queue.processNext()).resolves.toMatchObject({ id: "ledger-gated-job", status: "completed" });
+    expect(runs).toBe(1);
+  });
+
+  test("finalizes a revoked dormant job without blocking another repository", async () => {
+    let sequence = 0;
+    const queue = new ReviewQueue({
+      store: new InMemoryReviewQueueStore(),
+      run: async () => undefined,
+      now: () => 1_450,
+      id: () => `activation-job-${++sequence}`,
+      lifecycle: {
+        requested: async (job) => { if (job.repo === "revoked") throw new ReviewEventAccessRevokedError(job); },
+        queued: async () => undefined,
+        started: async () => undefined,
+        completed: async () => undefined,
+        retryScheduled: async () => undefined,
+        failed: async () => undefined,
+      },
+    });
+    await expect(queue.enqueue({ ...request, repo: "revoked" })).rejects.toBeInstanceOf(ReviewEventAccessRevokedError);
+    const healthy = await queue.enqueue({ ...request, installationId: 8, owner: "healthy", repo: "active", pullNumber: 1 });
+
+    await expect(queue.processNext()).resolves.toMatchObject({ id: healthy.id, status: "completed" });
+    await expect(queue.get("activation-job-1")).resolves.toMatchObject({ status: "failed" });
   });
 
   test("returns the durable job when dispatch fails and GitHub redelivers", async () => {
@@ -169,7 +350,7 @@ describe("ReviewQueue", () => {
 
     await firstWorker.enqueue(request);
     void firstWorker.processNext();
-    await Promise.resolve();
+    await vi.waitFor(async () => expect(await firstWorker.get("job-4")).toMatchObject({ status: "running" }));
     now = 4_051;
 
     await recoveryWorker.processNext();
@@ -177,22 +358,155 @@ describe("ReviewQueue", () => {
     abandoned.resolve();
   });
 
-  test("reports a terminal failure produced by expired-lease recovery", async () => {
-    let now = 4_100;
-    const abandoned = deferred<void>();
+  test("reports lease-expiry recovery as a durable lifecycle transition", async () => {
+    let now = 4_500;
+    const transitions: string[] = [];
     const store = new InMemoryReviewQueueStore();
-    const firstWorker = new ReviewQueue({ store, run: () => abandoned.promise, now: () => now, id: () => "recovered-failure", leaseMs: 50, maxAttempts: 1 });
-    const recovered: ReviewJob[] = [];
-    const recoveryWorker = new ReviewQueue({ store, run: async () => undefined, now: () => now, leaseMs: 50, onRecovered: async (jobs) => { recovered.push(...jobs); } });
+    const queue = new ReviewQueue({
+      store,
+      run: async () => undefined,
+      now: () => now,
+      id: () => "job-recovery-event",
+      leaseMs: 50,
+      maxAttempts: 1,
+      lifecycle: {
+        queued: async () => undefined,
+        started: async () => undefined,
+        completed: async () => undefined,
+        retryScheduled: async () => { transitions.push("retrying"); },
+        failed: async () => { transitions.push("failed"); },
+      },
+    });
 
-    await firstWorker.enqueue(request);
-    void firstWorker.processNext();
-    await Promise.resolve();
-    now = 4_151;
+    await queue.enqueue(request);
+    await store.claim(now, 50, "abandoned");
+    now += 51;
+    await queue.processNext();
+
+    expect(transitions).toEqual(["failed"]);
+  });
+
+  test("keeps recovered retry work unclaimable until its ledger fact is durable", async () => {
+    let now = 4_600;
+    const transitionStarted = deferred<void>();
+    const allowTransition = deferred<void>();
+    const store = new InMemoryReviewQueueStore();
+    const queue = new ReviewQueue({
+      store,
+      run: async () => undefined,
+      now: () => now,
+      id: () => "job-gated-recovery",
+      leaseMs: 50,
+      lifecycle: {
+        queued: async () => undefined,
+        started: async () => undefined,
+        completed: async () => undefined,
+        retryScheduled: async () => { transitionStarted.resolve(); await allowTransition.promise; },
+        failed: async () => undefined,
+      },
+    });
+    await queue.enqueue(request);
+    await store.claim(now, 50, "abandoned");
+    now += 51;
+
+    const recovery = queue.processNext();
+    await transitionStarted.promise;
+    await expect(store.claim(now, 50, "competing-worker")).resolves.toBeNull();
+    allowTransition.resolve();
+
+    await expect(recovery).resolves.toMatchObject({ id: "job-gated-recovery", status: "completed", attempts: 2 });
+  });
+
+  test("does not let a stale worker replace a staged lease-recovery fact", async () => {
+    let now = 4_650;
+    const store = new InMemoryReviewQueueStore();
+    const queue = new ReviewQueue({ store, run: async () => undefined, now: () => now, id: () => "job-recovery-fence", leaseMs: 50 });
+    await queue.enqueue(request);
+    const abandoned = await store.claim(now, 50, "expired-lease");
+    now += 51;
+    await store.recoverExpired(now);
+
+    const staleTransition = {
+      ...abandoned!,
+      status: "retrying" as const,
+      updatedAt: now,
+      availableAt: now,
+      lastError: "Stale worker failure",
+    };
+    await expect(store.stageTransition({ job: staleTransition })).resolves.toBe(false);
+    await expect(store.pendingTransitions(1)).resolves.toMatchObject([{ job: { lastError: "Worker lease expired" } }]);
+  });
+
+  test("replays an unacknowledged recovery until its ledger transition succeeds", async () => {
+    let now = 4_700;
+    let failures = 1;
+    const store = new InMemoryReviewQueueStore();
+    const queue = new ReviewQueue({
+      store,
+      run: async () => undefined,
+      now: () => now,
+      id: () => "job-recovery-replay",
+      leaseMs: 50,
+      maxAttempts: 1,
+      lifecycle: {
+        queued: async () => undefined,
+        started: async () => undefined,
+        completed: async () => undefined,
+        retryScheduled: async () => undefined,
+        failed: async () => { if (failures-- > 0) throw new Error("Postgres unavailable"); },
+      },
+    });
+    await queue.enqueue(request);
+    await store.claim(now, 50, "abandoned");
+    now += 51;
+
+    await expect(queue.processNext()).rejects.toThrow("Postgres unavailable");
+    await expect(queue.processNext()).resolves.toBeNull();
+    await expect(queue.get("job-recovery-replay")).resolves.toMatchObject({ status: "failed", lastError: "Worker lease expired" });
+  });
+
+  test("finalizes revoked work without blocking another repository", async () => {
+    let sequence = 0;
+    const queue = new ReviewQueue({
+      store: new InMemoryReviewQueueStore(),
+      run: async () => undefined,
+      now: () => 4_900,
+      id: () => `revocation-job-${++sequence}`,
+      lifecycle: {
+        queued: async () => undefined,
+        started: async (job) => { if (job.repo === "review-agent") throw new ReviewEventAccessRevokedError(job); },
+        completed: async () => undefined,
+        retryScheduled: async () => { throw new Error("Revoked work must not emit retry events"); },
+        failed: async () => { throw new Error("Revoked work must not emit failure events"); },
+      },
+    });
+    const revoked = await queue.enqueue(request);
+    const healthy = await queue.enqueue({ ...request, installationId: 8, owner: "other", repo: "healthy", pullNumber: 1 });
+
+    await expect(queue.processNext()).resolves.toMatchObject({ id: revoked.id, status: "failed" });
+    await expect(queue.processNext()).resolves.toMatchObject({ id: healthy.id, status: "completed" });
+  });
+
+  test("reports an acknowledged terminal recovery to queue observers", async () => {
+    let now = 4_100;
+    const store = new InMemoryReviewQueueStore();
+    const recovered: ReviewJob[] = [];
+    const recoveryWorker = new ReviewQueue({
+      store,
+      run: async () => undefined,
+      now: () => now,
+      id: () => "recovered-failure",
+      leaseMs: 50,
+      maxAttempts: 1,
+      onTransitionsAcknowledged: async (jobs) => { recovered.push(...jobs); },
+    });
+
+    await recoveryWorker.enqueue(request);
+    await store.claim(now, 50, "abandoned");
+    now += 51;
 
     await expect(recoveryWorker.processNext()).resolves.toBeNull();
     expect(recovered).toEqual([expect.objectContaining({ id: "recovered-failure", status: "failed", lastError: "Worker lease expired" })]);
-    abandoned.resolve();
   });
 
   test("moves exhausted jobs to a visible failed state", async () => {
@@ -290,7 +604,7 @@ describe("ReviewQueue", () => {
 
     await queue.enqueue(request);
     const staleWorker = queue.processNext();
-    await Promise.resolve();
+    await vi.waitFor(async () => expect(await queue.get("job-8")).toMatchObject({ status: "running" }));
     now = 11_051;
     await queue.processNext();
     staleRun.resolve();

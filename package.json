@@ -6,11 +6,14 @@
     "dev": "next dev",
     "build": "next build --webpack",
     "start": "next start",
+    "db:migrate": "node scripts/migrate.mjs",
     "lint": "eslint",
     "test": "vitest run",
-    "test:redis": "RUN_REDIS_INTEGRATION_TESTS=1 vitest run src/lib/redis-review-queue-store.integration.test.ts src/lib/redis-repository-index-store.integration.test.ts"
+    "test:redis": "RUN_REDIS_INTEGRATION_TESTS=1 vitest run src/lib/redis-review-queue-store.integration.test.ts src/lib/redis-repository-index-store.integration.test.ts",
+    "test:postgres": "RUN_POSTGRES_INTEGRATION_TESTS=1 vitest run src/lib/postgres-review-event-ledger.integration.test.ts"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
     "@upstash/qstash": "^2.11.3",
     "@upstash/redis": "^1.38.2",
     "@vercel/sandbox": "^3.0.0",

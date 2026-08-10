@@ -15,6 +15,6 @@ export class PausedRepositoryReviewError extends Error {
 export async function submitDashboardReview(owner: string, repo: string, pullNumber: number, invocationId: string) {
   if (!await isRepositoryWatched(`${owner}/${repo}`)) throw new PausedRepositoryReviewError();
   const review = await resolveReviewRequest(owner, repo, pullNumber);
-  const job = await enqueueAndTryDispatchReview(review, manualReviewIdempotencyKey(review, invocationId), invocationId);
+  const job = await enqueueAndTryDispatchReview(review, manualReviewIdempotencyKey(review, invocationId), invocationId, "dashboard");
   return { review, job };
 }

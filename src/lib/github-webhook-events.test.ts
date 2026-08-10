@@ -4,12 +4,16 @@ const mocks = vi.hoisted(() => ({
   dispatchIndex: vi.fn(async () => undefined),
   watched: vi.fn(async () => true),
   enqueueReview: vi.fn(),
+  recordMerged: vi.fn(async () => undefined),
 }));
 
 vi.mock("server-only", () => ({}));
 vi.mock("./repository-index-dispatcher", () => ({ dispatchRepositoryIndexTask: mocks.dispatchIndex }));
 vi.mock("./repository-watch", () => ({ isRepositoryWatched: mocks.watched }));
 vi.mock("./review-queue-service", () => ({ enqueueAndDispatchReview: mocks.enqueueReview }));
+vi.mock("./review-event-ledger-service", () => ({
+  recordPullRequestMergedEvent: mocks.recordMerged,
+}));
 vi.mock("./review-submission", () => ({ webhookReviewIdempotencyKeys: vi.fn(() => []) }));
 
 import { handleGitHubWebhook } from "./github-webhook-events";
@@ -76,5 +80,21 @@ describe("repository index webhook events", () => {
   it("restores a suspended installation using its monotonic update time", async () => {
     await handleGitHubWebhook("installation", JSON.stringify({ action: "unsuspend", installation: { id: 7, updated_at: "2026-08-09T01:00:00.000Z" } }), "delivery-unsuspend");
     expect(mocks.dispatchIndex).toHaveBeenCalledWith({ action: "restoreInstallation", installationId: 7, changedAt: Date.parse("2026-08-09T01:00:00.000Z") });
+  });
+
+  it("records merge outcomes after a reviewed repository is paused", async () => {
+    mocks.watched.mockResolvedValueOnce(false);
+    const response = await handleGitHubWebhook("pull_request", JSON.stringify({
+      action: "closed",
+      installation: { id: 7 },
+      repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" },
+      pull_request: { number: 8, draft: false, merged: true, merged_at: "2026-08-09T02:00:00.000Z", merged_by: { login: "octocat" }, head: { sha: "head" } },
+    }), "delivery-merged");
+
+    expect(response.status).toBe(202);
+    expect(mocks.recordMerged).toHaveBeenCalledWith(expect.objectContaining({ installationId: 7, pullNumber: 8, headSha: "head" }), {
+      deliveryId: "delivery-merged", mergedAt: "2026-08-09T02:00:00.000Z", mergedBy: "octocat",
+    });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
   });
 });

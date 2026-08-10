@@ -15,6 +15,7 @@ This repository is Ternary's initial dogfood target for end-to-end review verifi
 - Repository management through the GitHub App installation settings
 - Authenticated manual review runs from the dashboard
 - A Redis-backed durable review queue with leases, bounded per-installation and per-repository concurrency, retries, and crash recovery
+- A Postgres-backed immutable Review Event Ledger for lifecycle history, structured findings, sandbox evidence, merge outcomes, exports, retention, and deletion
 
 ## Run locally
 
@@ -46,11 +47,13 @@ On Vercel, authentication is automatic through `VERCEL_OIDC_TOKEN`. For local Sa
 
 1. Push this folder to a private GitHub repository.
 2. Import it in Vercel as a Next.js project.
-3. Add the GitHub and OpenAI variables from `.env.example` to the Vercel project. Sandbox authentication is automatic.
+3. Add the GitHub and OpenAI variables from `.env.example` to the Vercel project. Connect Neon Postgres through Vercel Marketplace, then run `npm run db:migrate` with its `DATABASE_URL`. Sandbox authentication is automatic.
 4. Deploy, update the GitHub App webhook URL, and install the app on a test repository.
 5. Open a PR and confirm the `Ternary review` check appears.
 
 The webhook persists work in Upstash Redis before GitHub receives a `202`, then QStash durably dispatches a worker outside the webhook request lifetime. Every accepted GitHub delivery is recorded as a seven-day alias of the canonical repository, pull-request number, and head-SHA key. Redeliveries and concurrent events for the same commit therefore resolve to one job, while a new head SHA creates new work. Jobs use renewable leases, exponential retries, and per-installation and per-repository locks. QStash continues draining available work, while a protected daily Vercel Cron remains as a Hobby-compatible recovery backstop. Production teams on Vercel Pro can change the cron to `* * * * *` for additional minute-level recovery. Terminal job records expire after 30 days, and the recent-jobs index is pruned without deleting active or scheduled work. Operators can inspect recent job state through authenticated `GET /api/reviews/jobs`.
+
+Every accepted review also writes immutable, idempotent lifecycle facts to Postgres: requested, queued, started, retry scheduled, completed, and failed. Completed facts retain structured findings and bounded sandbox evidence, while watched pull-request merges add merge outcomes. Repository and installation removal delete their private ledger history, and the daily worker prunes events older than `REVIEW_EVENT_RETENTION_DAYS` (365 by default). Authenticated operators can page one installed repository through `GET /api/review-events?repository=OWNER/REPO` or export its complete history with `format=csv`; the server derives the installation scope from current GitHub access rather than trusting a caller-provided installation ID.
 
 Authenticated callers of `POST /api/reviews/run` must send an `Idempotency-Key` header containing a unique token for each intentional review. Retrying the same request with the same token reuses the queued job; sending a new token starts a deliberate rerun, even when the head SHA has not changed. If immediate QStash dispatch is unavailable, manual endpoints still return the accepted persisted job so the recovery worker can drain it.
 
@@ -58,7 +61,7 @@ Ternary keeps installation-scoped, commit-addressed index snapshots per reposito
 
 Set `QSTASH_TOKEN`, `TERNARY_BASE_URL`, and `CRON_SECRET` in Vercel. QStash and manual worker invocations authenticate with `Authorization: Bearer $INTERNAL_API_TOKEN`; QStash redacts that header from its logs.
 
-Run `npm test` for the queue policy suite. To exercise the production Redis Lua scripts against an isolated namespace, provide test Redis credentials and run `npm run test:redis`; the integration test removes its temporary keys afterward.
+Run `npm test` for the local policy suites. To exercise the production Redis Lua scripts against an isolated namespace, provide test Redis credentials and run `npm run test:redis`. To verify the Review Event Ledger contract against Neon, provide `DATABASE_URL` and run `npm run test:postgres`; both integration suites remove their temporary data afterward.
 
 ## Architecture
 

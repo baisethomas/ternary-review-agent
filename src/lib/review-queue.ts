@@ -1,8 +1,15 @@
 import type { ReviewRequest } from "./types";
 import { isRetryableReviewError, ReviewLeaseLostError } from "./review-errors";
 import { terminalJobRetentionMs } from "./review-retention";
+import { ReviewEventAccessRevokedError } from "./review-event-ledger";
 
 export type ReviewJobStatus = "queued" | "running" | "retrying" | "failed" | "completed";
+
+export type ReviewSubmission = {
+  source: "github" | "dashboard" | "api";
+  deliveryId?: string;
+  idempotencyKey?: string;
+};
 
 export type ReviewJob = ReviewRequest & {
   id: string;
@@ -17,20 +24,48 @@ export type ReviewJob = ReviewRequest & {
   leaseId?: string;
   leaseExpiresAt?: number;
   lastError?: string;
+  submission?: ReviewSubmission;
+};
+
+export type PendingReviewTransition = {
+  job: ReviewJob;
+  result?: unknown;
 };
 
 export interface ReviewQueueStore {
   create(job: ReviewJob, idempotencyKeys?: readonly string[]): Promise<ReviewJob>;
+  activate(job: ReviewJob): Promise<boolean>;
+  pendingActivations(limit: number): Promise<ReviewJob[]>;
+  failActivation(job: ReviewJob, failedAt: number, error: string): Promise<boolean>;
   claim(now: number, leaseMs: number, leaseId: string): Promise<ReviewJob | null>;
-  finish(job: ReviewJob): Promise<boolean>;
+  stageTransition(transition: PendingReviewTransition): Promise<boolean>;
+  pendingTransitions(limit: number): Promise<PendingReviewTransition[]>;
+  acknowledgeTransition(job: ReviewJob): Promise<boolean>;
   renew(id: string, leaseId: string, leaseExpiresAt: number): Promise<boolean>;
-  recoverExpired(now: number): Promise<ReviewJob[]>;
+  recoverExpired(now: number): Promise<void>;
   pruneTerminal(completedBefore: number, limit: number): Promise<number>;
   get(id: string): Promise<ReviewJob | null>;
   list(limit: number): Promise<ReviewJob[]>;
   listActive(): Promise<ReviewJob[]>;
   nextWakeAt(): Promise<number | null>;
 }
+
+export type ReviewQueueLifecycle = {
+  requested?(job: ReviewJob): Promise<void>;
+  queued(job: ReviewJob): Promise<void>;
+  started(job: ReviewJob): Promise<void>;
+  completed(job: ReviewJob, result: unknown): Promise<void>;
+  retryScheduled(job: ReviewJob): Promise<void>;
+  failed(job: ReviewJob): Promise<void>;
+};
+
+const noLifecycle: ReviewQueueLifecycle = {
+  queued: async () => undefined,
+  started: async () => undefined,
+  completed: async () => undefined,
+  retryScheduled: async () => undefined,
+  failed: async () => undefined,
+};
 
 type ReviewQueueOptions = {
   store: ReviewQueueStore;
@@ -42,7 +77,8 @@ type ReviewQueueOptions = {
   leaseMs?: number;
   maxAttempts?: number;
   terminalRetentionMs?: number;
-  onRecovered?: (jobs: ReviewJob[]) => Promise<void>;
+  lifecycle?: ReviewQueueLifecycle;
+  onTransitionsAcknowledged?: (jobs: ReviewJob[]) => Promise<void>;
 };
 
 export type ReviewLease = {
@@ -63,7 +99,8 @@ export class ReviewQueue {
   private readonly leaseMs: number;
   private readonly maxAttempts: number;
   private readonly terminalRetentionMs: number;
-  private readonly onRecovered: (jobs: ReviewJob[]) => Promise<void>;
+  private readonly lifecycle: ReviewQueueLifecycle;
+  private readonly onTransitionsAcknowledged: (jobs: ReviewJob[]) => Promise<void>;
 
   constructor(options: ReviewQueueOptions) {
     this.store = options.store;
@@ -75,10 +112,15 @@ export class ReviewQueue {
     this.leaseMs = options.leaseMs ?? 6 * 60_000;
     this.maxAttempts = options.maxAttempts ?? 3;
     this.terminalRetentionMs = options.terminalRetentionMs ?? terminalJobRetentionMs;
-    this.onRecovered = options.onRecovered ?? (async () => undefined);
+    this.lifecycle = options.lifecycle ?? noLifecycle;
+    this.onTransitionsAcknowledged = options.onTransitionsAcknowledged ?? (async () => undefined);
   }
 
-  async enqueue(request: ReviewRequest, idempotencyKeys?: string | readonly string[]) {
+  async enqueue(
+    request: ReviewRequest,
+    idempotencyKeys?: string | readonly string[],
+    submission?: ReviewSubmission,
+  ) {
     const now = this.now();
     const job: ReviewJob = {
       ...request,
@@ -89,15 +131,36 @@ export class ReviewQueue {
       createdAt: now,
       updatedAt: now,
       availableAt: now,
+      ...(submission ? { submission } : {}),
     };
     const keys = typeof idempotencyKeys === "string" ? [idempotencyKeys] : idempotencyKeys;
-    return this.store.create(job, keys);
+    const stored = await this.store.create(job, keys);
+    if (stored.status === "queued") await this.activate(stored);
+    return stored;
   }
 
   async processNext() {
+    for (const pending of await this.store.pendingActivations(100)) {
+      try {
+        await this.activate(pending);
+      } catch (error) {
+        if (!(error instanceof ReviewEventAccessRevokedError)) throw error;
+        await this.store.failActivation(pending, this.now(), errorMessage(error));
+      }
+    }
     const now = this.now();
-    const recovered = await this.store.recoverExpired(now);
-    if (recovered.length) await this.onRecovered(recovered);
+    await this.store.recoverExpired(now);
+    const pendingTransitions = await this.store.pendingTransitions(100);
+    const acknowledgedTransitions: ReviewJob[] = [];
+    for (const transition of pendingTransitions) {
+      try {
+        await this.recordTransition(transition);
+      } catch (error) {
+        if (!(error instanceof ReviewEventAccessRevokedError)) throw error;
+      }
+      if (await this.store.acknowledgeTransition(transition.job)) acknowledgedTransitions.push(transition.job);
+    }
+    if (acknowledgedTransitions.length) await this.onTransitionsAcknowledged(acknowledgedTransitions);
     const job = await this.store.claim(now, this.leaseMs, this.leaseId());
     if (!job) return null;
 
@@ -117,16 +180,19 @@ export class ReviewQueue {
     }, Math.max(1_000, Math.floor(this.leaseMs / 3)));
     heartbeat.unref();
 
+    let result: unknown;
     try {
-      await this.run(job, { assertActive });
+      await this.lifecycle.started(job);
+      result = await this.run(job, { assertActive });
       await assertActive();
-      const completedAt = this.now();
-      const completed = { ...job, status: "completed" as const, updatedAt: completedAt, completedAt };
-      return await this.store.finish(completed) ? completed : this.store.get(job.id);
     } catch (error) {
-      if (error instanceof ReviewLeaseLostError) return this.store.get(job.id);
+      if (error instanceof ReviewLeaseLostError) {
+        clearInterval(heartbeat);
+        return this.store.get(job.id);
+      }
       const failedAt = this.now();
-      const exhausted = job.attempts >= job.maxAttempts || !isRetryableReviewError(error);
+      const accessRevoked = error instanceof ReviewEventAccessRevokedError;
+      const exhausted = accessRevoked || job.attempts >= job.maxAttempts || !isRetryableReviewError(error);
       const failed: ReviewJob = {
         ...job,
         status: exhausted ? "failed" : "retrying",
@@ -135,10 +201,50 @@ export class ReviewQueue {
         completedAt: exhausted ? failedAt : undefined,
         lastError: errorMessage(error),
       };
-      return await this.store.finish(failed) ? failed : this.store.get(job.id);
+      try {
+        const staged = await this.store.stageTransition({ job: failed });
+        if (!staged) return this.store.get(job.id);
+        if (!accessRevoked) await this.recordTransition({ job: failed });
+        if (await this.store.acknowledgeTransition(failed)) {
+          await this.onTransitionsAcknowledged([failed]);
+          return failed;
+        }
+        return this.store.get(job.id);
+      } finally {
+        clearInterval(heartbeat);
+      }
+    }
+
+    const completedAt = this.now();
+    const completed = { ...job, status: "completed" as const, updatedAt: completedAt, completedAt };
+    try {
+      const staged = await this.store.stageTransition({ job: completed, result });
+      if (!staged) return this.store.get(job.id);
+      try {
+        await this.lifecycle.completed(completed, result);
+      } catch (error) {
+        if (!(error instanceof ReviewEventAccessRevokedError)) throw error;
+      }
+      if (await this.store.acknowledgeTransition(completed)) {
+        await this.onTransitionsAcknowledged([completed]);
+        return completed;
+      }
+      return this.store.get(job.id);
     } finally {
       clearInterval(heartbeat);
     }
+  }
+
+  private async activate(job: ReviewJob) {
+    await this.lifecycle.requested?.(job);
+    await this.lifecycle.queued(job);
+    await this.store.activate(job);
+  }
+
+  private async recordTransition(transition: PendingReviewTransition) {
+    if (transition.job.status === "completed") return this.lifecycle.completed(transition.job, transition.result);
+    if (transition.job.status === "failed") return this.lifecycle.failed(transition.job);
+    return this.lifecycle.retryScheduled(transition.job);
   }
 
   get(id: string) {

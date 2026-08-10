@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ReviewSubmissionConflictError, releaseRecoveredActiveReviews, submitActiveReview, type ActiveReviewSubmissionDependencies } from "./active-review-submission";
+import { ReviewSubmissionConflictError, releaseTerminalActiveReviews, submitActiveReview, type ActiveReviewSubmissionDependencies } from "./active-review-submission";
 import type { ReviewJob } from "./review-queue";
 import type { ReviewRequest } from "./types";
 
@@ -65,7 +65,7 @@ describe("active review submission", () => {
     const dependencies = guard();
     await submitActiveReview(review, "first", async () => job, dependencies);
     const failed = { ...job, status: "failed" as const, attempts: 3, completedAt: 4 };
-    await releaseRecoveredActiveReviews([failed], dependencies.release);
+    await releaseTerminalActiveReviews([failed], dependencies.release);
 
     const replacement = { ...job, id: "job-2" };
     await expect(submitActiveReview(review, "replacement", async () => replacement, dependencies)).resolves.toEqual(replacement);
