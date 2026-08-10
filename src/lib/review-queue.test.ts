@@ -364,6 +364,57 @@ describe("ReviewQueue", () => {
     expect(transitions).toEqual(["failed"]);
   });
 
+  test("keeps recovered retry work unclaimable until its ledger fact is durable", async () => {
+    let now = 4_600;
+    const transitionStarted = deferred<void>();
+    const allowTransition = deferred<void>();
+    const store = new InMemoryReviewQueueStore();
+    const queue = new ReviewQueue({
+      store,
+      run: async () => undefined,
+      now: () => now,
+      id: () => "job-gated-recovery",
+      leaseMs: 50,
+      lifecycle: {
+        queued: async () => undefined,
+        started: async () => undefined,
+        completed: async () => undefined,
+        retryScheduled: async () => { transitionStarted.resolve(); await allowTransition.promise; },
+        failed: async () => undefined,
+      },
+    });
+    await queue.enqueue(request);
+    await store.claim(now, 50, "abandoned");
+    now += 51;
+
+    const recovery = queue.processNext();
+    await transitionStarted.promise;
+    await expect(store.claim(now, 50, "competing-worker")).resolves.toBeNull();
+    allowTransition.resolve();
+
+    await expect(recovery).resolves.toMatchObject({ id: "job-gated-recovery", status: "completed", attempts: 2 });
+  });
+
+  test("does not let a stale worker replace a staged lease-recovery fact", async () => {
+    let now = 4_650;
+    const store = new InMemoryReviewQueueStore();
+    const queue = new ReviewQueue({ store, run: async () => undefined, now: () => now, id: () => "job-recovery-fence", leaseMs: 50 });
+    await queue.enqueue(request);
+    const abandoned = await store.claim(now, 50, "expired-lease");
+    now += 51;
+    await store.recoverExpired(now);
+
+    const staleTransition = {
+      ...abandoned!,
+      status: "retrying" as const,
+      updatedAt: now,
+      availableAt: now,
+      lastError: "Stale worker failure",
+    };
+    await expect(store.stageTransition({ job: staleTransition })).resolves.toBe(false);
+    await expect(store.pendingTransitions(1)).resolves.toMatchObject([{ job: { lastError: "Worker lease expired" } }]);
+  });
+
   test("replays an unacknowledged recovery until its ledger transition succeeds", async () => {
     let now = 4_700;
     let failures = 1;

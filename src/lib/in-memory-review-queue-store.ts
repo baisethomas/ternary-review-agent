@@ -6,7 +6,6 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
   private readonly jobs = new Map<string, ReviewJob>();
   private readonly locks = new Map<string, Lock>();
   private readonly idempotencyKeys = new Map<string, string>();
-  private readonly pendingRecoveries = new Map<string, ReviewJob>();
   private readonly transitions = new Map<string, PendingReviewTransition>();
   private readonly ready = new Set<string>();
   private readonly activations = new Set<string>();
@@ -86,7 +85,7 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
 
   async stageTransition(transition: PendingReviewTransition) {
     const current = this.jobs.get(transition.job.id);
-    if (!current || current.status !== "running" || current.leaseId !== transition.job.leaseId) return false;
+    if (!current || this.transitions.has(transition.job.id) || current.status !== "running" || current.leaseId !== transition.job.leaseId) return false;
     this.transitions.set(transition.job.id, structuredClone(transition));
     return true;
   }
@@ -117,7 +116,6 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
   }
 
   async recoverExpired(now: number) {
-    const recovered: ReviewJob[] = [];
     for (const [id, job] of this.jobs) {
       if (job.status !== "running" || this.transitions.has(id) || !job.leaseExpiresAt || job.leaseExpiresAt > now) continue;
       const exhausted = job.attempts >= job.maxAttempts;
@@ -128,20 +126,10 @@ export class InMemoryReviewQueueStore implements ReviewQueueStore {
         updatedAt: now,
         completedAt: exhausted ? now : undefined,
         lastError: "Worker lease expired",
-        leaseId: undefined,
         leaseExpiresAt: undefined,
       };
-      this.jobs.set(id, recoveredJob);
-      this.releaseLocks(id);
-      recovered.push(structuredClone(recoveredJob));
-      this.pendingRecoveries.set(id, structuredClone(recoveredJob));
-      if (recoveredJob.status === "retrying") this.ready.add(id);
+      this.transitions.set(id, { job: structuredClone(recoveredJob) });
     }
-    return [...this.pendingRecoveries.values()].map((job) => structuredClone(job));
-  }
-
-  async acknowledgeRecovery(id: string) {
-    this.pendingRecoveries.delete(id);
   }
 
   async get(id: string) {

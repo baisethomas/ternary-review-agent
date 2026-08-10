@@ -42,8 +42,7 @@ export interface ReviewQueueStore {
   pendingTransitions(limit: number): Promise<PendingReviewTransition[]>;
   acknowledgeTransition(job: ReviewJob): Promise<boolean>;
   renew(id: string, leaseId: string, leaseExpiresAt: number): Promise<boolean>;
-  recoverExpired(now: number): Promise<ReviewJob[]>;
-  acknowledgeRecovery(id: string): Promise<void>;
+  recoverExpired(now: number): Promise<void>;
   pruneTerminal(completedBefore: number, limit: number): Promise<number>;
   get(id: string): Promise<ReviewJob | null>;
   list(limit: number): Promise<ReviewJob[]>;
@@ -145,6 +144,8 @@ export class ReviewQueue {
         await this.store.failActivation(pending, this.now(), errorMessage(error));
       }
     }
+    const now = this.now();
+    await this.store.recoverExpired(now);
     const pendingTransitions = await this.store.pendingTransitions(100);
     for (const transition of pendingTransitions) {
       try {
@@ -153,17 +154,6 @@ export class ReviewQueue {
         if (!(error instanceof ReviewEventAccessRevokedError)) throw error;
       }
       await this.store.acknowledgeTransition(transition.job);
-    }
-    const now = this.now();
-    const recovered = await this.store.recoverExpired(now);
-    for (const recoveredJob of recovered) {
-      try {
-        if (recoveredJob.status === "failed") await this.lifecycle.failed(recoveredJob);
-        else await this.lifecycle.retryScheduled(recoveredJob);
-      } catch (error) {
-        if (!(error instanceof ReviewEventAccessRevokedError)) throw error;
-      }
-      await this.store.acknowledgeRecovery(recoveredJob.id);
     }
     const job = await this.store.claim(now, this.leaseMs, this.leaseId());
     if (!job) return null;

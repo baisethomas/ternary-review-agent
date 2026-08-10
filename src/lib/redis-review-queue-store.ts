@@ -124,7 +124,7 @@ return nil
 
 const stageTransitionScript = `
 local encoded = redis.call("GET", KEYS[1])
-if not encoded then return 0 end
+if not encoded or redis.call("EXISTS", KEYS[3]) == 1 then return 0 end
 local current = cjson.decode(encoded)
 local transition = cjson.decode(ARGV[1])
 if current.status ~= "running" or current.leaseId ~= transition.job.leaseId then return 0 end
@@ -163,50 +163,31 @@ return 1
 
 const recoverScript = `
 local expired = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", ARGV[1])
-local recovered = {}
 for _, id in ipairs(expired) do
-  if redis.call("EXISTS", ARGV[5] .. id) == 0 then
+  if redis.call("EXISTS", ARGV[3] .. id) == 0 then
     local jobKey = ARGV[2] .. id
     local encoded = redis.call("GET", jobKey)
     if encoded then
       local job = cjson.decode(encoded)
       if job.status == "running" and job.leaseExpiresAt <= tonumber(ARGV[1]) then
-      local installationLock = ARGV[3] .. "installation:" .. tostring(job.installationId)
-      local repositoryLock = ARGV[3] .. "repository:" .. string.lower(job.owner) .. "/" .. string.lower(job.repo)
-      job.updatedAt = tonumber(ARGV[1])
-      job.lastError = "Worker lease expired"
-      job.leaseId = nil
-      job.leaseExpiresAt = nil
-      if job.attempts >= job.maxAttempts then
-        job.status = "failed"
-        job.completedAt = tonumber(ARGV[1])
-      else
-        job.status = "retrying"
-        job.availableAt = tonumber(ARGV[1])
-        redis.call("ZADD", KEYS[2], job.availableAt, id)
-      end
-      if job.status == "failed" then
-        redis.call("SET", jobKey, cjson.encode(job), "EX", ARGV[4])
-        redis.call("ZADD", KEYS[3], job.completedAt, id)
-      else
-        redis.call("SET", jobKey, cjson.encode(job))
-      end
-      if redis.call("GET", installationLock) == id then redis.call("DEL", installationLock) end
-      if redis.call("GET", repositoryLock) == id then redis.call("DEL", repositoryLock) end
-      table.insert(recovered, job)
-      redis.call("ZADD", KEYS[4], job.updatedAt, id)
+        job.updatedAt = tonumber(ARGV[1])
+        job.lastError = "Worker lease expired"
+        job.leaseExpiresAt = nil
+        if job.attempts >= job.maxAttempts then
+          job.status = "failed"
+          job.completedAt = tonumber(ARGV[1])
+        else
+          job.status = "retrying"
+          job.availableAt = tonumber(ARGV[1])
+        end
+        redis.call("SET", ARGV[3] .. id, cjson.encode({job = job}))
+        redis.call("ZADD", KEYS[2], job.updatedAt, id)
       end
     end
     redis.call("ZREM", KEYS[1], id)
   end
 end
-local pending = redis.call("ZRANGE", KEYS[4], 0, 99)
-recovered = {}
-for _, id in ipairs(pending) do
-  local encoded = redis.call("GET", ARGV[2] .. id)
-  if encoded then table.insert(recovered, cjson.decode(encoded)) else redis.call("ZREM", KEYS[4], id) end
-end
-return cjson.encode(recovered)
+return #expired
 `;
 
 const renewScript = `
@@ -238,7 +219,6 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
   private get activeKey() { return `${this.prefix}:active`; }
   private get allKey() { return `${this.prefix}:all`; }
   private get terminalKey() { return `${this.prefix}:terminal`; }
-  private get recoveryKey() { return `${this.prefix}:recovery-pending`; }
   private get activationKey() { return `${this.prefix}:activation-pending`; }
   private get transitionKey() { return `${this.prefix}:transition-pending`; }
   private get transitionPrefix() { return `${this.prefix}:transition:`; }
@@ -332,17 +312,11 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
   }
 
   async recoverExpired(now: number) {
-    const recovered = await this.redis.eval<[number, string, string, number, string], string | ReviewJob[]>(
+    await this.redis.eval<[number, string, string], number>(
       recoverScript,
-      [this.activeKey, this.scheduledKey, this.terminalKey, this.recoveryKey],
-      [now, this.jobPrefix, this.lockPrefix, terminalJobRetentionSeconds, this.transitionPrefix],
+      [this.activeKey, this.transitionKey],
+      [now, this.jobPrefix, this.transitionPrefix],
     );
-    if (Array.isArray(recovered)) return recovered;
-    return recovered ? JSON.parse(recovered) as ReviewJob[] : [];
-  }
-
-  async acknowledgeRecovery(id: string) {
-    await this.redis.zrem(this.recoveryKey, id);
   }
 
   pruneTerminal(completedBefore: number, limit: number) {
