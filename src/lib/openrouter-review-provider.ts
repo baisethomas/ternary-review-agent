@@ -3,6 +3,23 @@ import { isRetryableHttpStatus, NonRetryableReviewError } from "./review-errors"
 
 const systemPrompt = `You are Ternary, a senior code review agent. Review only material problems introduced by this pull request. Prioritize correctness, security, concurrency, data loss, and missing tests. Do not report style preferences. Return strict JSON with: verdict (approve|request_changes|comment), summary, and findings. Each finding has a ruleId for its stable review-rule family (for example security-authorization or correctness-concurrency), plus a unique findingKey that combines that rule with the affected symbol and remains stable when line numbers or wording change. Set supersedesFindingKey only when this finding explicitly replaces a semantically equivalent finding key from an earlier review; otherwise set it to null. Each finding also has severity (blocking|warning|suggestion), file, optional line, title, explanation, and optional suggestedFix.`;
 
+type JsonSchema =
+  | { type: "string"; enum?: readonly string[] }
+  | { type: "number" }
+  | { type: readonly ("string" | "number" | "null")[] }
+  | { type: "array"; items: JsonSchema }
+  | { type: "object"; additionalProperties: false; required: readonly string[]; properties: Record<string, JsonSchema> };
+
+type JsonPrimitive<T> = T extends "string" ? string : T extends "number" ? number : T extends "null" ? null : never;
+type InferJsonSchema<S> =
+  S extends { enum: readonly (infer E)[] } ? E
+    : S extends { type: "string" } ? string
+      : S extends { type: "number" } ? number
+        : S extends { type: readonly (infer T)[] } ? JsonPrimitive<T>
+          : S extends { type: "array"; items: infer I } ? InferJsonSchema<I>[]
+            : S extends { type: "object"; properties: infer P } ? { [K in keyof P]: InferJsonSchema<P[K]> }
+              : never;
+
 const reviewSchema = {
   type: "object",
   additionalProperties: false,
@@ -26,7 +43,7 @@ const reviewSchema = {
       },
     },
   },
-};
+} as const satisfies JsonSchema;
 
 const retryableProviderErrorTypes = new Set([
   "rate_limit_exceeded",
@@ -41,43 +58,43 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function hasExactKeys(value: Record<string, unknown>, keys: string[]) {
-  const actual = Object.keys(value).sort();
-  const expected = [...keys].sort();
-  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
-}
-
-function parseFinding(value: unknown): ReviewFinding {
-  const keys = ["ruleId", "findingKey", "supersedesFindingKey", "severity", "file", "line", "title", "explanation", "suggestedFix"];
-  if (!isRecord(value) || !hasExactKeys(value, keys)) throw new Error("finding shape is invalid");
-  const { ruleId, findingKey, supersedesFindingKey, severity, file, line, title, explanation, suggestedFix } = value;
-  if (typeof ruleId !== "string" || !ruleId.trim() || typeof findingKey !== "string" || !findingKey.trim()) throw new Error("finding identity is invalid");
-  if (supersedesFindingKey !== null && typeof supersedesFindingKey !== "string") throw new Error("superseded finding key is invalid");
-  if (!(["blocking", "warning", "suggestion"] as unknown[]).includes(severity)) throw new Error("finding severity is invalid");
-  if (typeof file !== "string" || (line !== null && (typeof line !== "number" || !Number.isFinite(line)))) throw new Error("finding location is invalid");
-  if (typeof title !== "string" || typeof explanation !== "string" || (suggestedFix !== null && typeof suggestedFix !== "string")) throw new Error("finding description is invalid");
-  return {
-    ruleId,
-    findingKey,
-    ...(supersedesFindingKey !== null ? { supersedesFindingKey } : {}),
-    severity: severity as ReviewFinding["severity"],
-    file,
-    ...(line !== null ? { line } : {}),
-    title,
-    explanation,
-    ...(suggestedFix !== null ? { suggestedFix } : {}),
-  };
+function assertMatchesSchema<S extends JsonSchema>(value: unknown, schema: S, path = "review"): asserts value is InferJsonSchema<S> {
+  const allowedTypes = Array.isArray(schema.type) ? schema.type : [schema.type];
+  const actualType = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+  if (!allowedTypes.includes(actualType as never)) throw new Error(`${path} has invalid type`);
+  if ("enum" in schema && schema.enum && !schema.enum.includes(value as string)) throw new Error(`${path} has invalid value`);
+  if (schema.type === "number" && !Number.isFinite(value)) throw new Error(`${path} has invalid number`);
+  if (schema.type === "array") {
+    (value as unknown[]).forEach((item, index) => assertMatchesSchema(item, schema.items, `${path}[${index}]`));
+  }
+  if (schema.type === "object") {
+    if (!isRecord(value)) throw new Error(`${path} has invalid object`);
+    const allowedKeys = new Set(Object.keys(schema.properties));
+    if (Object.keys(value).some((key) => !allowedKeys.has(key)) || schema.required.some((key) => !(key in value))) throw new Error(`${path} has invalid fields`);
+    for (const [key, propertySchema] of Object.entries(schema.properties)) {
+      if (key in value) assertMatchesSchema(value[key], propertySchema, `${path}.${key}`);
+    }
+  }
 }
 
 function parseReviewOutput(text: string): Omit<ReviewResult, "sandbox" | "ai" | "authoritativeFindings"> {
   const value: unknown = JSON.parse(text);
-  if (!isRecord(value) || !hasExactKeys(value, ["verdict", "summary", "findings"])) throw new Error("review shape is invalid");
-  if (!(["approve", "request_changes", "comment"] as unknown[]).includes(value.verdict)) throw new Error("review verdict is invalid");
-  if (typeof value.summary !== "string" || !Array.isArray(value.findings)) throw new Error("review content is invalid");
-  const findings = value.findings.map(parseFinding);
+  assertMatchesSchema(value, reviewSchema);
+  const findings: ReviewFinding[] = value.findings.map((finding) => ({
+    ruleId: finding.ruleId,
+    findingKey: finding.findingKey,
+    ...(finding.supersedesFindingKey !== null ? { supersedesFindingKey: finding.supersedesFindingKey } : {}),
+    severity: finding.severity,
+    file: finding.file,
+    ...(finding.line !== null ? { line: finding.line } : {}),
+    title: finding.title,
+    explanation: finding.explanation,
+    ...(finding.suggestedFix !== null ? { suggestedFix: finding.suggestedFix } : {}),
+  }));
+  if (findings.some((finding) => !finding.ruleId!.trim() || !finding.findingKey!.trim())) throw new Error("finding identity is invalid");
   const findingKeys = findings.map((finding) => finding.findingKey!.toLowerCase());
   if (new Set(findingKeys).size !== findingKeys.length) throw new Error("finding keys are duplicated");
-  return { verdict: value.verdict as ReviewResult["verdict"], summary: value.summary, findings };
+  return { verdict: value.verdict, summary: value.summary, findings };
 }
 
 type OpenRouterError = { code?: number; message?: string; metadata?: { error_type?: string } };
