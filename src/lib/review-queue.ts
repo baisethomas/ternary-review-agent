@@ -31,6 +31,22 @@ export interface ReviewQueueStore {
   nextWakeAt(): Promise<number | null>;
 }
 
+export type ReviewQueueLifecycle = {
+  queued(job: ReviewJob): Promise<void>;
+  started(job: ReviewJob): Promise<void>;
+  completed(job: ReviewJob, result: unknown): Promise<void>;
+  retryScheduled(job: ReviewJob): Promise<void>;
+  failed(job: ReviewJob): Promise<void>;
+};
+
+const noLifecycle: ReviewQueueLifecycle = {
+  queued: async () => undefined,
+  started: async () => undefined,
+  completed: async () => undefined,
+  retryScheduled: async () => undefined,
+  failed: async () => undefined,
+};
+
 type ReviewQueueOptions = {
   store: ReviewQueueStore;
   run: (job: ReviewJob, lease: ReviewLease) => Promise<unknown>;
@@ -41,6 +57,7 @@ type ReviewQueueOptions = {
   leaseMs?: number;
   maxAttempts?: number;
   terminalRetentionMs?: number;
+  lifecycle?: ReviewQueueLifecycle;
 };
 
 export type ReviewLease = {
@@ -61,6 +78,7 @@ export class ReviewQueue {
   private readonly leaseMs: number;
   private readonly maxAttempts: number;
   private readonly terminalRetentionMs: number;
+  private readonly lifecycle: ReviewQueueLifecycle;
 
   constructor(options: ReviewQueueOptions) {
     this.store = options.store;
@@ -72,6 +90,7 @@ export class ReviewQueue {
     this.leaseMs = options.leaseMs ?? 6 * 60_000;
     this.maxAttempts = options.maxAttempts ?? 3;
     this.terminalRetentionMs = options.terminalRetentionMs ?? terminalJobRetentionMs;
+    this.lifecycle = options.lifecycle ?? noLifecycle;
   }
 
   async enqueue(request: ReviewRequest, idempotencyKeys?: string | readonly string[]) {
@@ -87,7 +106,9 @@ export class ReviewQueue {
       availableAt: now,
     };
     const keys = typeof idempotencyKeys === "string" ? [idempotencyKeys] : idempotencyKeys;
-    return this.store.create(job, keys);
+    const stored = await this.store.create(job, keys);
+    await this.lifecycle.queued(stored);
+    return stored;
   }
 
   async processNext() {
@@ -113,10 +134,12 @@ export class ReviewQueue {
     heartbeat.unref();
 
     try {
-      await this.run(job, { assertActive });
+      await this.lifecycle.started(job);
+      const result = await this.run(job, { assertActive });
       await assertActive();
       const completedAt = this.now();
       const completed = { ...job, status: "completed" as const, updatedAt: completedAt, completedAt };
+      await this.lifecycle.completed(completed, result);
       return await this.store.finish(completed) ? completed : this.store.get(job.id);
     } catch (error) {
       if (error instanceof ReviewLeaseLostError) return this.store.get(job.id);
@@ -130,6 +153,8 @@ export class ReviewQueue {
         completedAt: exhausted ? failedAt : undefined,
         lastError: errorMessage(error),
       };
+      if (exhausted) await this.lifecycle.failed(failed);
+      else await this.lifecycle.retryScheduled(failed);
       return await this.store.finish(failed) ? failed : this.store.get(job.id);
     } finally {
       clearInterval(heartbeat);

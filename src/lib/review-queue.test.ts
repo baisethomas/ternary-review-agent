@@ -36,6 +36,28 @@ describe("ReviewQueue", () => {
     await expect(queue.get("job-1")).resolves.toMatchObject({ status: "completed", attempts: 1, completedAt: 1_000 });
   });
 
+  test("reports durable lifecycle transitions in queue order", async () => {
+    const transitions: string[] = [];
+    const queue = new ReviewQueue({
+      store: new InMemoryReviewQueueStore(),
+      run: async () => ({ verdict: "approve" }),
+      now: () => 1_100,
+      id: () => "job-events",
+      lifecycle: {
+        queued: async () => { transitions.push("queued"); },
+        started: async () => { transitions.push("started"); },
+        completed: async () => { transitions.push("completed"); },
+        retryScheduled: async () => { transitions.push("retrying"); },
+        failed: async () => { transitions.push("failed"); },
+      },
+    });
+
+    await queue.enqueue(request);
+    await queue.processNext();
+
+    expect(transitions).toEqual(["queued", "started", "completed"]);
+  });
+
   test("returns the durable job when dispatch fails and GitHub redelivers", async () => {
     let sequence = 0;
     const queue = new ReviewQueue({

@@ -7,6 +7,7 @@ export function GET() {
       ai: Boolean(process.env.OPENAI_API_KEY),
       sandbox: Boolean(process.env.VERCEL || process.env.VERCEL_OIDC_TOKEN || (process.env.VERCEL_TOKEN && process.env.VERCEL_TEAM_ID && process.env.VERCEL_PROJECT_ID)),
       watchStorage: Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN),
+      eventLedger: Boolean(process.env.DATABASE_URL),
     },
   });
 }
