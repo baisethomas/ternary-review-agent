@@ -46,6 +46,7 @@ export interface ReviewQueueStore {
   pruneTerminal(completedBefore: number, limit: number): Promise<number>;
   get(id: string): Promise<ReviewJob | null>;
   list(limit: number): Promise<ReviewJob[]>;
+  listActive(): Promise<ReviewJob[]>;
   nextWakeAt(): Promise<number | null>;
 }
 
@@ -77,6 +78,7 @@ type ReviewQueueOptions = {
   maxAttempts?: number;
   terminalRetentionMs?: number;
   lifecycle?: ReviewQueueLifecycle;
+  onTransitionsAcknowledged?: (jobs: ReviewJob[]) => Promise<void>;
 };
 
 export type ReviewLease = {
@@ -98,6 +100,7 @@ export class ReviewQueue {
   private readonly maxAttempts: number;
   private readonly terminalRetentionMs: number;
   private readonly lifecycle: ReviewQueueLifecycle;
+  private readonly onTransitionsAcknowledged: (jobs: ReviewJob[]) => Promise<void>;
 
   constructor(options: ReviewQueueOptions) {
     this.store = options.store;
@@ -110,6 +113,7 @@ export class ReviewQueue {
     this.maxAttempts = options.maxAttempts ?? 3;
     this.terminalRetentionMs = options.terminalRetentionMs ?? terminalJobRetentionMs;
     this.lifecycle = options.lifecycle ?? noLifecycle;
+    this.onTransitionsAcknowledged = options.onTransitionsAcknowledged ?? (async () => undefined);
   }
 
   async enqueue(
@@ -147,14 +151,16 @@ export class ReviewQueue {
     const now = this.now();
     await this.store.recoverExpired(now);
     const pendingTransitions = await this.store.pendingTransitions(100);
+    const acknowledgedTransitions: ReviewJob[] = [];
     for (const transition of pendingTransitions) {
       try {
         await this.recordTransition(transition);
       } catch (error) {
         if (!(error instanceof ReviewEventAccessRevokedError)) throw error;
       }
-      await this.store.acknowledgeTransition(transition.job);
+      if (await this.store.acknowledgeTransition(transition.job)) acknowledgedTransitions.push(transition.job);
     }
+    if (acknowledgedTransitions.length) await this.onTransitionsAcknowledged(acknowledgedTransitions);
     const job = await this.store.claim(now, this.leaseMs, this.leaseId());
     if (!job) return null;
 
@@ -239,6 +245,10 @@ export class ReviewQueue {
 
   list(limit = 100) {
     return this.store.list(limit);
+  }
+
+  listActive() {
+    return this.store.listActive();
   }
 
   nextWakeAt() {

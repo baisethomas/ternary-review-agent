@@ -3,7 +3,9 @@
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { after } from "next/server";
 import { DASHBOARD_COOKIE, dashboardSessionValue, isDashboardAuthenticated, isValidDashboardToken } from "@/lib/dashboard-auth";
+import { announceDashboardChange } from "@/lib/dashboard-change-service";
 import { getInstalledRepository } from "@/lib/dashboard-data";
 import { updateRepositoryWatch } from "@/lib/repository-watch-service";
 
@@ -44,6 +46,7 @@ export async function setRepositoryWatchAction(_state: WatchState, formData: For
       return { error: "That repository is not available to this GitHub App." };
     }
     await updateRepositoryWatch(repository, watched, installed);
+    after(() => announceDashboardChange());
     revalidatePath("/repositories");
     revalidatePath("/");
     return { error: null };

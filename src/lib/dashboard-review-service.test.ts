@@ -31,6 +31,6 @@ describe("dashboard review submission", () => {
 
     await expect(submitDashboardReview("ternary", "agent", 8, crypto.randomUUID())).resolves.toEqual({ review, job: { id: "job-1" } });
     expect(mocks.resolve).toHaveBeenCalledWith("ternary", "agent", 8);
-    expect(mocks.enqueue).toHaveBeenCalledWith(review, "manual-key", "dashboard");
+    expect(mocks.enqueue).toHaveBeenCalledWith(review, "manual-key", expect.any(String), "dashboard");
   });
 });

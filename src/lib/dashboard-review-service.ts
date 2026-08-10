@@ -3,6 +3,7 @@ import { resolveReviewRequest } from "./dashboard-data";
 import { enqueueAndTryDispatchReview } from "./review-queue-service";
 import { manualReviewIdempotencyKey } from "./review-submission";
 import { isRepositoryWatched } from "./repository-watch";
+export { ReviewSubmissionConflictError } from "./active-review-submission";
 
 export class PausedRepositoryReviewError extends Error {
   constructor() {
@@ -14,6 +15,6 @@ export class PausedRepositoryReviewError extends Error {
 export async function submitDashboardReview(owner: string, repo: string, pullNumber: number, invocationId: string) {
   if (!await isRepositoryWatched(`${owner}/${repo}`)) throw new PausedRepositoryReviewError();
   const review = await resolveReviewRequest(owner, repo, pullNumber);
-  const job = await enqueueAndTryDispatchReview(review, manualReviewIdempotencyKey(review, invocationId), "dashboard");
+  const job = await enqueueAndTryDispatchReview(review, manualReviewIdempotencyKey(review, invocationId), invocationId, "dashboard");
   return { review, job };
 }

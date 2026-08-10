@@ -337,6 +337,18 @@ export class RedisReviewQueueStore implements ReviewQueueStore {
     return jobs.filter((job): job is ReviewJob => Boolean(job));
   }
 
+  async listActive() {
+    const [scheduledIds, runningIds, activationIds, transitionIds] = await Promise.all([
+      this.redis.zrange<string[]>(this.scheduledKey, 0, -1),
+      this.redis.zrange<string[]>(this.activeKey, 0, -1),
+      this.redis.zrange<string[]>(this.activationKey, 0, -1),
+      this.redis.zrange<string[]>(this.transitionKey, 0, -1),
+    ]);
+    const ids = [...new Set([...scheduledIds, ...runningIds, ...activationIds, ...transitionIds])];
+    const jobs = await Promise.all(ids.map((id) => this.get(id)));
+    return jobs.filter((job): job is ReviewJob => Boolean(job));
+  }
+
   async nextWakeAt() {
     const [scheduledIds, activeIds] = await Promise.all([
       this.redis.zrange<string[]>(this.scheduledKey, 0, 0),

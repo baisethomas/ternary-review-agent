@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { InMemoryReviewQueueStore } from "./in-memory-review-queue-store";
-import { ReviewQueue } from "./review-queue";
+import { ReviewQueue, type ReviewJob } from "./review-queue";
 import { NonRetryableReviewError } from "./review-errors";
 import { ReviewEventAccessRevokedError } from "./review-event-ledger";
 import { submitReview, submitReviewBestEffort } from "./review-submission";
@@ -463,6 +463,28 @@ describe("ReviewQueue", () => {
 
     await expect(queue.processNext()).resolves.toMatchObject({ id: revoked.id, status: "failed" });
     await expect(queue.processNext()).resolves.toMatchObject({ id: healthy.id, status: "completed" });
+  });
+
+  test("reports an acknowledged terminal recovery to queue observers", async () => {
+    let now = 4_100;
+    const store = new InMemoryReviewQueueStore();
+    const recovered: ReviewJob[] = [];
+    const recoveryWorker = new ReviewQueue({
+      store,
+      run: async () => undefined,
+      now: () => now,
+      id: () => "recovered-failure",
+      leaseMs: 50,
+      maxAttempts: 1,
+      onTransitionsAcknowledged: async (jobs) => { recovered.push(...jobs); },
+    });
+
+    await recoveryWorker.enqueue(request);
+    await store.claim(now, 50, "abandoned");
+    now += 51;
+
+    await expect(recoveryWorker.processNext()).resolves.toBeNull();
+    expect(recovered).toEqual([expect.objectContaining({ id: "recovered-failure", status: "failed", lastError: "Worker lease expired" })]);
   });
 
   test("moves exhausted jobs to a visible failed state", async () => {

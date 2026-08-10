@@ -78,6 +78,7 @@ describe.skipIf(!enabled || !redis)("RedisReviewQueueStore", () => {
     expect(await redis!.ttl(canonicalAlias)).toBeGreaterThan(6 * 24 * 60 * 60);
     expect(await redis!.zcard(`${prefix}:scheduled`)).toBe(1);
     expect(await redis!.zcard(`${prefix}:all`)).toBe(1);
+    await expect(store.listActive()).resolves.toEqual([expect.objectContaining({ id: firstDelivery.id, status: "queued" })]);
 
     const redeliveryRequest = { ...request, webhookDeliveryId: "delivery-c" };
     const redeliveryKeys = webhookReviewIdempotencyKeys(redeliveryRequest);
@@ -91,6 +92,7 @@ describe.skipIf(!enabled || !redis)("RedisReviewQueueStore", () => {
     now = startedAt + 10;
     await queue.processNext();
     await expect(queue.get(firstDelivery.id)).resolves.toMatchObject({ status: "completed", attempts: 2 });
+    await expect(store.listActive()).resolves.toEqual([]);
     expect(await redis!.ttl(`${prefix}:job:${firstDelivery.id}`)).toBeGreaterThan(0);
 
     const newHeadRequest = { ...request, headSha: "second-sha", webhookDeliveryId: "delivery-new-head" };
