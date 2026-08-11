@@ -77,6 +77,8 @@ describe("review policy history", () => {
       .rejects.toBeInstanceOf(InvalidReviewPolicyError);
     await expect(service.saveOrganization(42, { automaticReview: { opened: true, deleted: true } } as never, { actor: "admin", expectedVersion: 0 }))
       .rejects.toBeInstanceOf(InvalidReviewPolicyError);
+    await expect(service.saveOrganization(42, { excludedPaths: null } as never, { actor: "admin", expectedVersion: 0 }))
+      .rejects.toBeInstanceOf(InvalidReviewPolicyError);
   });
 
   it("uses the configured runtime default before organization and repository overrides", async () => {

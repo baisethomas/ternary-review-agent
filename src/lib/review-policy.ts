@@ -128,15 +128,15 @@ export function validateReviewPolicyOverride(policy: ReviewPolicyOverride) {
   if (policy.minimumSeverity !== undefined && (typeof policy.minimumSeverity !== "string" || !reviewSeverities.includes(policy.minimumSeverity as ReviewSeverity))) {
     throw new InvalidReviewPolicyError("Choose a valid minimum severity.");
   }
-  if (policy.automaticReview && (typeof policy.automaticReview !== "object" || Array.isArray(policy.automaticReview) || Object.keys(policy.automaticReview).some((key) => !automaticEventKeys.has(key)) || Object.values(policy.automaticReview).some((value) => typeof value !== "boolean"))) {
+  if (policy.automaticReview !== undefined && (!policy.automaticReview || typeof policy.automaticReview !== "object" || Array.isArray(policy.automaticReview) || Object.keys(policy.automaticReview).some((key) => !automaticEventKeys.has(key)) || Object.values(policy.automaticReview).some((value) => typeof value !== "boolean"))) {
     throw new InvalidReviewPolicyError("Automatic review settings must be enabled or disabled.");
   }
-  if (policy.reviewCommands) {
+  if (policy.reviewCommands !== undefined) {
     if (!Array.isArray(policy.reviewCommands) || policy.reviewCommands.length > 10 || policy.reviewCommands.some((command) => typeof command !== "string" || !command.trim() || command.length > 500 || command.includes("\0"))) {
       throw new InvalidReviewPolicyError("Review commands must contain 1–10 non-empty commands of at most 500 characters.");
     }
   }
-  if (policy.excludedPaths) {
+  if (policy.excludedPaths !== undefined) {
     if (!Array.isArray(policy.excludedPaths) || policy.excludedPaths.length > 100 || policy.excludedPaths.some((path) => typeof path !== "string" || !path.trim() || path.length > 200 || path.startsWith("/") || path.includes("\\") || path.split("/").includes(".."))) {
       throw new InvalidReviewPolicyError("Excluded paths must be relative repository patterns without parent-directory traversal.");
     }
