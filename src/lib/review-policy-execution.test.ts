@@ -42,6 +42,22 @@ new mode 100755`;
     expect(filtered).toContain("src/app.ts");
   });
 
+  it("evaluates a rename by its destination path across an exclusion boundary", () => {
+    const diff = `diff --git a/generated/old.ts b/src/new.ts
+similarity index 100%
+rename from generated/old.ts
+rename to src/new.ts
+diff --git a/src/old.ts b/generated/new.ts
+similarity index 100%
+rename from src/old.ts
+rename to generated/new.ts`;
+
+    const filtered = filterReviewDiff(diff, ["generated/**"]);
+
+    expect(filtered).toContain("rename to src/new.ts");
+    expect(filtered).not.toContain("rename to generated/new.ts");
+  });
+
   it("removes findings below the configured severity and derives the visible verdict", () => {
     const result = applyReviewPolicyToResult({
       verdict: "request_changes",
