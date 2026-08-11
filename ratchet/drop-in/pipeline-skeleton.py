@@ -106,16 +106,33 @@ def revise_node(state: dict) -> dict:
 
 def review_gate(state: dict) -> str:
     """Route on the reviewer's verdict. Unknown output is a hard stop —
-    never guess forward from a state the conditions don't cover."""
-    last_lines = state["findings"].strip().splitlines()[-3:]
-    tail = "\n".join(last_lines).upper()
-    if "VERDICT: PASS" in tail:
+    never guess forward from a state the conditions don't cover.
+
+    The gate input is LLM output, so it must fail closed: the verdict has to be
+    the final non-empty line and there must be exactly one of them. Scanning a
+    window for 'PASS' would let a conflicting or malformed response — one that
+    mentions both verdicts — be released as done."""
+    lines = [ln.strip() for ln in state["findings"].strip().splitlines()]
+    lines = [ln for ln in lines if ln]
+    if not lines:
+        return "escalate"               # empty output -> human
+
+    verdict_lines = [ln for ln in lines if ln.upper().startswith("VERDICT:")]
+    if len(verdict_lines) != 1:
+        return "escalate"               # none, or conflicting/repeated -> human
+    if verdict_lines[0] is not lines[-1]:
+        return "escalate"               # verdict not the final word -> human
+
+    token = verdict_lines[0].upper().split(":", 1)[1].strip()
+    # Asymmetric on purpose: releasing requires an unambiguous bare PASS, while
+    # anything FAIL-shaped is treated as a failure. Ambiguity never ships.
+    if token == "PASS":
         return "done"
-    if "VERDICT: FAIL" in tail:
+    if token.startswith("FAIL"):
         if state["loops"] >= MAX_REVISION_LOOPS:
             return "escalate"           # loop cap hit -> human
         return "revise"
-    return "escalate"                   # no parseable verdict -> human
+    return "escalate"                   # qualified or unparseable -> human
 
 
 # ---------------------------------------------------------------------------

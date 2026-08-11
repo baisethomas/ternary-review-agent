@@ -1,14 +1,26 @@
 {
   "_readme": [
-    "DROP-IN: example Claude Code hooks. Merge the 'hooks' block into your",
-    "project's .claude/settings.json (shared) or .claude/settings.local.json",
-    "(personal). Replace the placeholder commands (npx eslint / npm test etc.)",
-    "with your repo's real commands — ideally the single 'make check' named",
-    "in CLAUDE.md. Hook shapes occasionally change between Claude Code",
-    "releases; verify against current docs at",
-    "https://docs.claude.com/en/docs/claude-code/hooks before relying on this.",
-    "The three hooks below implement: (1) verification that always runs,",
-    "(2) a gate on 'done', (3) physics-level guards on destructive commands."
+    "DROP-IN: example Claude Code hooks. Copy the sibling `hooks/` directory to",
+    "`.claude/hooks/` in your repo (`chmod +x` the scripts), then merge the",
+    "'hooks' block below into `.claude/settings.json` (shared) or",
+    "`.claude/settings.local.json` (personal). Fill in the CHECKS array at the",
+    "top of check-on-stop.sh with your repo's real commands — ideally the single",
+    "'make check' named in CLAUDE.md. Run `.claude/hooks/test-hooks.sh` after any",
+    "edit; it asserts the guard blocks what it claims to.",
+    "",
+    "The three hooks implement: (1) verification that always runs, (2) a gate on",
+    "'done', (3) physics-level guards on destructive commands.",
+    "",
+    "WHY SCRIPTS AND NOT INLINE ONE-LINERS: hooks receive their payload as JSON",
+    "on stdin (.tool_input.command, .tool_input.file_path). There is NO",
+    "$CLAUDE_TOOL_INPUT or $CLAUDE_FILE_PATHS environment variable — an earlier",
+    "version of this template used them, which silently made every hook a no-op:",
+    "the guard grepped an empty string and exited 0 on every command. Two further",
+    "traps this template previously fell into: piping a check to `tail` reports",
+    "tail's exit status (0), so failures pass; and exit code 1 is NOT blocking in",
+    "Claude Code — only exit 2 blocks and feeds stderr back to the model.",
+    "Verify shapes against https://code.claude.com/docs/en/hooks before relying",
+    "on this; they occasionally change between releases."
   ],
   "hooks": {
     "PostToolUse": [
@@ -17,8 +29,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx eslint --no-warn-ignored \"$CLAUDE_FILE_PATHS\" 2>&1 | head -40 || true",
-            "_purpose": "Lint/typecheck every edited file immediately. The model gets the error in-loop whether or not it would have checked. Swap in: ruff check, tsc --noEmit, etc."
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/lint-edited-file.sh",
+            "_purpose": "Lint every edited file immediately. The model gets the error in-loop whether or not it would have checked."
           }
         ]
       }
@@ -28,8 +40,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npm test --silent 2>&1 | tail -20",
-            "_purpose": "Runs the test suite when Claude tries to finish. A red suite surfaces at 'done' time instead of after merge. Swap in your 'make check'."
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/check-on-stop.sh",
+            "_purpose": "Runs the check suite when Claude tries to finish, so a red suite surfaces at 'done' time instead of after merge. Blocks with exit 2; capped so an unfixable failure cannot trap the conversation."
           }
         ]
       }
@@ -40,8 +52,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo \"$CLAUDE_TOOL_INPUT\" | grep -qE 'push +--force|push +-f\\b|reset +--hard|rm +-rf|db:migrate|migrate +(up|down|deploy)|DROP +TABLE|branch +-D' && { echo 'BLOCKED by guard hook: destructive command requires explicit human approval. Ask the user, do not retry.' >&2; exit 2; } || exit 0",
-            "_purpose": "Physics-level guard on irreversible commands: force-push, hard reset, recursive delete, migrations, table drops, branch force-delete. Exit code 2 blocks the tool call and feeds the message back to Claude. Extend the pattern list for your stack (e.g., terraform apply, kubectl delete)."
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-destructive.sh",
+            "_purpose": "Physics-level guard on irreversible commands: force-push (in any argument order), hard reset, recursive delete, branch force-delete, git clean, history rewrites, migrations, table drops. Extend the pattern list for your stack (e.g. terraform apply, kubectl delete)."
           }
         ]
       }
