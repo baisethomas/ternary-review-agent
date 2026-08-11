@@ -192,7 +192,13 @@ has_i 'DROP[[:space:]]+(TABLE|DATABASE|SCHEMA)|TRUNCATE[[:space:]]+TABLE' \
 # literals below. Inspecting generated text is impossible before it exists, so
 # an interpreter fed a substitution is refused. A literal `bash -c "npm test"`
 # stays inspectable and is covered by the ordinary rules above.
-EVAL_CTX='((^|[;&|][[:space:]]*)(eval|source|\.)[[:space:]]|(^|[;&|[:space:]])(ba|z|k|da)?sh[[:space:]]+-[[:alpha:]]*c([[:space:]]|$)|\|[[:space:]]*(ba|z|k|da)?sh([[:space:]]|$))'
+# Any interpreter that takes a program on the command line counts, not just the
+# POSIX shells: node -e, python -c, perl -e and friends can run the same thing.
+EVAL_CTX='((^|[;&|][[:space:]]*)(eval|source|\.)[[:space:]]'
+EVAL_CTX+='|(^|[;&|[:space:]])((ba|z|k|da)?sh|fish)[[:space:]]+-[[:alpha:]]*c([[:space:]]|$)'
+EVAL_CTX+='|(^|[;&|[:space:]])(python[0-9.]*|perl|ruby|php)[[:space:]]+(-[[:alpha:]]*[ce])([[:space:]]|$)'
+EVAL_CTX+='|(^|[;&|[:space:]])node[[:space:]]+(-e|--eval)([[:space:]]|$)'
+EVAL_CTX+='|\|[[:space:]]*((ba|z|k|da)?sh|fish)([[:space:]]|$))'
 
 has "$EVAL_CTX" && has_raw "$EXPANSION" \
   && block "shell evaluation of text generated at runtime, which cannot be checked"
