@@ -20,27 +20,36 @@ describe("parseEmptyCount", () => {
 });
 
 describe("createEmptyCycleBackoff", () => {
-  it("reads, writes, and deletes the consecutive-empty counter", async () => {
-    const values = new Map<string, number | string>();
+  it("increments atomically, resets by deletion, and fails when Redis is missing", async () => {
+    let value = 0;
     const store = {
-      get: vi.fn(async (key: string) => values.get(key) ?? null),
-      set: vi.fn(async (key: string, value: number) => { values.set(key, value); }),
-      del: vi.fn(async (key: string) => { values.delete(key); }),
+      get: vi.fn(async () => value || null),
+      set: vi.fn(async (_key: string, next: number) => { value = next; }),
+      del: vi.fn(async () => { value = 0; }),
+      incr: vi.fn(async () => { value += 1; return value; }),
     };
     const backoff = createEmptyCycleBackoff(store as never);
 
-    expect(await backoff.getEmptyCount()).toBe(0);
-    await backoff.setEmptyCount(2);
-    expect(store.set).toHaveBeenCalledWith(emptyCycleKey, 2);
-    expect(await backoff.getEmptyCount()).toBe(2);
+    expect(await backoff.incrementEmptyCount()).toBe(1);
+    expect(await backoff.incrementEmptyCount()).toBe(2);
+    expect(store.incr).toHaveBeenCalledWith(emptyCycleKey);
+
+    const concurrent = await Promise.all([
+      backoff.incrementEmptyCount(),
+      backoff.incrementEmptyCount(),
+      backoff.incrementEmptyCount(),
+    ]);
+    expect(concurrent.sort((a, b) => a - b)).toEqual([3, 4, 5]);
+    expect(value).toBe(5);
+
     await backoff.setEmptyCount(0);
     expect(store.del).toHaveBeenCalledWith(emptyCycleKey);
-    expect(await backoff.getEmptyCount()).toBe(0);
+    expect(value).toBe(0);
   });
 
   it("fails loudly when Redis is not configured", async () => {
     const backoff = createEmptyCycleBackoff(null);
-    await expect(backoff.getEmptyCount()).rejects.toThrow("Review worker backoff storage is not configured");
+    await expect(backoff.incrementEmptyCount()).rejects.toThrow("Review worker backoff storage is not configured");
     await expect(backoff.setEmptyCount(1)).rejects.toThrow("Review worker backoff storage is not configured");
   });
 });

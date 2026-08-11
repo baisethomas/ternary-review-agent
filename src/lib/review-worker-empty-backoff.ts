@@ -4,7 +4,7 @@ import type { EmptyCycleBackoffStore } from "./review-worker-cycle";
 
 export const emptyCycleKey = "ternary:review-worker:empty-cycles:v1";
 
-type EmptyCycleRedis = Pick<Redis, "get" | "set" | "del">;
+type EmptyCycleRedis = Pick<Redis, "get" | "set" | "del" | "incr">;
 
 let redis: Redis | null = null;
 
@@ -23,9 +23,10 @@ export function parseEmptyCount(value: number | string | null | undefined) {
 
 export function createEmptyCycleBackoff(store: EmptyCycleRedis | null): EmptyCycleBackoffStore {
   return {
-    async getEmptyCount() {
+    async incrementEmptyCount() {
       if (!store) throw new Error("Review worker backoff storage is not configured");
-      return parseEmptyCount(await store.get<number | string>(emptyCycleKey));
+      const next = await store.incr(emptyCycleKey);
+      return parseEmptyCount(next);
     },
     async setEmptyCount(count: number) {
       if (!store) throw new Error("Review worker backoff storage is not configured");

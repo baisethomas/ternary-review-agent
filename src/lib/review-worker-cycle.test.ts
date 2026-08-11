@@ -23,7 +23,10 @@ function job(id: string): ReviewJob {
 function memoryBackoff(initial = 0) {
   let count = initial;
   return {
-    getEmptyCount: vi.fn(async () => count),
+    incrementEmptyCount: vi.fn(async () => {
+      count += 1;
+      return count;
+    }),
     setEmptyCount: vi.fn(async (next: number) => { count = next; }),
     get count() { return count; },
   };
@@ -66,6 +69,27 @@ describe("runReviewWorkerCycle empty-cycle backoff", () => {
     expect(backoff.count).toBe(4);
   });
 
+  it("does not lose concurrent empty-cycle increments", async () => {
+    const backoff = memoryBackoff();
+    const dispatches: number[] = [];
+    const now = 70_000;
+    const cycle = () => runReviewWorkerCycle({
+      processAvailableJobs: async () => [],
+      nextWakeAt: async () => now,
+      dispatch: async (at) => { dispatches.push(at); },
+      now: () => now,
+      emptyCycleBackoff: backoff,
+    });
+
+    await Promise.all([cycle(), cycle(), cycle()]);
+    expect(backoff.count).toBe(3);
+    expect(dispatches.sort((a, b) => a - b)).toEqual([
+      now + EMPTY_CYCLE_BACKOFF_MS[0],
+      now + EMPTY_CYCLE_BACKOFF_MS[1],
+      now + EMPTY_CYCLE_BACKOFF_MS[2],
+    ]);
+  });
+
   it("resets backoff after a cycle that processes work", async () => {
     const backoff = memoryBackoff(3);
     const dispatches: number[] = [];
@@ -102,7 +126,7 @@ describe("runReviewWorkerCycle empty-cycle backoff", () => {
       dispatch: async (at) => { dispatches.push(at); },
       now: () => now,
       emptyCycleBackoff: {
-        getEmptyCount: async () => { throw new Error("redis down"); },
+        incrementEmptyCount: async () => { throw new Error("redis down"); },
         setEmptyCount: async () => { throw new Error("redis down"); },
       },
     });

@@ -3,7 +3,8 @@ import type { ReviewJob } from "./review-queue";
 export const EMPTY_CYCLE_BACKOFF_MS = [5_000, 15_000, 60_000, 300_000] as const;
 
 export type EmptyCycleBackoffStore = {
-  getEmptyCount(): Promise<number>;
+  /** Atomically bump the consecutive-empty counter and return the new value. */
+  incrementEmptyCount(): Promise<number>;
   setEmptyCount(count: number): Promise<void>;
 };
 
@@ -32,10 +33,8 @@ function errorMessage(error: unknown) {
 async function nextEmptyCount(store: EmptyCycleBackoffStore | undefined) {
   if (!store) return 1;
   try {
-    const previous = await store.getEmptyCount();
-    const emptyCount = Math.max(0, previous) + 1;
-    await store.setEmptyCount(emptyCount);
-    return emptyCount;
+    const emptyCount = await store.incrementEmptyCount();
+    return Math.max(1, emptyCount);
   } catch {
     // Fail open to the capped floor so a Redis blip cannot recreate the 5s storm.
     return EMPTY_CYCLE_BACKOFF_MS.length;
