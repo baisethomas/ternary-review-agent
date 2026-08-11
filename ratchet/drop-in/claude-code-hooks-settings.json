@@ -1,0 +1,83 @@
+{
+  "_readme": [
+    "DROP-IN: example Claude Code hooks. Copy the sibling `hooks/` directory to",
+    "`.claude/hooks/` in your repo (`chmod +x` the scripts), then merge the",
+    "'hooks' block below into `.claude/settings.json` (shared) or",
+    "`.claude/settings.local.json` (personal). Fill in the CHECKS array at the",
+    "top of check-on-stop.sh with your repo's real commands — ideally the single",
+    "'make check' named in CLAUDE.md. Run `.claude/hooks/test-hooks.sh` after any",
+    "edit; it asserts the guard blocks what it claims to.",
+    "",
+    "The three hooks implement: (1) verification that always runs, (2) a gate on",
+    "'done', (3) physics-level guards on destructive commands.",
+    "",
+    "WHY SCRIPTS AND NOT INLINE ONE-LINERS: hooks receive their payload as JSON",
+    "on stdin (.tool_input.command, .tool_input.file_path). There is NO",
+    "$CLAUDE_TOOL_INPUT or $CLAUDE_FILE_PATHS environment variable — an earlier",
+    "version of this template used them, which silently made every hook a no-op:",
+    "the guard grepped an empty string and exited 0 on every command. Two further",
+    "traps this template previously fell into: piping a check to `tail` reports",
+    "tail's exit status (0), so failures pass; and exit code 1 is NOT blocking in",
+    "Claude Code — only exit 2 blocks and feeds stderr back to the model.",
+    "Verify shapes against https://code.claude.com/docs/en/hooks before relying",
+    "on this; they occasionally change between releases.",
+    "",
+    "REQUIRES jq OR node to read the payload. If neither exists the hooks fail",
+    "closed and say so — the guard blocks and the lint hook reports itself",
+    "disabled — rather than skipping silently, which is what a missing parser",
+    "used to do. `brew install jq` / `apt install jq` if the guard starts",
+    "blocking everything with a parser error.",
+    "",
+    "THE GUARD IS A SPEED BUMP, NOT A SECURITY BOUNDARY. It matches command",
+    "text with regexes; bash decides what actually runs. Twelve review rounds",
+    "on it found bypasses through quoting, escapes, control operators,",
+    "parameter and brace expansion, git aliases, and encoded eval — each fix",
+    "followed by another form. It stops destructive commands from running by",
+    "momentum; it does not stop a caller who is trying to get around it, and no",
+    "denylist over shell text will. For an actual boundary, use something the",
+    "model cannot reach: permission policy, a command allowlist, or a sandbox.",
+    "",
+    "THERE IS NO APPROVAL TOKEN, deliberately. Any override the model could set,",
+    "the model could also set on its own, so a self-approvable gate is not a",
+    "gate. When the guard blocks something the user genuinely wants done, they",
+    "run it themselves (in Claude Code, `! <command>` runs it in-session) or",
+    "disable the hook. The block message says this."
+  ],
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/lint-edited-file.sh",
+            "_purpose": "Lint every edited file immediately. The model gets the error in-loop whether or not it would have checked."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/check-on-stop.sh",
+            "_purpose": "Runs the check suite when Claude tries to finish, so a red suite surfaces at 'done' time instead of after merge. Blocks with exit 2; capped so an unfixable failure cannot trap the conversation."
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-destructive.sh",
+            "_purpose": "Physics-level guard on irreversible commands: force-push (in any argument order), hard reset, recursive delete, branch force-delete, git clean, history rewrites, migrations, table drops. Extend the pattern list for your stack (e.g. terraform apply, kubectl delete)."
+          }
+        ]
+      }
+    ]
+  }
+}
