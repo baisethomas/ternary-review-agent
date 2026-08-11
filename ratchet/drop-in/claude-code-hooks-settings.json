@@ -1,0 +1,50 @@
+{
+  "_readme": [
+    "DROP-IN: example Claude Code hooks. Merge the 'hooks' block into your",
+    "project's .claude/settings.json (shared) or .claude/settings.local.json",
+    "(personal). Replace the placeholder commands (npx eslint / npm test etc.)",
+    "with your repo's real commands — ideally the single 'make check' named",
+    "in CLAUDE.md. Hook shapes occasionally change between Claude Code",
+    "releases; verify against current docs at",
+    "https://docs.claude.com/en/docs/claude-code/hooks before relying on this.",
+    "The three hooks below implement: (1) verification that always runs,",
+    "(2) a gate on 'done', (3) physics-level guards on destructive commands."
+  ],
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx eslint --no-warn-ignored \"$CLAUDE_FILE_PATHS\" 2>&1 | head -40 || true",
+            "_purpose": "Lint/typecheck every edited file immediately. The model gets the error in-loop whether or not it would have checked. Swap in: ruff check, tsc --noEmit, etc."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npm test --silent 2>&1 | tail -20",
+            "_purpose": "Runs the test suite when Claude tries to finish. A red suite surfaces at 'done' time instead of after merge. Swap in your 'make check'."
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"$CLAUDE_TOOL_INPUT\" | grep -qE 'push +--force|push +-f\\b|reset +--hard|rm +-rf|db:migrate|migrate +(up|down|deploy)|DROP +TABLE|branch +-D' && { echo 'BLOCKED by guard hook: destructive command requires explicit human approval. Ask the user, do not retry.' >&2; exit 2; } || exit 0",
+            "_purpose": "Physics-level guard on irreversible commands: force-push, hard reset, recursive delete, migrations, table drops, branch force-delete. Exit code 2 blocks the tool call and feeds the message back to Claude. Extend the pattern list for your stack (e.g., terraform apply, kubectl delete)."
+          }
+        ]
+      }
+    ]
+  }
+}

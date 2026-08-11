@@ -1,14 +1,7 @@
-<!-- BEGIN:nextjs-agent-rules -->
+# CLAUDE.md — Working Rules for This Repository
 
-# This is NOT the Next.js you know
-
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
-
-This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
-
-<!-- END:nextjs-agent-rules -->
-
-# Working Rules for This Repository
+<!-- DROP-IN: place this file at the repo root. Fill in the FILL-ME sections.
+     Claude Code loads this automatically every session. -->
 
 ## Before any edit
 
@@ -38,12 +31,12 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 ## Hard stops — require explicit user confirmation, never batched
 
-- Database migrations (running or generating destructive ones) — `migrations/`, `scripts/migrate.mjs`, `npm run db:migrate`
+- Database migrations (running or generating destructive ones)
 - `git push --force`, branch deletion, history rewrites
 - Deleting files/data outside the immediate task
-- Changes to `vercel.json` or deployment/build configuration
+- Anything under: <!-- FILL-ME: e.g., deploy/, infra/, .github/workflows/ -->
 - Any network call that sends data externally
-- Changes to public API surfaces under `src/app/api/**/route.ts` (currently: health, review-events, repositories/index, dashboard/changes, dashboard/reviews, github/webhook, analytics/export, reviews/run, reviews/jobs, reviews/worker)
+- Changes to public API surfaces: <!-- FILL-ME: list the modules/files that external consumers depend on -->
 
 ## Reporting format ("done" means this)
 
@@ -55,11 +48,12 @@ Every completion summary must contain, in order:
 
 ## Repo specifics
 
-- Run everything: `npm run lint && npm test`
-- Run tests only: `npm test` (vitest). Integration suites: `npm run test:redis`, `npm run test:postgres` (require live Redis/Postgres, not run by default)
-- Known untested / high-risk modules (extra caution, consider characterization tests first): review worker/job queue paths (`src/app/api/reviews/worker`, `src/app/api/reviews/jobs`) and the GitHub webhook handler (`src/app/api/github/webhook`)
-- Public API surface (breaking-change territory): everything under `src/app/api/**/route.ts`
-- Environment assumptions worth stating: see `.env.example` for required env vars (Neon Postgres, Upstash Redis/QStash, Vercel Sandbox, OpenRouter)
+<!-- FILL-ME: this section is the knowledge a stronger model might infer; write it down. -->
+- Run everything: `make check` <!-- FILL-ME: the single command that lints, typechecks, and tests -->
+- Run tests only: <!-- FILL-ME -->
+- Known untested / high-risk modules (extra caution, consider characterization tests first): <!-- FILL-ME -->
+- Public API surface (breaking-change territory): <!-- FILL-ME -->
+- Environment assumptions worth stating: <!-- FILL-ME: env vars, service dependencies, versions -->
 
 ## Self-test before every "done"
 
@@ -70,7 +64,3 @@ Every completion summary must contain, in order:
 5. Is anything here irreversible or shared, and if so, did the user explicitly say go?
 
 Any "no" → the work is not done. It has only reached the stage where it looks done.
-
-## Ratchet reference material
-
-The full playbook (chat craft, code craft, review prompts, done-audit checklist, and pipeline graduation guidance) lives in `ratchet/` at the repo root, synced from https://github.com/baisethomas/Ratchet. Consult `ratchet/drop-in/review-prompts.md` for copy-paste adversarial-review prompts and `ratchet/drop-in/done-audit-checklist.md` before marking work done.
