@@ -7,6 +7,8 @@ import { dispatchRepositoryIndexTask } from "./repository-index-dispatcher";
 import type { WebhookReviewRequest } from "./types";
 import { ingestGitHubFindingFeedback } from "./github-finding-feedback";
 import { getGitHubApp } from "./github";
+import { resolveReviewPolicyFor } from "./review-policy-service";
+import type { AutomaticReviewEvent } from "./review-policy";
 
 type PullRequestWebhook = {
   action: string;
@@ -39,7 +41,18 @@ type ReviewThreadWebhook = { action: "resolved" | "unresolved"; installation?: {
 type ReactionWebhook = { action: "created" | "deleted"; installation?: { id: number }; repository: FeedbackRepository; sender: { login: string }; reaction: { id: number; content: string }; comment?: { id?: number; body?: string | null; commit_id?: string; pull_request_url?: string } };
 type WebhookHandler = (rawBody: string, deliveryId: string) => Promise<Response>;
 
-const reviewActions = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
+const automaticReviewEventByAction = {
+  opened: "opened",
+  reopened: "reopened",
+  synchronize: "synchronize",
+  ready_for_review: "readyForReview",
+} as const satisfies Record<string, AutomaticReviewEvent>;
+
+function automaticReviewEvent(action: string) {
+  return Object.prototype.hasOwnProperty.call(automaticReviewEventByAction, action)
+    ? automaticReviewEventByAction[action as keyof typeof automaticReviewEventByAction]
+    : null;
+}
 
 function installationRepositoryOwner(payload: InstallationRepositoriesWebhook, repository: InstallationRepository) {
   const owner = repository.owner?.login ?? repository.full_name?.split("/")[0] ?? payload.installation.account?.login;
@@ -117,10 +130,15 @@ const handlePullRequest: WebhookHandler = async (rawBody, deliveryId) => {
       return Response.json({ accepted: true, delivery: deliveryId, merged: false }, { status: 202 });
     }
   }
-  if (!reviewActions.has(payload.action) || payload.pull_request.draft || !payload.installation?.id) {
+  const policyEvent = automaticReviewEvent(payload.action);
+  if (!policyEvent || payload.pull_request.draft || !payload.installation?.id) {
     return Response.json({ accepted: false, reason: "Pull request does not require a review" });
   }
   if (!await isRepositoryWatched(fullName)) return Response.json({ accepted: false, reason: "Repository is paused in Ternary" }, { status: 202 });
+  const policy = await resolveReviewPolicyFor({ installationId: payload.installation.id, owner: payload.repository.owner.login, repo: payload.repository.name });
+  if (!policy.automaticReview[policyEvent]) {
+    return Response.json({ accepted: false, reason: `Automatic review is disabled by policy for ${payload.action}` }, { status: 202 });
+  }
   const review: WebhookReviewRequest = {
     owner: payload.repository.owner.login,
     repo: payload.repository.name,
@@ -130,6 +148,7 @@ const handlePullRequest: WebhookHandler = async (rawBody, deliveryId) => {
     cloneUrl: payload.repository.clone_url,
     webhookDeliveryId: deliveryId,
     author: payload.pull_request.user?.login,
+    policy,
   };
   const job = await enqueueAndDispatchReview(review, webhookReviewIdempotencyKeys(review), deliveryId);
   return Response.json({ accepted: true, delivery: deliveryId, jobId: job.id }, { status: 202 });

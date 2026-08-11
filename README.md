@@ -16,6 +16,7 @@ This repository is Ternary's initial dogfood target for end-to-end review verifi
 - Authenticated manual review runs from the dashboard
 - A Redis-backed durable review queue with leases, bounded per-installation and per-repository concurrency, retries, and crash recovery
 - A Postgres-backed immutable Review Event Ledger for lifecycle history, structured findings, sandbox evidence, merge outcomes, exports, retention, and deletion
+- Versioned organization and repository review policies with deterministic inheritance and an audit trail
 
 ## Run locally
 
@@ -35,7 +36,9 @@ Create a GitHub App owned by your organization and use these settings:
 - Subscribe to: **Pull request**, **Pull request review comment**, **Pull request review thread**, **Reaction**, **Push**, **Installation**, and **Installation repositories**
 - Repository permissions: **Checks: read & write**, **Contents: read**, **Issues: read & write**, **Pull requests: read & write**
 
-Install the app on repositories Ternary may access. Copy the App ID and private key into Vercel environment variables and connect an Upstash Redis store through Vercel Marketplace. The **Repositories** page independently controls which connected repositories are **Watching** or **Paused**; new repositories start paused. The webhook runs only for watched repositories on `opened`, `reopened`, `synchronize`, and `ready_for_review`, while draft PRs are ignored. **Run review** remains available for a one-off manual review of any connected repository.
+Install the app on repositories Ternary may access. Copy the App ID and private key into Vercel environment variables and connect an Upstash Redis store through Vercel Marketplace. The **Repositories** page independently controls which connected repositories are **Watching** or **Paused**; new repositories start paused. The webhook runs only for watched repositories on policy-enabled pull-request events, while draft PRs are ignored. **Run review** remains available for one-off manual reviews of watched repositories.
+
+The authenticated **Policies** page defines organization defaults and optional repository overrides. Precedence is deterministic: Ternary's safe defaults, then organization settings, then explicitly set repository fields. Policies control automatic review events, the minimum published finding severity, the OpenRouter model, sandbox commands, and excluded file patterns. The page previews the fully resolved behavior before saving and records the actor, timestamp, version, and before/after values for every change. A resolved policy snapshot travels with each durable queue job, so a queued review does not change behavior when an administrator edits policy later. Existing watched repositories require no backfill: when no policy row exists, they continue with safe defaults and `OPENROUTER_MODEL` as the default model. Verified repository removal deletes its override and audit trail; installation removal deletes every policy and policy change in that installation.
 
 ## Sandbox execution
 
@@ -55,7 +58,7 @@ The webhook persists work in Upstash Redis before GitHub receives a `202`, then 
 
 Every accepted review also writes immutable, idempotent lifecycle facts to Postgres: requested, queued, started, retry scheduled, completed, and failed. Completed facts retain structured findings and bounded sandbox evidence, while watched pull-request merges add merge outcomes. Repository and installation removal delete their private ledger history, and the daily worker prunes events older than `REVIEW_EVENT_RETENTION_DAYS` (365 by default). Authenticated operators can page one installed repository through `GET /api/review-events?repository=OWNER/REPO` or export its complete history with `format=csv`; the server derives the installation scope from current GitHub access rather than trusting a caller-provided installation ID.
 
-The authenticated `/analytics` dashboard aggregates that ledger across connected organizations and repositories. It exposes review outcomes, finding and feedback trends, queue/sandbox/model timing, merge outcomes, and a filtered CSV export. Historical metrics remain visible when a repository is paused. Model cost uses the cost reported by OpenRouter for the selected `OPENROUTER_MODEL`; it remains telemetry rather than an invoice. Older events visibly report partial or unavailable coverage for fields that were not recorded at the time.
+The authenticated `/analytics` dashboard aggregates that ledger across connected organizations and repositories. It exposes review outcomes, finding and feedback trends, queue/sandbox/model timing, merge outcomes, and a filtered CSV export. Historical metrics remain visible when a repository is paused. Model cost uses the cost reported by OpenRouter for the policy-resolved model; it remains telemetry rather than an invoice. Older events visibly report partial or unavailable coverage for fields that were not recorded at the time.
 
 Ternary posts one stable inline GitHub thread per finding. Replies, reactions, and thread resolution from repository maintainers become idempotent feedback events. Each later review reconciles the same finding identity across moved lines and new commits, and the dashboard shows open, fixed, dismissed, superseded, and stale findings with preserved developer reasons. These structured lifecycle facts also feed Analytics and form the durable input for adaptive Memory and evaluation work. Existing GitHub Apps must enable the review-comment, review-thread, and reaction webhook events to activate this feedback loop.
 
@@ -65,7 +68,7 @@ Ternary keeps installation-scoped, commit-addressed index snapshots per reposito
 
 Set `QSTASH_TOKEN`, `TERNARY_BASE_URL`, and `CRON_SECRET` in Vercel. QStash and manual worker invocations authenticate with `Authorization: Bearer $INTERNAL_API_TOKEN`; QStash redacts that header from its logs.
 
-Run `npm test` for the local policy suites. To exercise the production Redis Lua scripts against an isolated namespace, provide test Redis credentials and run `npm run test:redis`. To verify the Review Event Ledger contract against Neon, provide `DATABASE_URL` and run `npm run test:postgres`; both integration suites remove their temporary data afterward.
+Run `npm test` for the local policy suites. To exercise the production Redis Lua scripts against an isolated namespace, provide test Redis credentials and run `npm run test:redis`. To verify the Review Event Ledger and Review Policy contracts against Neon, provide `DATABASE_URL` and run `npm run test:postgres`; both integration suites remove their temporary data afterward.
 
 ## Architecture
 

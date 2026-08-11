@@ -82,9 +82,22 @@ async function githubGraphql<T>(query: string, variables: Record<string, unknown
     body: JSON.stringify({ query, variables }),
   });
   if (!response.ok) throw await githubResponseError(response, "GitHub GraphQL API");
-  const result = await response.json() as { data?: T; errors?: Array<{ message: string }> };
-  if (result.errors?.length || !result.data) throw new Error(`GitHub GraphQL API: ${result.errors?.map((error) => error.message).join("; ") || "missing data"}`);
+  const result = await response.json() as { data?: T; errors?: Array<{ message: string; type?: string }> };
+  if (result.errors?.length || !result.data) throw new GitHubGraphqlError(result.errors ?? []);
   return result.data;
+}
+
+class GitHubGraphqlError extends Error {
+  constructor(readonly errors: Array<{ message: string; type?: string }>) {
+    super(`GitHub GraphQL API: ${errors.map((error) => error.message).join("; ") || "missing data"}`);
+    this.name = "GitHubGraphqlError";
+  }
+}
+
+function isGitHubGraphqlForbidden(error: unknown) {
+  return error instanceof GitHubGraphqlError && error.errors.length > 0 && error.errors.every((item) =>
+    item.type === "FORBIDDEN" || item.message === "Resource not accessible by integration"
+  );
 }
 
 export type GitHubApp = {
@@ -343,25 +356,30 @@ export async function listPullRequestReviewComments(owner: string, repo: string,
 async function listPullRequestReviewThreads(owner: string, repo: string, pullNumber: number, token: string) {
   const threads: GitHubReviewThread[] = [];
   let after: string | null = null;
-  do {
-    const data: GitHubReviewThreadsPage = await githubGraphql<GitHubReviewThreadsPage>(`
-      query TernaryReviewThreads($owner: String!, $repo: String!, $number: Int!, $after: String) {
-        repository(owner: $owner, name: $repo) {
-          pullRequest(number: $number) {
-            reviewThreads(first: 100, after: $after) {
-              nodes { id isResolved comments(first: 100) { nodes { databaseId } } }
-              pageInfo { hasNextPage endCursor }
+  try {
+    do {
+      const data: GitHubReviewThreadsPage = await githubGraphql<GitHubReviewThreadsPage>(`
+        query TernaryReviewThreads($owner: String!, $repo: String!, $number: Int!, $after: String) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $number) {
+              reviewThreads(first: 100, after: $after) {
+                nodes { id isResolved comments(first: 100) { nodes { databaseId } } }
+                pageInfo { hasNextPage endCursor }
+              }
             }
           }
         }
-      }
-    `, { owner, repo, number: pullNumber, after }, token);
-    const connection: GitHubReviewThreadsConnection | undefined = data.repository.pullRequest?.reviewThreads;
-    if (!connection) return threads;
-    threads.push(...connection.nodes.map((thread) => ({ id: thread.id, isResolved: thread.isResolved, commentIds: thread.comments.nodes.map((comment) => comment.databaseId) })));
-    after = connection.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
-  } while (after);
-  return threads;
+      `, { owner, repo, number: pullNumber, after }, token);
+      const connection: GitHubReviewThreadsConnection | undefined = data.repository.pullRequest?.reviewThreads;
+      if (!connection) return threads;
+      threads.push(...connection.nodes.map((thread) => ({ id: thread.id, isResolved: thread.isResolved, commentIds: thread.comments.nodes.map((comment) => comment.databaseId) })));
+      after = connection.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
+    } while (after);
+    return threads;
+  } catch (error) {
+    if (isGitHubGraphqlForbidden(error)) return [];
+    throw error;
+  }
 }
 
 async function unresolvePullRequestReviewThread(threadId: string, token: string) {

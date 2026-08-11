@@ -15,7 +15,7 @@ export type WatchState = { error: string | null };
 export async function loginAction(_state: LoginState, formData: FormData): Promise<LoginState> {
   const token = String(formData.get("token") ?? "");
   const requestedRedirect = String(formData.get("redirectTo") ?? "/");
-  const redirectTo = requestedRedirect === "/repositories" ? "/repositories" : "/";
+  const redirectTo = requestedRedirect === "/repositories" || requestedRedirect === "/analytics" || requestedRedirect === "/policies" ? requestedRedirect : "/";
   if (!isValidDashboardToken(token)) return { error: "That access token is not valid." };
   (await cookies()).set(DASHBOARD_COOKIE, dashboardSessionValue(), {
     httpOnly: true,

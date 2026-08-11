@@ -44,18 +44,21 @@ function trimOutput(output: string) {
   return `${output.slice(0, OUTPUT_LIMIT)}\n… output truncated by Ternary`;
 }
 
-function commandPlan() {
-  return [
-    {
-      label: "install dependencies",
-      shell: `if [ -f pnpm-lock.yaml ]; then corepack pnpm install --frozen-lockfile; elif [ -f yarn.lock ]; then corepack yarn install --immutable || corepack yarn install --frozen-lockfile; elif [ -f bun.lock ] || [ -f bun.lockb ]; then bun install --frozen-lockfile; elif [ -f package-lock.json ]; then npm ci; elif [ -f package.json ]; then npm install; else echo 'No JavaScript package manifest found'; fi`,
-      network: true,
-    },
-    { label: "lint", shell: "npm run lint --if-present", network: false },
-    { label: "typecheck", shell: "npm run typecheck --if-present", network: false },
-    { label: "test", shell: "npm test --if-present", network: false },
-    { label: "build", shell: "npm run build --if-present", network: false },
-  ];
+export function sandboxCommandPlan(reviewCommands: string[] = []) {
+  const install = {
+    label: "install dependencies",
+    shell: `if [ -f pnpm-lock.yaml ]; then corepack pnpm install --frozen-lockfile; elif [ -f yarn.lock ]; then corepack yarn install --immutable || corepack yarn install --frozen-lockfile; elif [ -f bun.lock ] || [ -f bun.lockb ]; then bun install --frozen-lockfile; elif [ -f package-lock.json ]; then npm ci; elif [ -f package.json ]; then npm install; else echo 'No JavaScript package manifest found'; fi`,
+    network: true,
+  };
+  const checks = reviewCommands.length
+    ? reviewCommands.map((command) => ({ label: command, shell: command, network: false }))
+    : [
+        { label: "lint", shell: "npm run lint --if-present", network: false },
+        { label: "typecheck", shell: "npm run typecheck --if-present", network: false },
+        { label: "test", shell: "npm test --if-present", network: false },
+        { label: "build", shell: "npm run build --if-present", network: false },
+      ];
+  return [install, ...checks];
 }
 
 export async function runInSandbox(request: ReviewRequest, githubToken: string): Promise<SandboxResult> {
@@ -91,7 +94,7 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string):
   const commands: SandboxResult["commands"] = [];
   try {
     const repoDirectory = request.repo;
-    for (const step of commandPlan()) {
+    for (const step of sandboxCommandPlan(request.policy?.reviewCommands)) {
       if (!step.network) await sandbox.updateNetworkPolicy("deny-all");
       const command = await sandbox.runCommand({
         cmd: "bash",
