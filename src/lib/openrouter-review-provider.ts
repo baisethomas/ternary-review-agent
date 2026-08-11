@@ -133,7 +133,7 @@ export async function generateOpenRouterReview(
   if (!process.env.OPENROUTER_API_KEY) return fallbackReview(sandbox);
   const maxDiffChars = Number(process.env.MAX_DIFF_CHARS ?? 160_000);
   const input = `PR DIFF:\n${diff.slice(0, maxDiffChars)}\n\nREPOSITORY CONTEXT:\n${repositoryContext || "No matching repository context was available."}\n\nSANDBOX RESULT:\n${JSON.stringify(sandbox)}`;
-  const model = policy?.model ?? process.env.OPENROUTER_MODEL ?? "openai/gpt-5.6-terra";
+  const model = policy?.model ?? process.env.OPENROUTER_MODEL ?? "~deepseek/deepseek-v4-flash-latest";
   const startedAt = Date.now();
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",

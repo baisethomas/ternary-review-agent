@@ -91,7 +91,7 @@ export const safeReviewPolicy: ResolvedReviewPolicy = {
     readyForReview: true,
   },
   minimumSeverity: "suggestion",
-  model: "openai/gpt-5.6-terra",
+  model: "~deepseek/deepseek-v4-flash-latest",
   reviewCommands: [],
   excludedPaths: [],
 };
