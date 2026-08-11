@@ -23,10 +23,21 @@ MAX_BLOCKS=3
 # preserved (never `cmd | tail`, which reports tail's status instead).
 CHECKS=("npm run lint --silent" "npm test --silent")
 
+# shellcheck source=lib-payload.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib-payload.sh"
+
 input=$(cat)
-session=$(printf '%s' "$input" | jq -r '.session_id // "nosession"' 2>/dev/null)
-active=$(printf '%s' "$input" | jq -r '.stop_hook_active // false' 2>/dev/null)
-[ "$active" = "true" ] && exit 0
+
+# The gate does not depend on parsing: without a session id the counter just
+# falls back to a shared key, and the checks below still run. Never skip them.
+session=$(payload_field "$input" '.session_id' '?.session_id') || session=""
+[ -z "$session" ] && session="nosession"
+
+# NOTE: stop_hook_active is deliberately NOT an early exit. Claude Code sets it
+# on the stop attempt that follows a block, so returning 0 here would release a
+# still-failing suite after a single message — the model could ignore the
+# failure and finish immediately, and MAX_BLOCKS would never be reached. The
+# checks are re-run every time; MAX_BLOCKS alone bounds the loop.
 
 cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
 

@@ -9,8 +9,20 @@
 
 set -uo pipefail
 
+# shellcheck source=lib-payload.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib-payload.sh"
+
 input=$(cat)
-file=$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
+
+# Without a parser this hook would skip every file and look like it was passing.
+# Surface that once, visibly, rather than pretending to lint.
+file=$(payload_field "$input" '.tool_input.file_path' '?.tool_input?.file_path')
+case $? in
+  1) no_parser_message "lint hook disabled"; exit 2 ;;
+  2) echo "lint hook disabled: could not parse the hook payload, so edited files are not being linted. Fix the JSON parser (jq/node)." >&2
+     exit 2 ;;
+esac
+
 [ -z "$file" ] && exit 0
 
 # Only lint what ESLint is configured for here.

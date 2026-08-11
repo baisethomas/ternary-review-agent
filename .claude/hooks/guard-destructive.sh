@@ -13,15 +13,37 @@
 
 set -uo pipefail
 
+# shellcheck source=lib-payload.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib-payload.sh"
+
 input=$(cat)
-command=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
+
+# Fail closed on any parse problem: an unread payload yields an empty command,
+# which would silently allow every destructive operation. "Cannot verify" must
+# never be treated as "nothing to block".
+command=$(payload_field "$input" '.tool_input.command' '?.tool_input?.command')
+case $? in
+  1) echo "BLOCKED by guard hook: no JSON parser available (needs jq or node), so destructive commands cannot be checked. Install jq, then retry." >&2
+     exit 2 ;;
+  2) echo "BLOCKED by guard hook: could not parse the hook payload, so destructive commands cannot be checked. Fix the JSON parser (jq/node), then retry." >&2
+     exit 2 ;;
+esac
+
+# Parsed cleanly and there is genuinely no command to inspect.
 [ -z "$command" ] && exit 0
 
-# Flatten newlines/continuations so multi-line commands match the same way.
-norm=$(printf '%s' "$command" | tr '\n\\' '  ')
+# Flatten newlines/continuations, and strip quote characters so that quoted
+# option tokens (git push '--force') match the same patterns as bare ones.
+# Deliberately over-matches rather than under-matches: this guard's failure
+# mode must be blocking something safe, never allowing something destructive.
+norm=$(printf '%s' "$command" | tr '\n\\' '  ' | tr -d "\"'")
 
+# There is deliberately no in-session approval token. Any override the model
+# could set, the model could set on its own — a self-approvable gate is not a
+# gate. So approval means a human runs the command, and the message says how.
 block() {
-  echo "BLOCKED by guard hook: $1 is a hard stop in AGENTS.md and requires explicit human approval. Ask the user, do not retry." >&2
+  echo "BLOCKED by guard hook: $1 is a hard stop in AGENTS.md and requires explicit human approval." >&2
+  echo "Do not retry or reword it. Ask the user to run it themselves — in Claude Code they can type '! <command>' to run it in this session — or to disable this hook if they want it done for them." >&2
   exit 2
 }
 
