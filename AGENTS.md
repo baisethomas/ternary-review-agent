@@ -1,3 +1,7 @@
+# Ternary
+
+Read `CONTEXT.md` for domain vocabulary (Index Snapshot, Review, Review Event, Finding, Finding State, …) before naming anything — each term lists synonyms to avoid. Design docs and ADRs live in `docs/`. Every module in `src/lib` has a sibling `*.test.ts`; keep that 1:1 convention when adding code, and run `npm test` before finishing.
+
 <!-- BEGIN:nextjs-agent-rules -->
 
 # This is NOT the Next.js you know
