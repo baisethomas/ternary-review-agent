@@ -100,6 +100,10 @@ function parseReviewOutput(text: string): Omit<ReviewResult, "sandbox" | "ai" | 
 
 type OpenRouterError = { code?: number; message?: string; metadata?: { error_type?: string } };
 
+function isAbortError(error: unknown) {
+  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+}
+
 function throwProviderError(error: OpenRouterError | undefined, finishReason?: string) {
   if (!error && finishReason !== "error") return;
   const errorType = error?.metadata?.error_type;
@@ -135,22 +139,34 @@ export async function generateOpenRouterReview(
   const input = `PR DIFF:\n${diff.slice(0, maxDiffChars)}\n\nREPOSITORY CONTEXT:\n${repositoryContext || "No matching repository context was available."}\n\nSANDBOX RESULT:\n${JSON.stringify(sandbox)}`;
   const model = policy?.model ?? process.env.OPENROUTER_MODEL ?? "~deepseek/deepseek-v4-flash-latest";
   const startedAt = Date.now();
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: input },
-      ],
-      response_format: { type: "json_schema", json_schema: { name: "code_review", strict: true, schema: reviewSchema } },
-      provider: { require_parameters: true },
-    }),
-  });
+  const timeoutMs = Number(process.env.OPENROUTER_TIMEOUT_MS ?? 240_000);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response;
+  try {
+    response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: input },
+        ],
+        response_format: { type: "json_schema", json_schema: { name: "code_review", strict: true, schema: reviewSchema } },
+        provider: { require_parameters: true },
+      }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (isAbortError(error) || controller.signal.aborted) throw new Error(`AI review timed out after ${timeoutMs}ms`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!response.ok) {
     const message = `AI review failed (${response.status}): ${await response.text()}`;
     throw isRetryableHttpStatus(response.status) ? new Error(message) : new NonRetryableReviewError(message);

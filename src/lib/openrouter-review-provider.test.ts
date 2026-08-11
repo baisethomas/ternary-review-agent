@@ -87,6 +87,18 @@ describe("OpenRouter review provider", () => {
     await expect(generateOpenRouterReview("diff", sandbox, "context")).rejects.not.toBeInstanceOf(NonRetryableReviewError);
   });
 
+  it("treats provider abort timeouts as retryable failures", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "router-key");
+    vi.stubEnv("OPENROUTER_TIMEOUT_MS", "240000");
+    const aborted = Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(aborted));
+
+    const error = await generateOpenRouterReview("diff", sandbox, "context").catch((caught) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(NonRetryableReviewError);
+    expect(error.message).toContain("AI review timed out after 240000ms");
+  });
+
   it("marks permanent OpenRouter failures as non-retryable", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "router-key");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("bad request", { status: 400 })));
