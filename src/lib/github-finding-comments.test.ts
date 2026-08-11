@@ -153,6 +153,28 @@ describe("GitHub finding comments", () => {
     expect(fetch.mock.calls[2][1]?.body).toContain("TernaryResolveReviewThread");
   });
 
+  it("keeps a clean review publishable when the app cannot access review threads", async () => {
+    const marker = "<!-- ternary-finding:finding-fixed -->";
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(Response.json([{ id: 30, body: marker, user: { login: "ternary-review-agent[bot]", type: "Bot" } }]))
+      .mockResolvedValueOnce(Response.json({
+        data: { repository: { pullRequest: null } },
+        errors: [{ type: "FORBIDDEN", message: "Resource not accessible by integration" }],
+      }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(syncFindingReviewComments(
+      "ternary",
+      "agent",
+      8,
+      "new-head",
+      "token",
+      [],
+      { botLogin: "ternary-review-agent[bot]", ...currentHead("new-head") },
+    )).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("resolves only absent findings while updating findings that remain", async () => {
     const activeMarker = "<!-- ternary-finding:finding-active -->";
     const fixedMarker = "<!-- ternary-finding:finding-fixed -->";
