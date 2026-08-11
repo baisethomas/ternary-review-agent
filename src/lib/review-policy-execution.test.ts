@@ -24,6 +24,24 @@ diff --git a/generated/client.ts b/generated/client.ts
     expect(filtered).not.toContain("new client");
   });
 
+  it("removes excluded binary and quoted rename-only sections without patch markers", () => {
+    const diff = `diff --git a/generated/logo.png b/generated/logo.png
+Binary files a/generated/logo.png and b/generated/logo.png differ
+diff --git "a/generated/old name.ts" "b/generated/new name.ts"
+similarity index 100%
+rename from generated/old name.ts
+rename to generated/new name.ts
+diff --git a/src/app.ts b/src/app.ts
+old mode 100644
+new mode 100755`;
+
+    const filtered = filterReviewDiff(diff, ["generated/**"]);
+
+    expect(filtered).not.toContain("generated/logo.png");
+    expect(filtered).not.toContain("generated/old name.ts");
+    expect(filtered).toContain("src/app.ts");
+  });
+
   it("removes findings below the configured severity and derives the visible verdict", () => {
     const result = applyReviewPolicyToResult({
       verdict: "request_changes",
