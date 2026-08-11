@@ -13,13 +13,14 @@ function globExpression(pattern: string) {
   return new RegExp(`${expression}$`);
 }
 
-function diffPaths(section: string) {
-  const paths = [section.match(/^\+\+\+ b\/(.+)$/m)?.[1], section.match(/^--- a\/(.+)$/m)?.[1]].filter((path): path is string => Boolean(path));
+function effectiveDiffPath(section: string) {
+  const destination = section.match(/^\+\+\+ b\/(.+)$/m)?.[1];
+  if (destination) return destination.replace(/^"|"$/g, "");
+  const source = section.match(/^--- a\/(.+)$/m)?.[1];
+  if (source) return source.replace(/^"|"$/g, "");
   const quotedHeader = section.match(/^diff --git "a\/(.+)" "b\/(.+)"$/m);
   const plainHeader = section.match(/^diff --git a\/(.+) b\/(.+)$/m);
-  if (quotedHeader) paths.push(quotedHeader[1], quotedHeader[2]);
-  if (plainHeader) paths.push(plainHeader[1], plainHeader[2]);
-  return paths.map((path) => path.replace(/^"|"$/g, ""));
+  return quotedHeader?.[2] ?? plainHeader?.[2];
 }
 
 export function filterReviewDiff(diff: string, excludedPaths: string[]) {
@@ -28,8 +29,8 @@ export function filterReviewDiff(diff: string, excludedPaths: string[]) {
   return diff
     .split(/(?=^diff --git )/m)
     .filter((section) => {
-      const paths = diffPaths(section);
-      return !paths.some((path) => expressions.some((expression) => expression.test(path)));
+      const path = effectiveDiffPath(section);
+      return !path || !expressions.some((expression) => expression.test(path));
     })
     .join("");
 }
