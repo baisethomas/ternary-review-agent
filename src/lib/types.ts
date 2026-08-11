@@ -1,3 +1,5 @@
+import type { ResolvedReviewPolicy } from "./review-policy";
+
 export type ReviewRequest = {
   owner: string;
   repo: string;
@@ -6,6 +8,7 @@ export type ReviewRequest = {
   headSha: string;
   cloneUrl: string;
   author?: string;
+  policy?: ResolvedReviewPolicy;
 };
 
 export type WebhookReviewRequest = ReviewRequest & { webhookDeliveryId: string };

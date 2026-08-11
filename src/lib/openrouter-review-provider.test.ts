@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { generateOpenRouterReview } from "./openrouter-review-provider";
 import { NonRetryableReviewError } from "./review-errors";
+import { safeReviewPolicy } from "./review-policy";
 
 const sandbox = {
   ok: true,
@@ -28,7 +29,7 @@ describe("OpenRouter review provider", () => {
 
   it("requests a strict structured review and records OpenRouter usage", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "router-key");
-    vi.stubEnv("OPENROUTER_MODEL", "openai/gpt-5.6-terra");
+    vi.stubEnv("OPENROUTER_MODEL", "openai/gpt-5.6-sol");
     const review = {
       verdict: "request_changes",
       summary: "One material issue.",
@@ -51,7 +52,7 @@ describe("OpenRouter review provider", () => {
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await generateOpenRouterReview("diff body", sandbox, "repository context");
+    const result = await generateOpenRouterReview("diff body", sandbox, "repository context", { ...safeReviewPolicy, model: "openai/gpt-5.6-terra" });
     const { supersedesFindingKey, ...expectedFinding } = review.findings[0];
     expect(supersedesFindingKey).toBeNull();
 
