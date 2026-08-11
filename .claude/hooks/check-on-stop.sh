@@ -36,22 +36,49 @@ session=$(payload_field "$input" '.session_id' '?.session_id') || session=""
 
 cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
 
-counter="${TMPDIR:-/tmp}/claude-stop-gate-${session}"
+# State lives in a 0700 directory we own, under an opaque filename. A fixed path
+# in a shared /tmp can be pre-created as a symlink by any process running as the
+# same user, and `> "$counter"` would then follow it and clobber that target.
+state_dir="${TMPDIR:-/tmp}/claude-stop-gate.$(id -u)"
+if [ -L "$state_dir" ] || { [ -e "$state_dir" ] && [ ! -d "$state_dir" ]; }; then
+  echo "Stop gate: ${state_dir} exists but is not a directory; refusing to use it. Checks still ran." >&2
+  state_dir=""
+else
+  mkdir -p "$state_dir" 2>/dev/null && chmod 700 "$state_dir" 2>/dev/null
+fi
+
+if [ -n "$state_dir" ]; then
+  key=$(printf '%s' "$session" | { shasum 2>/dev/null || sha1sum 2>/dev/null; } | cut -d' ' -f1)
+  [ -z "$key" ] && key="fallback"
+  counter="$state_dir/$key"
+else
+  counter=""
+fi
 
 fail=0
 lint_out=$(npm run lint --silent 2>&1) || fail=1
 test_out=$(npm test --silent 2>&1) || fail=1
 
 if [ "$fail" -eq 0 ]; then
-  rm -f "$counter"
+  [ -n "$counter" ] && rm -f "$counter"
   exit 0
 fi
 
-blocks=$(( $(cat "$counter" 2>/dev/null || echo 0) + 1 ))
-echo "$blocks" > "$counter"
+# Only read a regular file we own, and only trust decimal digits — a symlinked
+# or hand-edited counter must not reach the arithmetic below.
+prev=0
+if [ -n "$counter" ] && [ -f "$counter" ] && [ ! -L "$counter" ]; then
+  raw=$(head -c 16 "$counter" 2>/dev/null | tr -dc '0-9')
+  [ -n "$raw" ] && prev=$raw
+fi
+blocks=$((prev + 1))
+if [ -n "$counter" ]; then
+  rm -f "$counter" 2>/dev/null
+  (umask 077; printf '%s\n' "$blocks" > "$counter" 2>/dev/null) || true
+fi
 
 if [ "$blocks" -gt "$MAX_BLOCKS" ]; then
-  rm -f "$counter"
+  [ -n "$counter" ] && rm -f "$counter"
   echo "Verification still failing after ${MAX_BLOCKS} attempts; releasing the stop gate. Report the failure honestly rather than claiming success." >&2
   exit 0
 fi

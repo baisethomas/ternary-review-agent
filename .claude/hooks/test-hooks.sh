@@ -11,10 +11,22 @@ cd "$(dirname "$0")"
 pass=0
 fail=0
 
+# JSON-encode a string without assuming jq: the hooks support node as a parser,
+# so the suite that validates them must run in a node-only environment too.
+json_str() {
+  if command -v jq >/dev/null 2>&1; then
+    jq -Rn --arg c "$1" '$c'
+  elif command -v node >/dev/null 2>&1; then
+    node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"
+  else
+    printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+  fi
+}
+
 # assert_guard <expected_exit> <command>
 assert_guard() {
   local expected="$1" cmd="$2" actual
-  printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(jq -Rn --arg c "$cmd" '$c')" \
+  printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(json_str "$cmd")" \
     | ./guard-destructive.sh >/dev/null 2>&1
   actual=$?
   if [ "$actual" -eq "$expected" ]; then
@@ -100,6 +112,53 @@ assert_guard 2 "git branch '-D' feature"
 assert_guard 2 "rm '-rf' build"
 assert_guard 2 "git push origin ':feature/x'"
 
+echo "== guard: backslash escapes must not split a flag =="
+# Bash strips a backslash escaping a non-newline char: --f\orce runs as --force.
+assert_guard 2 'git push --f\orce origin main'
+assert_guard 2 'git push --for\ce origin main'
+assert_guard 2 'git reset --ha\rd HEAD~1'
+assert_guard 2 'git branch -\D feature'
+assert_guard 2 'git push -\f origin main'
+assert_guard 2 'rm -r\f build'
+assert_guard 2 'r\m -rf build'
+# A backslash-newline pair is a line continuation and joins the tokens.
+assert_guard 2 'git push --force \
+  origin main'
+assert_guard 0 'grep "\bword" src'
+
+echo "== guard: control operators must act as option boundaries =="
+# Bash terminates an option with ; | & ( ) < > just as readily as with a space.
+assert_guard 2 'git push -f;'
+assert_guard 2 'git reset --hard;'
+assert_guard 2 'git branch -D;'
+assert_guard 2 'git clean -f;'
+assert_guard 2 'rm -rf;'
+assert_guard 2 'git push -f|cat'
+assert_guard 2 '(git push -f)'
+assert_guard 2 'git push origin -f>log'
+assert_guard 2 'git push -f$(true)'
+assert_guard 2 'git push -f && echo done'
+
+echo "== guard: shell indirection must not hide a destructive command =="
+# The guard matches literal text; bash runs what expansions produce.
+assert_guard 2 'sub=push; git "$sub" --force origin main'
+assert_guard 2 'f=--force; git push origin main $f'
+assert_guard 2 'r=rm; $r -rf node_modules'
+assert_guard 2 'g=git; $g push origin --force'
+assert_guard 2 'git ${SUB} --force origin main'
+assert_guard 2 'git push origin `echo --force`'
+assert_guard 2 'git reset --hard $(git rev-parse HEAD~1)'
+assert_guard 2 'psql -c "DROP TABLE $tbl"'
+
+echo "== guard: expansion in ordinary commands must stay allowed =="
+# Scoped, not blanket: blocking every command containing $ would break normal work.
+assert_guard 0 'git commit -m "$(cat msg.txt)"'
+assert_guard 0 'git log --oneline -n "$COUNT"'
+assert_guard 0 'echo "$PWD"'
+assert_guard 0 'npm test -- --grep "$PATTERN"'
+assert_guard 0 'git diff "$BASE"..HEAD'
+assert_guard 0 'git status --porcelain'
+
 echo "== guard: must FAIL CLOSED when no JSON parser is available =="
 # A guard that cannot read its input must block, not allow everything.
 mkdir -p /tmp/claude-hook-test-shim
@@ -120,17 +179,20 @@ if [ $? -eq 2 ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: l
 noparser_stopdir=$(mktemp -d)
 cp ./check-on-stop.sh ./lib-payload.sh "$noparser_stopdir/"
 printf '{"name":"f","version":"1.0.0","scripts":{"lint":"exit 1","test":"exit 1"}}' > "$noparser_stopdir/package.json"
-echo '{"session_id":"np"}' | CLAUDE_PROJECT_DIR="$noparser_stopdir" noparser "$noparser_stopdir/check-on-stop.sh" >/dev/null 2>&1
+# Isolate the gate's counter: it lives under TMPDIR and persists between runs,
+# so a shared location would carry a previous run's count into this assertion.
+noparser_state=$(mktemp -d)
+echo '{"session_id":"np"}' | TMPDIR="$noparser_state" CLAUDE_PROJECT_DIR="$noparser_stopdir" noparser "$noparser_stopdir/check-on-stop.sh" >/dev/null 2>&1
 if [ $? -eq 2 ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: stop gate should still block on failing checks without a JSON parser"; fi
-rm -f "${TMPDIR:-/tmp}/claude-stop-gate-nosession"
-rm -rf "$noparser_stopdir" /tmp/claude-hook-test-shim
+rm -rf "$noparser_state" "$noparser_stopdir" /tmp/claude-hook-test-shim
 
 echo "== stop gate: must re-check even when stop_hook_active is set =="
 stopdir=$(mktemp -d)
 cp ./check-on-stop.sh ./lib-payload.sh "$stopdir/"
+stopstate=$(mktemp -d)   # per-run counter state, see note above
 assert_stop() {
   local expected="$1" payload="$2" label="$3" actual
-  echo "$payload" | CLAUDE_PROJECT_DIR="$stopdir" "$stopdir/check-on-stop.sh" >/dev/null 2>&1
+  echo "$payload" | TMPDIR="$stopstate" CLAUDE_PROJECT_DIR="$stopdir" "$stopdir/check-on-stop.sh" >/dev/null 2>&1
   actual=$?
   if [ "$actual" -eq "$expected" ]; then
     pass=$((pass + 1))
@@ -155,7 +217,7 @@ assert_stop 2 "{\"session_id\":\"${sid}c\"}" 'cap attempt 1'
 assert_stop 2 "{\"session_id\":\"${sid}c\"}" 'cap attempt 2'
 assert_stop 2 "{\"session_id\":\"${sid}c\"}" 'cap attempt 3'
 assert_stop 0 "{\"session_id\":\"${sid}c\"}" 'cap released on attempt 4'
-rm -f "${TMPDIR:-/tmp}/claude-stop-gate-${sid}"*
+rm -rf "$stopstate"
 rm -rf "$stopdir"
 
 echo "== guard: parseable-but-empty allows; unparseable blocks =="
@@ -171,6 +233,40 @@ for payload in '{"tool_input":{"file_path":"README.md"}}' '{}'; do
   echo "$payload" | ./lint-edited-file.sh >/dev/null 2>&1
   [ $? -eq 0 ] && pass=$((pass + 1)) || { fail=$((fail + 1)); echo "FAIL: should exit 0 for $payload"; }
 done
+
+echo "== guard: works on a node-only install (jq genuinely absent) =="
+# The hooks document node as a supported parser, so the suite must prove that
+# configuration rather than assuming jq everywhere.
+if command -v node >/dev/null 2>&1; then
+  nodeonly=$(mktemp -d)
+  for b in bash sed grep tr cat head dirname mktemp rm id chmod mkdir shasum node; do
+    p=$(command -v "$b" 2>/dev/null) && ln -sf "$p" "$nodeonly/$b"
+  done
+  if [ -x "$nodeonly/node" ] && ! PATH="$nodeonly" command -v jq >/dev/null 2>&1; then
+    run_nodeonly() {
+      local expected="$1" cmd="$2" actual
+      printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(json_str "$cmd")" \
+        | PATH="$nodeonly" bash ./guard-destructive.sh >/dev/null 2>&1
+      actual=$?
+      if [ "$actual" -eq "$expected" ]; then
+        pass=$((pass + 1))
+      else
+        fail=$((fail + 1))
+        printf 'FAIL (node-only): expected exit %s, got %s for: %s\n' "$expected" "$actual" "$cmd"
+      fi
+    }
+    run_nodeonly 2 'git push origin --force'
+    run_nodeonly 2 'git branch -D feature/x'
+    run_nodeonly 2 'rm -rf node_modules'
+    run_nodeonly 0 'git push origin main'
+    run_nodeonly 0 'npm test'
+  else
+    echo "  (skipped: could not build a node-only PATH)"
+  fi
+  rm -rf "$nodeonly"
+else
+  echo "  (skipped: node not installed)"
+fi
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
