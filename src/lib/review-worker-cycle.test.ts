@@ -122,6 +122,21 @@ describe("runReviewWorkerCycle empty-cycle backoff", () => {
     expect(dispatches).toEqual([now + 120_000]);
   });
 
+  it("does not let idle backoff override a near-term lock-contention wake", async () => {
+    const backoff = memoryBackoff(3);
+    const dispatches: number[] = [];
+    const now = 60_000;
+    await runReviewWorkerCycle({
+      processAvailableJobs: async () => [],
+      nextWakeAt: async () => now + 5_000,
+      dispatch: async (at) => { dispatches.push(at); },
+      now: () => now,
+      emptyCycleBackoff: backoff,
+    });
+    expect(dispatches).toEqual([now + 5_000]);
+    expect(backoff.count).toBe(3);
+  });
+
   it("returns dispatchError instead of throwing when re-wake publish fails", async () => {
     const result = await runReviewWorkerCycle({
       processAvailableJobs: async () => [job("job-2")],

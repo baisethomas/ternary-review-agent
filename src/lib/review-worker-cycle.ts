@@ -60,15 +60,21 @@ export async function runReviewWorkerCycle(options: ReviewWorkerCycle): Promise<
   }
 
   const now = options.now?.() ?? Date.now();
-  let earliestDispatch = now;
+  let dispatchAt = Math.max(nextWakeAt, now);
   if (jobs.length === 0) {
-    earliestDispatch = now + emptyCycleBackoffMs(await nextEmptyCount(options.emptyCycleBackoff));
+    if (nextWakeAt > now) {
+      // Future retries / lease expiry / lock-contention deferrals must not be delayed
+      // by idle backoff — only apply the floor when a wake is already due.
+      dispatchAt = nextWakeAt;
+    } else {
+      dispatchAt = now + emptyCycleBackoffMs(await nextEmptyCount(options.emptyCycleBackoff));
+    }
   } else {
     await resetEmptyCount(options.emptyCycleBackoff);
   }
 
   try {
-    await options.dispatch(Math.max(nextWakeAt, earliestDispatch));
+    await options.dispatch(dispatchAt);
     return { jobs };
   } catch (error) {
     return { jobs, dispatchError: errorMessage(error) };

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { generateOpenRouterReview } from "./openrouter-review-provider";
+import { generateOpenRouterReview, resolveOpenRouterTimeoutMs } from "./openrouter-review-provider";
 import { NonRetryableReviewError } from "./review-errors";
 import { safeReviewPolicy } from "./review-policy";
 
@@ -13,6 +13,19 @@ const sandbox = {
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+});
+
+describe("resolveOpenRouterTimeoutMs", () => {
+  it("defaults and rejects invalid or out-of-range values", () => {
+    expect(resolveOpenRouterTimeoutMs(undefined)).toBe(240_000);
+    expect(resolveOpenRouterTimeoutMs("")).toBe(240_000);
+    expect(resolveOpenRouterTimeoutMs("nope")).toBe(240_000);
+    expect(resolveOpenRouterTimeoutMs("0")).toBe(240_000);
+    expect(resolveOpenRouterTimeoutMs("-5")).toBe(240_000);
+    expect(resolveOpenRouterTimeoutMs("500")).toBe(240_000);
+    expect(resolveOpenRouterTimeoutMs("120000")).toBe(120_000);
+    expect(resolveOpenRouterTimeoutMs("999999")).toBe(240_000);
+  });
 });
 
 describe("OpenRouter review provider", () => {
@@ -92,6 +105,22 @@ describe("OpenRouter review provider", () => {
     vi.stubEnv("OPENROUTER_TIMEOUT_MS", "240000");
     const aborted = Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(aborted));
+
+    const error = await generateOpenRouterReview("diff", sandbox, "context").catch((caught) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(NonRetryableReviewError);
+    expect(error.message).toContain("AI review timed out after 240000ms");
+  });
+
+  it("keeps the abort active while reading a stalled response body", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "router-key");
+    vi.stubEnv("OPENROUTER_TIMEOUT_MS", "240000");
+    const aborted = Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => { throw aborted; },
+      text: async () => { throw aborted; },
+    }));
 
     const error = await generateOpenRouterReview("diff", sandbox, "context").catch((caught) => caught);
     expect(error).toBeInstanceOf(Error);
