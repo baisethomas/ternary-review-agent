@@ -37,7 +37,17 @@ session=$(payload_field "$input" '.session_id' '?.session_id') || session=""
 active=$(payload_field "$input" '.stop_hook_active' '?.stop_hook_active') || active="false"
 [ "$active" = "true" ] || active="false"
 
-cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
+# A gate that cannot reach the project cannot verify anything, and releasing
+# there would report success for checks that never ran. Block instead, bounded
+# by stop_hook_active so a permanently bad path cannot trap the session.
+if ! cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null; then
+  if [ "$active" = "true" ]; then
+    echo "Stop gate: still cannot enter CLAUDE_PROJECT_DIR (${CLAUDE_PROJECT_DIR:-.}); releasing. Verification did NOT run — do not claim the work is verified." >&2
+    exit 0
+  fi
+  echo "Stop gate: cannot enter CLAUDE_PROJECT_DIR (${CLAUDE_PROJECT_DIR:-.}), so lint and tests did not run. Fix the path or report that verification could not be performed — do not report this work as verified." >&2
+  exit 2
+fi
 
 # State lives in a 0700 directory we own, under an opaque filename. A fixed path
 # in a shared /tmp can be pre-created as a symlink by any process running as the
@@ -47,7 +57,17 @@ if [ -L "$state_dir" ] || { [ -e "$state_dir" ] && [ ! -d "$state_dir" ]; }; the
   echo "Stop gate: ${state_dir} exists but is not a directory; refusing to use it. Checks still ran." >&2
   state_dir=""
 else
-  mkdir -p "$state_dir" 2>/dev/null && chmod 700 "$state_dir" 2>/dev/null
+  mkdir -p "$state_dir" 2>/dev/null
+  chmod 700 "$state_dir" 2>/dev/null
+  # Creating it is not enough — it may have pre-existed, be owned by someone
+  # else, or have kept loose permissions if chmod failed. Confirm the end state
+  # rather than assuming setup worked, and drop to no-state if it did not.
+  perm=$(ls -ld "$state_dir" 2>/dev/null | cut -c1-10)
+  if [ ! -d "$state_dir" ] || [ -L "$state_dir" ] || [ ! -O "$state_dir" ] \
+     || [ "$perm" != "drwx------" ]; then
+    echo "Stop gate: ${state_dir} is not a private directory owned by this user; running without a retry counter." >&2
+    state_dir=""
+  fi
 fi
 
 if [ -n "$state_dir" ]; then
@@ -81,11 +101,19 @@ blocks=$((prev + 1))
 # session on exactly the environmental failure the cap exists to escape. So when
 # state cannot be kept, fall back to stop_hook_active as the bound: block once,
 # release on the retry. Weaker than the counter, but bounded.
+# Write through a fresh mktemp file and rename it into place. A plain redirect
+# follows whatever the path points at, so a same-user process could swap in a
+# symlink between the check above and the write and have the count land in a
+# file of its choosing. rename(2) replaces the entry itself and never follows a
+# symlink at the destination, which closes that window rather than narrowing it.
 persisted=0
 if [ -n "$counter" ]; then
-  rm -f "$counter" 2>/dev/null
-  if (umask 077; printf '%s\n' "$blocks" > "$counter" 2>/dev/null); then
-    [ -s "$counter" ] && persisted=1
+  if tmpf=$(umask 077; mktemp "${state_dir}/.tmp.XXXXXX" 2>/dev/null); then
+    if printf '%s\n' "$blocks" > "$tmpf" 2>/dev/null && mv -f "$tmpf" "$counter" 2>/dev/null; then
+      persisted=1
+    else
+      rm -f "$tmpf" 2>/dev/null
+    fi
   fi
 fi
 
