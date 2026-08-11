@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx eslint --no-warn-ignored \"$CLAUDE_FILE_PATHS\" 2>&1 | head -40 || true"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npm run lint --silent 2>&1 | tail -20 && npm test --silent 2>&1 | tail -20"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"$CLAUDE_TOOL_INPUT\" | grep -qE 'push +--force|push +-f\\b|reset +--hard|rm +-rf|db:migrate|migrate +(up|down|deploy)|DROP +TABLE|branch +-D' && { echo 'BLOCKED by guard hook: destructive command requires explicit human approval. Ask the user, do not retry.' >&2; exit 2; } || exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}
