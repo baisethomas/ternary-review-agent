@@ -45,6 +45,12 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - Any network call that sends data externally
 - Changes to public API surfaces under `src/app/api/**/route.ts` (currently: health, review-events, repositories/index, dashboard/changes, dashboard/reviews, github/webhook, analytics/export, reviews/run, reviews/jobs, reviews/worker)
 
+`.claude/hooks/guard-destructive.sh` mechanically blocks many of these, but it
+matches command *text* while bash decides what actually runs — it is a speed
+bump against momentum, not a boundary, and it can be bypassed. The hard stops
+above are binding on you regardless of whether the hook happens to catch a
+given phrasing. Do not treat "the hook allowed it" as approval.
+
 ## Reporting format ("done" means this)
 
 Every completion summary must contain, in order:
