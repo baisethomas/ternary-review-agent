@@ -56,8 +56,10 @@ export interface ReviewPolicyStore {
   get(scope: ReviewPolicyScope): Promise<StoredReviewPolicy | null>;
   save(change: SaveReviewPolicy): Promise<StoredReviewPolicy>;
   history(scope: ReviewPolicyScope, limit?: number): Promise<ReviewPolicyChange[]>;
-  deleteRepository(scope: RepositoryPolicyScope): Promise<number>;
-  deleteInstallation(installationId: number): Promise<number>;
+  deleteRepository(scope: RepositoryPolicyScope, changedAt: number): Promise<number>;
+  deleteInstallation(installationId: number, changedAt: number): Promise<number>;
+  restoreRepository(scope: RepositoryPolicyScope, changedAt: number): Promise<void>;
+  restoreInstallation(installationId: number, changedAt: number): Promise<void>;
 }
 
 export class ReviewPolicyVersionConflictError extends Error {
@@ -71,6 +73,13 @@ export class InvalidReviewPolicyError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "InvalidReviewPolicyError";
+  }
+}
+
+export class ReviewPolicyAccessRevokedError extends Error {
+  constructor() {
+    super("Review policy access has been revoked for this GitHub scope.");
+    this.name = "ReviewPolicyAccessRevokedError";
   }
 }
 
@@ -148,6 +157,8 @@ export function validateReviewPolicyOverride(policy: ReviewPolicyOverride) {
 export class InMemoryReviewPolicyStore implements ReviewPolicyStore {
   private readonly policies = new Map<string, StoredReviewPolicy>();
   private readonly changes: ReviewPolicyChange[] = [];
+  private readonly installationAccess = new Map<number, { status: "active" | "revoked"; changedAt: number }>();
+  private readonly repositoryAccess = new Map<string, { status: "active" | "revoked"; changedAt: number }>();
 
   async get(scope: ReviewPolicyScope) {
     return structuredClone(this.policies.get(scopeKey(scope)) ?? null);
@@ -155,6 +166,9 @@ export class InMemoryReviewPolicyStore implements ReviewPolicyStore {
 
   async save(change: SaveReviewPolicy) {
     const scope = normalizedScope(change.scope);
+    const installationAccess = this.installationAccess.get(scope.installationId);
+    const repositoryAccess = scope.kind === "repository" ? this.repositoryAccess.get(scopeKey(scope)) : null;
+    if (installationAccess?.status === "revoked" || repositoryAccess?.status === "revoked") throw new ReviewPolicyAccessRevokedError();
     const key = scopeKey(scope);
     const previous = this.policies.get(key) ?? null;
     if ((previous?.version ?? 0) !== change.expectedVersion) throw new ReviewPolicyVersionConflictError();
@@ -183,8 +197,11 @@ export class InMemoryReviewPolicyStore implements ReviewPolicyStore {
     return structuredClone(this.changes.filter((change) => scopeKey(change.scope) === key).slice(-limit).reverse());
   }
 
-  async deleteRepository(scope: RepositoryPolicyScope) {
+  async deleteRepository(scope: RepositoryPolicyScope, changedAt: number) {
     const key = scopeKey(scope);
+    const current = this.repositoryAccess.get(key);
+    if (current && current.changedAt > changedAt) return 0;
+    this.repositoryAccess.set(key, { status: "revoked", changedAt: Math.max(current?.changedAt ?? changedAt, changedAt) });
     const deletedPolicy = this.policies.delete(key) ? 1 : 0;
     const retainedChanges = this.changes.filter((change) => scopeKey(change.scope) !== key);
     const deletedChanges = this.changes.length - retainedChanges.length;
@@ -192,7 +209,10 @@ export class InMemoryReviewPolicyStore implements ReviewPolicyStore {
     return deletedPolicy + deletedChanges;
   }
 
-  async deleteInstallation(installationId: number) {
+  async deleteInstallation(installationId: number, changedAt: number) {
+    const current = this.installationAccess.get(installationId);
+    if (current && current.changedAt > changedAt) return 0;
+    this.installationAccess.set(installationId, { status: "revoked", changedAt: Math.max(current?.changedAt ?? changedAt, changedAt) });
     let deletedPolicies = 0;
     for (const [key, policy] of this.policies) {
       if (policy.scope.installationId !== installationId) continue;
@@ -203,6 +223,17 @@ export class InMemoryReviewPolicyStore implements ReviewPolicyStore {
     const deletedChanges = this.changes.length - retainedChanges.length;
     this.changes.splice(0, this.changes.length, ...retainedChanges);
     return deletedPolicies + deletedChanges;
+  }
+
+  async restoreRepository(scope: RepositoryPolicyScope, changedAt: number) {
+    const key = scopeKey(scope);
+    const current = this.repositoryAccess.get(key);
+    if (!current || current.changedAt <= changedAt) this.repositoryAccess.set(key, { status: "active", changedAt });
+  }
+
+  async restoreInstallation(installationId: number, changedAt: number) {
+    const current = this.installationAccess.get(installationId);
+    if (!current || current.changedAt <= changedAt) this.installationAccess.set(installationId, { status: "active", changedAt });
   }
 }
 
@@ -245,12 +276,20 @@ export class ReviewPolicyService {
     return this.store.history(scope, limit);
   }
 
-  deleteRepository(scope: Omit<RepositoryPolicyScope, "kind">) {
-    return this.store.deleteRepository({ kind: "repository", ...scope });
+  deleteRepository(scope: Omit<RepositoryPolicyScope, "kind">, changedAt: number) {
+    return this.store.deleteRepository({ kind: "repository", ...scope }, changedAt);
   }
 
-  deleteInstallation(installationId: number) {
-    return this.store.deleteInstallation(installationId);
+  deleteInstallation(installationId: number, changedAt: number) {
+    return this.store.deleteInstallation(installationId, changedAt);
+  }
+
+  restoreRepository(scope: Omit<RepositoryPolicyScope, "kind">, changedAt: number) {
+    return this.store.restoreRepository({ kind: "repository", ...scope }, changedAt);
+  }
+
+  restoreInstallation(installationId: number, changedAt: number) {
+    return this.store.restoreInstallation(installationId, changedAt);
   }
 
   private async save(scope: ReviewPolicyScope, policy: ReviewPolicyOverride, options: SaveOptions) {

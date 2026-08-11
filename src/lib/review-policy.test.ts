@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { InMemoryReviewPolicyStore, InvalidReviewPolicyError, ReviewPolicyService, ReviewPolicyVersionConflictError, resolveReviewPolicy, safeReviewPolicy } from "./review-policy";
+import { InMemoryReviewPolicyStore, InvalidReviewPolicyError, ReviewPolicyAccessRevokedError, ReviewPolicyService, ReviewPolicyVersionConflictError, resolveReviewPolicy, safeReviewPolicy } from "./review-policy";
 
 describe("review policy resolution", () => {
   it("applies safe defaults, then organization defaults, then repository overrides", () => {
@@ -98,13 +98,19 @@ describe("review policy history", () => {
     await service.saveOrganization(42, { minimumSeverity: "warning" }, { actor: "admin", expectedVersion: 0 });
     await service.saveRepository(repository, { excludedPaths: ["generated/**"] }, { actor: "admin", expectedVersion: 0 });
 
-    await expect(service.deleteRepository(repository)).resolves.toBe(2);
+    await expect(service.deleteRepository(repository, 100)).resolves.toBe(2);
     await expect(service.get({ kind: "repository", ...repository })).resolves.toBeNull();
     await expect(service.history({ kind: "repository", ...repository })).resolves.toEqual([]);
     await expect(service.get({ kind: "organization", installationId: 42 })).resolves.not.toBeNull();
+    await expect(service.saveRepository(repository, {}, { actor: "late", expectedVersion: 0 })).rejects.toBeInstanceOf(ReviewPolicyAccessRevokedError);
+    await service.restoreRepository(repository, 101);
+    await expect(service.saveRepository(repository, {}, { actor: "restored", expectedVersion: 0 })).resolves.toMatchObject({ version: 1 });
 
-    await expect(service.deleteInstallation(42)).resolves.toBe(2);
+    await expect(service.deleteInstallation(42, 200)).resolves.toBe(4);
     await expect(service.get({ kind: "organization", installationId: 42 })).resolves.toBeNull();
     await expect(service.history({ kind: "organization", installationId: 42 })).resolves.toEqual([]);
+    await expect(service.saveOrganization(42, {}, { actor: "late", expectedVersion: 0 })).rejects.toBeInstanceOf(ReviewPolicyAccessRevokedError);
+    await service.restoreInstallation(42, 201);
+    await expect(service.saveOrganization(42, {}, { actor: "restored", expectedVersion: 0 })).resolves.toMatchObject({ version: 1 });
   });
 });
