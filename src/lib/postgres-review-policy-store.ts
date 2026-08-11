@@ -92,4 +92,33 @@ export class PostgresReviewPolicyStore implements ReviewPolicyStore {
       after: row.after_policy,
     }));
   }
+
+  async deleteRepository(scope: Extract<ReviewPolicyScope, { kind: "repository" }>) {
+    const key = columns(scope);
+    const rows = await this.sql.query(
+      `WITH deleted_changes AS (
+         DELETE FROM review_policy_changes
+         WHERE scope_type = 'repository' AND installation_id = $1::bigint AND owner = $2 AND repo = $3 RETURNING 1
+       ), deleted_policy AS (
+         DELETE FROM review_policies
+         WHERE scope_type = 'repository' AND installation_id = $1::bigint AND owner = $2 AND repo = $3 RETURNING 1
+       )
+       SELECT (SELECT count(*) FROM deleted_changes)::integer + (SELECT count(*) FROM deleted_policy)::integer AS deleted`,
+      [key.installationId, key.owner, key.repo],
+    ) as Array<{ deleted: number }>;
+    return rows[0]?.deleted ?? 0;
+  }
+
+  async deleteInstallation(installationId: number) {
+    const rows = await this.sql.query(
+      `WITH deleted_changes AS (
+         DELETE FROM review_policy_changes WHERE installation_id = $1::bigint RETURNING 1
+       ), deleted_policies AS (
+         DELETE FROM review_policies WHERE installation_id = $1::bigint RETURNING 1
+       )
+       SELECT (SELECT count(*) FROM deleted_changes)::integer + (SELECT count(*) FROM deleted_policies)::integer AS deleted`,
+      [installationId],
+    ) as Array<{ deleted: number }>;
+    return rows[0]?.deleted ?? 0;
+  }
 }
