@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   installationAccessible: vi.fn(), repositoryAccessible: vi.fn(),
   deleteInstallationEvents: vi.fn(), deleteRepositoryEvents: vi.fn(), restoreInstallationEvents: vi.fn(), restoreRepositoryEvents: vi.fn(),
   deleteInstallationPolicies: vi.fn(), deleteRepositoryPolicies: vi.fn(),
+  restoreInstallationPolicies: vi.fn(), restoreRepositoryPolicies: vi.fn(),
 }));
 vi.mock("server-only", () => ({}));
 vi.mock("./repository-context-service", () => ({
@@ -26,6 +27,8 @@ vi.mock("./review-event-ledger-service", () => ({
 vi.mock("./review-policy-service", () => ({
   deleteInstallationReviewPolicies: mocks.deleteInstallationPolicies,
   deleteRepositoryReviewPolicies: mocks.deleteRepositoryPolicies,
+  restoreInstallationReviewPolicyAccess: mocks.restoreInstallationPolicies,
+  restoreRepositoryReviewPolicyAccess: mocks.restoreRepositoryPolicies,
 }));
 
 import { restoreInstallationIfCurrentlyAccessible, restoreRepositoryIfCurrentlyAccessible, revokeInstallationIfCurrentlyMissing, revokeRepositoryIfCurrentlyMissing } from "./repository-access-transitions";
@@ -35,7 +38,7 @@ const repositoryTask = { action: "deleteRepository" as const, installationId: 7,
 
 describe("authoritative repository access transitions", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mocks.restoreInstallation.mockResolvedValue(100);
     mocks.restoreRepository.mockResolvedValue(100);
   });
@@ -45,7 +48,7 @@ describe("authoritative repository access transitions", () => {
     await expect(revokeRepositoryIfCurrentlyMissing(repositoryTask)).resolves.toBeNull();
     expect(mocks.deleteRepository).toHaveBeenCalledWith(repositoryTask, 100, true);
     expect(mocks.deleteRepositoryEvents).toHaveBeenCalledWith(repositoryTask, 100, true);
-    expect(mocks.deleteRepositoryPolicies).toHaveBeenCalledWith(repositoryTask);
+    expect(mocks.deleteRepositoryPolicies).toHaveBeenCalledWith(repositoryTask, 100);
     expect(mocks.restoreRepository).not.toHaveBeenCalled();
   });
 
@@ -56,6 +59,16 @@ describe("authoritative repository access transitions", () => {
     await expect(revokeRepositoryIfCurrentlyMissing(repositoryTask)).resolves.toBe("Repository access changed during revocation");
     expect(mocks.restoreRepository).toHaveBeenCalledWith(repositoryTask, 700, true);
     expect(mocks.restoreRepositoryEvents).toHaveBeenCalledWith(repositoryTask, 700, true);
+    expect(mocks.deleteRepositoryPolicies).not.toHaveBeenCalled();
+  });
+
+  it("does not purge policies when installation access returns during revocation", async () => {
+    mocks.installationAccessible.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    mocks.deleteInstallation.mockResolvedValue(700);
+    mocks.restoreInstallation.mockResolvedValue(700);
+    await expect(revokeInstallationIfCurrentlyMissing(installationTask)).resolves.toBe("Installation access changed during revocation");
+    expect(mocks.restoreInstallationPolicies).toHaveBeenCalledWith(7, 700);
+    expect(mocks.deleteInstallationPolicies).not.toHaveBeenCalled();
   });
 
   it("restores active installations before a stale retry exits", async () => {
@@ -105,6 +118,6 @@ describe("authoritative repository access transitions", () => {
     expect(mocks.restoreInstallation).toHaveBeenCalledWith(7, 100, true);
     expect(mocks.deleteInstallation).toHaveBeenCalledWith(7, 100, true);
     expect(mocks.deleteInstallationEvents).toHaveBeenCalledWith(7, 100, true);
-    expect(mocks.deleteInstallationPolicies).toHaveBeenCalledWith(7);
+    expect(mocks.deleteInstallationPolicies).toHaveBeenCalledWith(7, 100);
   });
 });

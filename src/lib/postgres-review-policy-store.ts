@@ -1,6 +1,7 @@
 import type { NeonQueryFunction } from "@neondatabase/serverless";
 import {
   ReviewPolicyVersionConflictError,
+  ReviewPolicyAccessRevokedError,
   type ReviewPolicyChange,
   type ReviewPolicyOverride,
   type ReviewPolicyScope,
@@ -46,13 +47,20 @@ export class PostgresReviewPolicyStore implements ReviewPolicyStore {
     const key = columns(change.scope);
     const rows = await this.sql.query(
       `WITH policy_lock AS MATERIALIZED (
-         SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2::bigint::text || ':' || $3 || '/' || $4, 0))
+         SELECT pg_advisory_xact_lock(hashtextextended('review-policy-installation:' || $2::bigint::text, 0))
+       ), access_allowed AS MATERIALIZED (
+         SELECT 1 FROM policy_lock
+         WHERE NOT EXISTS (
+           SELECT 1 FROM review_policy_access
+           WHERE installation_id = $2::bigint AND status = 'revoked'
+             AND (scope_type = 'installation' OR (scope_type = 'repository' AND owner = $3 AND repo = $4))
+         )
        ), previous AS MATERIALIZED (
          SELECT p.* FROM review_policies p, policy_lock
          WHERE p.scope_type = $1 AND p.installation_id = $2::bigint AND p.owner = $3 AND p.repo = $4
        ), saved AS (
          INSERT INTO review_policies (scope_type, installation_id, owner, repo, version, policy, updated_at, updated_by)
-         SELECT $1, $2::bigint, $3, $4, $5 + 1, $6::jsonb, $7, $8 FROM policy_lock
+         SELECT $1, $2::bigint, $3, $4, $5 + 1, $6::jsonb, $7, $8 FROM access_allowed
          WHERE COALESCE((SELECT version FROM previous), 0) = $5
          ON CONFLICT (scope_type, installation_id, owner, repo) DO UPDATE
          SET version = EXCLUDED.version, policy = EXCLUDED.policy, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by
@@ -68,7 +76,17 @@ export class PostgresReviewPolicyStore implements ReviewPolicyStore {
        SELECT saved.* FROM saved, audited`,
       [key.scopeType, key.installationId, key.owner, key.repo, change.expectedVersion, JSON.stringify(change.policy), change.changedAt, change.actor, change.changeId],
     ) as PolicyRow[];
-    if (!rows[0]) throw new ReviewPolicyVersionConflictError();
+    if (!rows[0]) {
+      const access = await this.sql.query(
+        `SELECT 1 FROM review_policy_access
+         WHERE installation_id = $1::bigint AND status = 'revoked'
+           AND (scope_type = 'installation' OR (scope_type = 'repository' AND owner = $2 AND repo = $3))
+         LIMIT 1`,
+        [key.installationId, key.owner, key.repo],
+      );
+      if (access.length) throw new ReviewPolicyAccessRevokedError();
+      throw new ReviewPolicyVersionConflictError();
+    }
     return storedPolicy(rows[0]);
   }
 
@@ -93,32 +111,81 @@ export class PostgresReviewPolicyStore implements ReviewPolicyStore {
     }));
   }
 
-  async deleteRepository(scope: Extract<ReviewPolicyScope, { kind: "repository" }>) {
+  async deleteRepository(scope: Extract<ReviewPolicyScope, { kind: "repository" }>, changedAt: number) {
     const key = columns(scope);
     const rows = await this.sql.query(
-      `WITH deleted_changes AS (
+      `WITH policy_lock AS MATERIALIZED (
+         SELECT pg_advisory_xact_lock(hashtextextended('review-policy-installation:' || $1::bigint::text, 0))
+       ), access_state AS (
+         INSERT INTO review_policy_access (scope_type, installation_id, owner, repo, status, changed_at)
+         SELECT 'repository', $1::bigint, $2, $3, 'revoked', $4::bigint FROM policy_lock
+         ON CONFLICT (scope_type, installation_id, owner, repo) DO UPDATE
+         SET status = 'revoked', changed_at = EXCLUDED.changed_at
+         WHERE review_policy_access.changed_at <= EXCLUDED.changed_at
+         RETURNING 1
+       ), deleted_changes AS (
          DELETE FROM review_policy_changes
-         WHERE scope_type = 'repository' AND installation_id = $1::bigint AND owner = $2 AND repo = $3 RETURNING 1
+         WHERE scope_type = 'repository' AND installation_id = $1::bigint AND owner = $2 AND repo = $3
+           AND EXISTS (SELECT 1 FROM access_state) RETURNING 1
        ), deleted_policy AS (
          DELETE FROM review_policies
-         WHERE scope_type = 'repository' AND installation_id = $1::bigint AND owner = $2 AND repo = $3 RETURNING 1
+         WHERE scope_type = 'repository' AND installation_id = $1::bigint AND owner = $2 AND repo = $3
+           AND EXISTS (SELECT 1 FROM access_state) RETURNING 1
        )
        SELECT (SELECT count(*) FROM deleted_changes)::integer + (SELECT count(*) FROM deleted_policy)::integer AS deleted`,
-      [key.installationId, key.owner, key.repo],
+      [key.installationId, key.owner, key.repo, changedAt],
     ) as Array<{ deleted: number }>;
     return rows[0]?.deleted ?? 0;
   }
 
-  async deleteInstallation(installationId: number) {
+  async deleteInstallation(installationId: number, changedAt: number) {
     const rows = await this.sql.query(
-      `WITH deleted_changes AS (
-         DELETE FROM review_policy_changes WHERE installation_id = $1::bigint RETURNING 1
+      `WITH policy_lock AS MATERIALIZED (
+         SELECT pg_advisory_xact_lock(hashtextextended('review-policy-installation:' || $1::bigint::text, 0))
+       ), access_state AS (
+         INSERT INTO review_policy_access (scope_type, installation_id, owner, repo, status, changed_at)
+         SELECT 'installation', $1::bigint, '', '', 'revoked', $2::bigint FROM policy_lock
+         ON CONFLICT (scope_type, installation_id, owner, repo) DO UPDATE
+         SET status = 'revoked', changed_at = EXCLUDED.changed_at
+         WHERE review_policy_access.changed_at <= EXCLUDED.changed_at
+         RETURNING 1
+       ), deleted_changes AS (
+         DELETE FROM review_policy_changes WHERE installation_id = $1::bigint AND EXISTS (SELECT 1 FROM access_state) RETURNING 1
        ), deleted_policies AS (
-         DELETE FROM review_policies WHERE installation_id = $1::bigint RETURNING 1
+         DELETE FROM review_policies WHERE installation_id = $1::bigint AND EXISTS (SELECT 1 FROM access_state) RETURNING 1
        )
        SELECT (SELECT count(*) FROM deleted_changes)::integer + (SELECT count(*) FROM deleted_policies)::integer AS deleted`,
-      [installationId],
+      [installationId, changedAt],
     ) as Array<{ deleted: number }>;
     return rows[0]?.deleted ?? 0;
+  }
+
+  async restoreRepository(scope: Extract<ReviewPolicyScope, { kind: "repository" }>, changedAt: number) {
+    const key = columns(scope);
+    await this.sql.query(
+      `WITH policy_lock AS MATERIALIZED (
+         SELECT pg_advisory_xact_lock(hashtextextended('review-policy-installation:' || $1::bigint::text, 0))
+       )
+       INSERT INTO review_policy_access (scope_type, installation_id, owner, repo, status, changed_at)
+       SELECT 'repository', $1::bigint, $2, $3, 'active', $4::bigint FROM policy_lock
+       ON CONFLICT (scope_type, installation_id, owner, repo) DO UPDATE
+       SET status = 'active', changed_at = EXCLUDED.changed_at
+       WHERE review_policy_access.changed_at <= EXCLUDED.changed_at`,
+      [key.installationId, key.owner, key.repo, changedAt],
+    );
+  }
+
+  async restoreInstallation(installationId: number, changedAt: number) {
+    await this.sql.query(
+      `WITH policy_lock AS MATERIALIZED (
+         SELECT pg_advisory_xact_lock(hashtextextended('review-policy-installation:' || $1::bigint::text, 0))
+       )
+       INSERT INTO review_policy_access (scope_type, installation_id, owner, repo, status, changed_at)
+       SELECT 'installation', $1::bigint, '', '', 'active', $2::bigint FROM policy_lock
+       ON CONFLICT (scope_type, installation_id, owner, repo) DO UPDATE
+       SET status = 'active', changed_at = EXCLUDED.changed_at
+       WHERE review_policy_access.changed_at <= EXCLUDED.changed_at`,
+      [installationId, changedAt],
+    );
   }
 }

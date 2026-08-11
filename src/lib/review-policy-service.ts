@@ -22,10 +22,18 @@ export function resolveReviewPolicyFor(scope: { installationId: number; owner: s
   return getReviewPolicyService().resolve(scope);
 }
 
-export function deleteRepositoryReviewPolicies(scope: { installationId: number; owner: string; repo: string }) {
-  return getReviewPolicyService().deleteRepository(scope);
+export function deleteRepositoryReviewPolicies(scope: { installationId: number; owner: string; repo: string }, changedAt: number) {
+  return getReviewPolicyService().deleteRepository(scope, changedAt);
 }
 
-export function deleteInstallationReviewPolicies(installationId: number) {
-  return getReviewPolicyService().deleteInstallation(installationId);
+export function deleteInstallationReviewPolicies(installationId: number, changedAt: number) {
+  return getReviewPolicyService().deleteInstallation(installationId, changedAt);
+}
+
+export function restoreRepositoryReviewPolicyAccess(scope: { installationId: number; owner: string; repo: string }, changedAt: number) {
+  return getReviewPolicyService().restoreRepository(scope, changedAt);
+}
+
+export function restoreInstallationReviewPolicyAccess(installationId: number, changedAt: number) {
+  return getReviewPolicyService().restoreInstallation(installationId, changedAt);
 }

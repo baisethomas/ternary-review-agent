@@ -27,3 +27,14 @@ CREATE TABLE IF NOT EXISTS review_policy_changes (
 
 CREATE INDEX IF NOT EXISTS review_policy_changes_scope_sequence_idx
   ON review_policy_changes (scope_type, installation_id, owner, repo, sequence DESC);
+
+CREATE TABLE IF NOT EXISTS review_policy_access (
+  scope_type TEXT NOT NULL CHECK (scope_type IN ('installation', 'repository')),
+  installation_id BIGINT NOT NULL,
+  owner TEXT NOT NULL DEFAULT '',
+  repo TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL CHECK (status IN ('active', 'revoked')),
+  changed_at BIGINT NOT NULL,
+  PRIMARY KEY (scope_type, installation_id, owner, repo),
+  CHECK ((scope_type = 'installation' AND owner = '' AND repo = '') OR (scope_type = 'repository' AND owner <> '' AND repo <> ''))
+);

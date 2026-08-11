@@ -8,20 +8,22 @@ import {
 import { deleteInstallationReviewEvents, deleteRepositoryReviewEvents, restoreInstallationReviewEventAccess, restoreRepositoryReviewEventAccess } from "./review-event-ledger-service";
 import type { RepositoryIndexTask } from "./repository-index-dispatcher";
 import { installationIsCurrentlyAccessible, repositoryIsCurrentlyAccessible } from "./repository-access-verification";
-import { deleteInstallationReviewPolicies, deleteRepositoryReviewPolicies } from "./review-policy-service";
+import { deleteInstallationReviewPolicies, deleteRepositoryReviewPolicies, restoreInstallationReviewPolicyAccess, restoreRepositoryReviewPolicyAccess } from "./review-policy-service";
 
 async function revokeInstallationAccessState(installationId: number, changedAt: number, forceAuthoritative: boolean) {
   const effectiveAt = await deleteInstallationIndexState(installationId, changedAt, forceAuthoritative);
   if (effectiveAt !== null) {
     await deleteInstallationReviewEvents(installationId, effectiveAt ?? changedAt, forceAuthoritative);
-    await deleteInstallationReviewPolicies(installationId);
   }
   return effectiveAt;
 }
 
 async function activateInstallationAccessState(installationId: number, changedAt: number, forceAuthoritative: boolean) {
   const effectiveAt = await restoreInstallationIndexState(installationId, changedAt, forceAuthoritative);
-  if (effectiveAt !== null) await restoreInstallationReviewEventAccess(installationId, effectiveAt ?? changedAt, forceAuthoritative);
+  if (effectiveAt !== null) {
+    await restoreInstallationReviewEventAccess(installationId, effectiveAt ?? changedAt, forceAuthoritative);
+    await restoreInstallationReviewPolicyAccess(installationId, effectiveAt ?? changedAt);
+  }
   return effectiveAt;
 }
 
@@ -29,14 +31,16 @@ async function revokeRepositoryAccessState(task: { installationId: number; owner
   const effectiveAt = await deleteRepositoryIndexState(task, changedAt, forceAuthoritative);
   if (effectiveAt !== null) {
     await deleteRepositoryReviewEvents(task, effectiveAt ?? changedAt, forceAuthoritative);
-    await deleteRepositoryReviewPolicies(task);
   }
   return effectiveAt;
 }
 
 async function activateRepositoryAccessState(task: { installationId: number; owner: string; repo: string }, changedAt: number, forceAuthoritative: boolean) {
   const effectiveAt = await restoreRepositoryIndexState(task, changedAt, forceAuthoritative);
-  if (effectiveAt !== null) await restoreRepositoryReviewEventAccess(task, effectiveAt ?? changedAt, forceAuthoritative);
+  if (effectiveAt !== null) {
+    await restoreRepositoryReviewEventAccess(task, effectiveAt ?? changedAt, forceAuthoritative);
+    await restoreRepositoryReviewPolicyAccess(task, effectiveAt ?? changedAt);
+  }
   return effectiveAt;
 }
 
@@ -45,6 +49,7 @@ export async function revokeInstallationIfCurrentlyMissing(task: Extract<Reposit
     const restoredAt = await activateInstallationAccessState(task.installationId, task.changedAt, true);
     if (await installationIsCurrentlyAccessible(task.installationId)) return "Installation is currently active";
     await revokeInstallationAccessState(task.installationId, restoredAt ?? task.changedAt, true);
+    await deleteInstallationReviewPolicies(task.installationId, restoredAt ?? task.changedAt);
     return null;
   }
   const effectiveAt = await revokeInstallationAccessState(task.installationId, task.changedAt, true);
@@ -52,6 +57,7 @@ export async function revokeInstallationIfCurrentlyMissing(task: Extract<Reposit
     await activateInstallationAccessState(task.installationId, effectiveAt ?? task.changedAt, true);
     return "Installation access changed during revocation";
   }
+  await deleteInstallationReviewPolicies(task.installationId, effectiveAt ?? task.changedAt);
   return null;
 }
 
@@ -60,7 +66,8 @@ export async function restoreInstallationIfCurrentlyAccessible(task: Extract<Rep
   const effectiveAt = await activateInstallationAccessState(task.installationId, task.changedAt, true);
   if (effectiveAt === null) return "A newer installation access change won";
   if (!await installationIsCurrentlyAccessible(task.installationId)) {
-    await revokeInstallationAccessState(task.installationId, task.changedAt, true);
+    const revokedAt = await revokeInstallationAccessState(task.installationId, task.changedAt, true);
+    await deleteInstallationReviewPolicies(task.installationId, revokedAt ?? task.changedAt);
     return "Installation access changed during restoration";
   }
   return null;
@@ -71,8 +78,13 @@ export async function revokeRepositoryIfCurrentlyMissing(task: Extract<Repositor
     const installationAt = await activateInstallationAccessState(task.installationId, task.changedAt, true);
     const restoredAt = await activateRepositoryAccessState(task, Math.max(task.changedAt, installationAt ?? task.changedAt), true);
     if (await repositoryIsCurrentlyAccessible(task)) return "Repository is currently accessible";
-    if (!await installationIsCurrentlyAccessible(task.installationId)) await revokeInstallationAccessState(task.installationId, installationAt ?? task.changedAt, true);
-    await revokeRepositoryAccessState(task, restoredAt ?? task.changedAt, true);
+    const revokedAt = await revokeRepositoryAccessState(task, restoredAt ?? task.changedAt, true);
+    if (!await installationIsCurrentlyAccessible(task.installationId)) {
+      const installationRevokedAt = await revokeInstallationAccessState(task.installationId, installationAt ?? task.changedAt, true);
+      await deleteInstallationReviewPolicies(task.installationId, installationRevokedAt ?? installationAt ?? task.changedAt);
+    } else {
+      await deleteRepositoryReviewPolicies(task, revokedAt ?? restoredAt ?? task.changedAt);
+    }
     return null;
   }
   const effectiveAt = await revokeRepositoryAccessState(task, task.changedAt, true);
@@ -81,6 +93,7 @@ export async function revokeRepositoryIfCurrentlyMissing(task: Extract<Repositor
     await activateRepositoryAccessState(task, effectiveAt ?? task.changedAt, true);
     return "Repository access changed during revocation";
   }
+  await deleteRepositoryReviewPolicies(task, effectiveAt ?? task.changedAt);
   return null;
 }
 
@@ -90,8 +103,13 @@ export async function restoreRepositoryIfCurrentlyAccessible(task: Extract<Repos
   if (installationAt === null) return "A newer installation access change won";
   if (await activateRepositoryAccessState(task, Math.max(task.changedAt, installationAt), true) === null) return "A newer repository access change won";
   if (!await repositoryIsCurrentlyAccessible(task)) {
-    if (!await installationIsCurrentlyAccessible(task.installationId)) await revokeInstallationAccessState(task.installationId, installationAt, true);
-    await revokeRepositoryAccessState(task, task.changedAt, true);
+    const revokedAt = await revokeRepositoryAccessState(task, task.changedAt, true);
+    if (!await installationIsCurrentlyAccessible(task.installationId)) {
+      const installationRevokedAt = await revokeInstallationAccessState(task.installationId, installationAt, true);
+      await deleteInstallationReviewPolicies(task.installationId, installationRevokedAt ?? installationAt);
+    } else {
+      await deleteRepositoryReviewPolicies(task, revokedAt ?? task.changedAt);
+    }
     return "Repository access changed during restoration";
   }
   return null;

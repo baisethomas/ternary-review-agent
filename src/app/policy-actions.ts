@@ -7,7 +7,7 @@ import { announceDashboardChange } from "@/lib/dashboard-change-service";
 import { getInstalledRepository, getRepositoryDashboardData } from "@/lib/dashboard-data";
 import { PolicyScopeUnavailableError, saveOrganizationPolicySettings, saveRepositoryPolicySettings } from "@/lib/policy-settings-service";
 import { getReviewPolicyService } from "@/lib/review-policy-service";
-import { InvalidReviewPolicyError, ReviewPolicyVersionConflictError, type ReviewPolicyOverride } from "@/lib/review-policy";
+import { InvalidReviewPolicyError, ReviewPolicyAccessRevokedError, ReviewPolicyVersionConflictError, type ReviewPolicyOverride } from "@/lib/review-policy";
 
 export type PolicyActionState = { error: string | null; saved: boolean };
 export const initialPolicyActionState: PolicyActionState = { error: null, saved: false };
@@ -29,7 +29,7 @@ function policy(formData: FormData) {
 }
 
 function errorState(error: unknown): PolicyActionState {
-  if (error instanceof InvalidReviewPolicyError || error instanceof ReviewPolicyVersionConflictError || error instanceof PolicyScopeUnavailableError) return { error: error.message, saved: false };
+  if (error instanceof InvalidReviewPolicyError || error instanceof ReviewPolicyAccessRevokedError || error instanceof ReviewPolicyVersionConflictError || error instanceof PolicyScopeUnavailableError) return { error: error.message, saved: false };
   console.error("Unable to save review policy", error);
   return { error: "The policy could not be saved. Verify GitHub access and try again.", saved: false };
 }

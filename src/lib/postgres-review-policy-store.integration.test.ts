@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { neon } from "@neondatabase/serverless";
 import { describe, expect, it } from "vitest";
 import { PostgresReviewPolicyStore } from "./postgres-review-policy-store";
-import { ReviewPolicyService, ReviewPolicyVersionConflictError } from "./review-policy";
+import { ReviewPolicyAccessRevokedError, ReviewPolicyService, ReviewPolicyVersionConflictError } from "./review-policy";
 
 const enabled = process.env.RUN_POSTGRES_INTEGRATION_TESTS === "1";
 const connectionString = process.env.DATABASE_URL;
@@ -32,16 +32,33 @@ describe.skipIf(!enabled)("PostgresReviewPolicyStore", () => {
       ]);
       await expect(service.saveRepository(repositoryScope, { minimumSeverity: "warning" }, { actor: "stale", expectedVersion: 0 }))
         .rejects.toBeInstanceOf(ReviewPolicyVersionConflictError);
-      await expect(service.deleteRepository(repositoryScope)).resolves.toBe(2);
+      const competingRepositoryService = new ReviewPolicyService(new PostgresReviewPolicyStore(neon(connectionString)));
+      await Promise.allSettled([
+        service.saveRepository(repositoryScope, { minimumSeverity: "warning" }, { actor: "racing-save", expectedVersion: 1 }),
+        competingRepositoryService.deleteRepository(repositoryScope, 100),
+      ]);
       await expect(service.get(repositoryScope)).resolves.toBeNull();
       await expect(service.history(repositoryScope)).resolves.toEqual([]);
       await expect(service.get(organizationScope)).resolves.not.toBeNull();
-      await expect(service.deleteInstallation(installationId)).resolves.toBe(2);
+      await expect(service.saveRepository(repositoryScope, {}, { actor: "late", expectedVersion: 0 })).rejects.toBeInstanceOf(ReviewPolicyAccessRevokedError);
+      await service.restoreRepository(repositoryScope, 101);
+      await service.saveRepository(repositoryScope, {}, { actor: "restored", expectedVersion: 0 });
+
+      const competingInstallationService = new ReviewPolicyService(new PostgresReviewPolicyStore(neon(connectionString)));
+      await Promise.allSettled([
+        service.saveOrganization(installationId, { minimumSeverity: "blocking" }, { actor: "racing-save", expectedVersion: 1 }),
+        competingInstallationService.deleteInstallation(installationId, 200),
+      ]);
       await expect(service.get(organizationScope)).resolves.toBeNull();
       await expect(service.history(organizationScope)).resolves.toEqual([]);
+      await expect(service.get(repositoryScope)).resolves.toBeNull();
+      await expect(service.saveOrganization(installationId, {}, { actor: "late", expectedVersion: 0 })).rejects.toBeInstanceOf(ReviewPolicyAccessRevokedError);
+      await service.restoreInstallation(installationId, 201);
+      await expect(service.saveOrganization(installationId, {}, { actor: "restored", expectedVersion: 0 })).resolves.toMatchObject({ version: 1 });
     } finally {
       await sql.query("DELETE FROM review_policy_changes WHERE installation_id = $1", [installationId]);
       await sql.query("DELETE FROM review_policies WHERE installation_id = $1", [installationId]);
+      await sql.query("DELETE FROM review_policy_access WHERE installation_id = $1", [installationId]);
     }
     await expect(store.get(organizationScope)).resolves.toBeNull();
   });
