@@ -95,7 +95,7 @@ class GitHubGraphqlError extends Error {
 }
 
 function isGitHubGraphqlForbidden(error: unknown) {
-  return error instanceof GitHubGraphqlError && error.errors.some((item) =>
+  return error instanceof GitHubGraphqlError && error.errors.length > 0 && error.errors.every((item) =>
     item.type === "FORBIDDEN" || item.message === "Resource not accessible by integration"
   );
 }

@@ -175,6 +175,30 @@ describe("GitHub finding comments", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    { errors: [{ type: "INTERNAL", message: "Something went wrong" }] },
+    { errors: [
+      { type: "FORBIDDEN", message: "Resource not accessible by integration" },
+      { type: "INTERNAL", message: "Something went wrong" },
+    ] },
+  ])("propagates non-permission review-thread errors", async ({ errors }) => {
+    const marker = "<!-- ternary-finding:finding-fixed -->";
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(Response.json([{ id: 30, body: marker, user: { login: "ternary-review-agent[bot]", type: "Bot" } }]))
+      .mockResolvedValueOnce(Response.json({ data: { repository: { pullRequest: null } }, errors }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(syncFindingReviewComments(
+      "ternary",
+      "agent",
+      8,
+      "new-head",
+      "token",
+      [],
+      { botLogin: "ternary-review-agent[bot]", ...currentHead("new-head") },
+    )).rejects.toThrow("Something went wrong");
+  });
+
   it("resolves only absent findings while updating findings that remain", async () => {
     const activeMarker = "<!-- ternary-finding:finding-active -->";
     const fixedMarker = "<!-- ternary-finding:finding-fixed -->";
