@@ -101,7 +101,7 @@ echo "== guard: a match must survive a payload larger than a pipe buffer =="
 # an early match can kill the producer and make the match read as a non-match.
 big_pad=$(head -c 200000 /dev/zero | tr '\0' 'x')
 assert_guard 2 "git push --force origin main # ${big_pad}"
-assert_guard 2 "# ${big_pad} && git push origin --force"
+assert_guard 2 "echo ${big_pad} && git push origin --force"
 
 echo "== guard: quoted option tokens must still block =="
 # Bash accepts quoted options; a leading quote must not hide the flag.
@@ -467,6 +467,32 @@ else
   fail=$((fail + 1)); echo "FAIL: non-directory state path should be refused while checks still run"
 fi
 rm -rf "$looseproj" "$loosestate" "$nodir" "$nostate"
+
+echo "== guard: global git options before an assembled subcommand =="
+# `-C dir` takes a separate value; a flags-only skip mistakes it for the subcommand.
+assert_guard 2 'git -C dir p${EMPTY}ush --force'
+assert_guard 2 'git -C /tmp/x p${EMPTY}ush --force origin main'
+assert_guard 2 'git -c user.name=x p${EMPTY}ush --force'
+assert_guard 2 'git --git-dir=.git p${EMPTY}ush --force'
+assert_guard 2 'git -C dir pu{s,}sh --force'
+assert_guard 0 'git -C dir status'
+assert_guard 0 'git -C dir log --oneline -5'
+
+echo "== guard: a wholly commented command is not a command =="
+# Narrow on purpose: comments cannot be stripped in general once quotes are
+# gone, and dropping the rest of a line would hide anything after a `;`.
+assert_guard 0 '# git push --force'
+assert_guard 0 '   # remember: never run rm -rf'
+assert_guard 0 '# line one
+# line two with git push --force'
+# ...but a comment followed by a real command must still block.
+assert_guard 2 '# harmless note
+git push origin --force'
+assert_guard 2 'echo "#" ; git push origin --force'
+
+echo "== lint hook: unreachable project dir must not read as linted =="
+printf '{"tool_input":{"file_path":"/tmp/x.ts"}}' | CLAUDE_PROJECT_DIR=/nonexistent-dir-xyz ./lint-edited-file.sh >/dev/null 2>&1
+[ $? -eq 2 ] && pass=$((pass + 1)) || { fail=$((fail + 1)); echo "FAIL: lint hook should exit 2 when it cannot enter the project dir"; }
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

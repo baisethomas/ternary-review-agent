@@ -31,7 +31,12 @@ case "$file" in
   *) exit 0 ;;
 esac
 
-cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
+# Say so rather than skipping silently: an unlinted edit that looks linted is
+# the failure mode this hook exists to remove.
+if ! cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null; then
+  echo "lint hook disabled: cannot enter CLAUDE_PROJECT_DIR (${CLAUDE_PROJECT_DIR:-.}), so ${file} was not linted." >&2
+  exit 2
+fi
 
 # Capture rather than pipe: a pipeline would report tail's status, not ESLint's.
 output=$(npx eslint --no-warn-ignored "$file" 2>&1)

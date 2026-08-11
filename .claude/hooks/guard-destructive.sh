@@ -47,6 +47,17 @@ esac
 # Parsed cleanly and there is genuinely no command to inspect.
 [ -z "$command" ] && exit 0
 
+# A command whose every line is blank or a comment cannot execute anything, so
+# blocking it is pure false positive. Only this wholly-commented case is
+# exempted: stripping comments in general would be unsafe here, because quotes
+# are removed during normalization, so a `#` inside a string or a URL fragment
+# is indistinguishable from a real comment — and dropping the rest of the line
+# would hide anything after a `;`, turning `echo "#" ; git push --force` into
+# an allow. Narrow exemption, no new bypass.
+if ! printf '%s\n' "$command" | grep -qvE '^[[:space:]]*(#.*)?$'; then
+  exit 0
+fi
+
 # Flatten newlines/continuations, and strip quote characters so that quoted
 # option tokens (git push '--force') match the same patterns as bare ones.
 # Deliberately over-matches rather than under-matches: this guard's failure
@@ -134,7 +145,11 @@ has_raw "(^|[;&|][[:space:]]*)[^[:space:];&|]*(\\\$|${BRACE})" \
 
 # 2. The git subcommand contains an expansion anywhere: `git "$sub" --force`,
 #    `git p${EMPTY}ush --force`, or `git pu{s,}sh` — none contain "push".
-has_raw "git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*[^[:space:];&|]*(\\\$|${BRACE})" \
+#    Global options may sit in between, including the forms that take a separate
+#    value (`git -C dir p${EMPTY}ush`), which a flags-only skip would mistake
+#    for the subcommand itself.
+GIT_GLOBALS='((-[cC][[:space:]]+[^[:space:]]+|--(git-dir|work-tree|namespace|exec-path)(=[^[:space:]]+)?|-[^[:space:]]+)[[:space:]]+)*'
+has_raw "git[[:space:]]+${GIT_GLOBALS}[^[:space:];&|]*(\\\$|${BRACE})" \
   && block "a git subcommand assembled by the shell, which cannot be checked"
 
 # 3. An expansion anywhere in a command whose subcommand is already destructive
