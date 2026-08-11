@@ -43,6 +43,17 @@ git_sub() { printf 'git[[:space:]]+([^|;&]*[[:space:]]+)?%s([[:space:]]|$)' "$1"
 has "$(git_sub push)" && has "$FORCE_FLAG" \
   && block "a force push"
 
+# A push can delete a shared remote branch without the word "branch" appearing:
+# `git push origin --delete x`, `-d x`, or a refspec with an empty source (:x).
+has "$(git_sub push)" \
+  && { has '(^|[[:space:]])(--delete|-[[:alpha:]]*d[[:alpha:]]*)([[:space:]]|$)' \
+       || has '(^|[[:space:]]):[^[:space:]]+'; } \
+  && block "a remote branch deletion"
+
+# A leading + on a refspec forces the push, bypassing the --force flag check.
+has "$(git_sub push)" && has '(^|[[:space:]])\+[^[:space:]]+' \
+  && block "a force-push refspec"
+
 has "$(git_sub reset)" && has '(^|[[:space:]])--hard([[:space:]]|$)' \
   && block "git reset --hard (discards committed and working-tree state)"
 

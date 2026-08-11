@@ -44,6 +44,14 @@ assert_guard 2 'git branch -d -f feature/x'
 assert_guard 2 'git branch -df feature/x'
 assert_guard 2 'git branch -fd feature/x'
 assert_guard 2 'git branch --delete feature/x'
+# A push can delete or force without the word "branch" or a --force flag.
+assert_guard 2 'git push origin --delete feature/x'
+assert_guard 2 'git push --delete origin feature/x'
+assert_guard 2 'git push origin -d feature/x'
+assert_guard 2 'git push origin :feature/x'
+assert_guard 2 'git push origin :refs/heads/feature/x'
+assert_guard 2 'git push origin +feature/x'
+assert_guard 2 'git push origin +refs/heads/main:refs/heads/main'
 assert_guard 2 'git clean -fd'
 assert_guard 2 'git filter-branch --tree-filter rm -rf secrets'
 assert_guard 2 'rm -rf node_modules'
@@ -68,6 +76,13 @@ assert_guard 0 'git log --oneline -5'
 assert_guard 0 'git reset HEAD~1'
 assert_guard 0 'git branch --show-current'
 assert_guard 0 'git branch -m old new'
+# Ordinary refspecs and flags must not be caught by the deletion/force patterns.
+assert_guard 0 'git push origin HEAD:main'
+assert_guard 0 'git push origin main:main'
+assert_guard 0 'git push origin refs/heads/main:refs/heads/main'
+assert_guard 0 'git push --dry-run origin main'
+assert_guard 0 'git push -u origin feature/x'
+assert_guard 0 'git push --set-upstream origin feature/x'
 
 echo "== guard: a match must survive a payload larger than a pipe buffer =="
 # Regression for the pipefail/SIGPIPE trap: if the matcher pipes into `grep -q`,
