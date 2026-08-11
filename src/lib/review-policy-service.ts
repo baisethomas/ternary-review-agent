@@ -21,3 +21,11 @@ export function getReviewPolicyService() {
 export function resolveReviewPolicyFor(scope: { installationId: number; owner: string; repo: string }) {
   return getReviewPolicyService().resolve(scope);
 }
+
+export function deleteRepositoryReviewPolicies(scope: { installationId: number; owner: string; repo: string }) {
+  return getReviewPolicyService().deleteRepository(scope);
+}
+
+export function deleteInstallationReviewPolicies(installationId: number) {
+  return getReviewPolicyService().deleteInstallation(installationId);
+}

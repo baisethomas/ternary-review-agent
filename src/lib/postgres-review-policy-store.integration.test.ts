@@ -32,6 +32,13 @@ describe.skipIf(!enabled)("PostgresReviewPolicyStore", () => {
       ]);
       await expect(service.saveRepository(repositoryScope, { minimumSeverity: "warning" }, { actor: "stale", expectedVersion: 0 }))
         .rejects.toBeInstanceOf(ReviewPolicyVersionConflictError);
+      await expect(service.deleteRepository(repositoryScope)).resolves.toBe(2);
+      await expect(service.get(repositoryScope)).resolves.toBeNull();
+      await expect(service.history(repositoryScope)).resolves.toEqual([]);
+      await expect(service.get(organizationScope)).resolves.not.toBeNull();
+      await expect(service.deleteInstallation(installationId)).resolves.toBe(2);
+      await expect(service.get(organizationScope)).resolves.toBeNull();
+      await expect(service.history(organizationScope)).resolves.toEqual([]);
     } finally {
       await sql.query("DELETE FROM review_policy_changes WHERE installation_id = $1", [installationId]);
       await sql.query("DELETE FROM review_policies WHERE installation_id = $1", [installationId]);

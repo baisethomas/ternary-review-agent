@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   deleteInstallation: vi.fn(), deleteRepository: vi.fn(), restoreInstallation: vi.fn(), restoreRepository: vi.fn(),
   installationAccessible: vi.fn(), repositoryAccessible: vi.fn(),
   deleteInstallationEvents: vi.fn(), deleteRepositoryEvents: vi.fn(), restoreInstallationEvents: vi.fn(), restoreRepositoryEvents: vi.fn(),
+  deleteInstallationPolicies: vi.fn(), deleteRepositoryPolicies: vi.fn(),
 }));
 vi.mock("server-only", () => ({}));
 vi.mock("./repository-context-service", () => ({
@@ -21,6 +22,10 @@ vi.mock("./review-event-ledger-service", () => ({
   deleteRepositoryReviewEvents: mocks.deleteRepositoryEvents,
   restoreInstallationReviewEventAccess: mocks.restoreInstallationEvents,
   restoreRepositoryReviewEventAccess: mocks.restoreRepositoryEvents,
+}));
+vi.mock("./review-policy-service", () => ({
+  deleteInstallationReviewPolicies: mocks.deleteInstallationPolicies,
+  deleteRepositoryReviewPolicies: mocks.deleteRepositoryPolicies,
 }));
 
 import { restoreInstallationIfCurrentlyAccessible, restoreRepositoryIfCurrentlyAccessible, revokeInstallationIfCurrentlyMissing, revokeRepositoryIfCurrentlyMissing } from "./repository-access-transitions";
@@ -40,6 +45,7 @@ describe("authoritative repository access transitions", () => {
     await expect(revokeRepositoryIfCurrentlyMissing(repositoryTask)).resolves.toBeNull();
     expect(mocks.deleteRepository).toHaveBeenCalledWith(repositoryTask, 100, true);
     expect(mocks.deleteRepositoryEvents).toHaveBeenCalledWith(repositoryTask, 100, true);
+    expect(mocks.deleteRepositoryPolicies).toHaveBeenCalledWith(repositoryTask);
     expect(mocks.restoreRepository).not.toHaveBeenCalled();
   });
 
@@ -99,5 +105,6 @@ describe("authoritative repository access transitions", () => {
     expect(mocks.restoreInstallation).toHaveBeenCalledWith(7, 100, true);
     expect(mocks.deleteInstallation).toHaveBeenCalledWith(7, 100, true);
     expect(mocks.deleteInstallationEvents).toHaveBeenCalledWith(7, 100, true);
+    expect(mocks.deleteInstallationPolicies).toHaveBeenCalledWith(7);
   });
 });

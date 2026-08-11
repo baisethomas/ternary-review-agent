@@ -91,4 +91,20 @@ describe("review policy history", () => {
 
     await expect(service.resolveOrganization(42)).resolves.toMatchObject({ model: "anthropic/claude-sonnet-4.5" });
   });
+
+  it("purges repository and installation policies with their audit history", async () => {
+    const service = new ReviewPolicyService(new InMemoryReviewPolicyStore(), () => "2026-08-10T20:00:00.000Z");
+    const repository = { installationId: 42, owner: "Ternary", repo: "App" };
+    await service.saveOrganization(42, { minimumSeverity: "warning" }, { actor: "admin", expectedVersion: 0 });
+    await service.saveRepository(repository, { excludedPaths: ["generated/**"] }, { actor: "admin", expectedVersion: 0 });
+
+    await expect(service.deleteRepository(repository)).resolves.toBe(2);
+    await expect(service.get({ kind: "repository", ...repository })).resolves.toBeNull();
+    await expect(service.history({ kind: "repository", ...repository })).resolves.toEqual([]);
+    await expect(service.get({ kind: "organization", installationId: 42 })).resolves.not.toBeNull();
+
+    await expect(service.deleteInstallation(42)).resolves.toBe(2);
+    await expect(service.get({ kind: "organization", installationId: 42 })).resolves.toBeNull();
+    await expect(service.history({ kind: "organization", installationId: 42 })).resolves.toEqual([]);
+  });
 });

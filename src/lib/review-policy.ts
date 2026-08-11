@@ -56,6 +56,8 @@ export interface ReviewPolicyStore {
   get(scope: ReviewPolicyScope): Promise<StoredReviewPolicy | null>;
   save(change: SaveReviewPolicy): Promise<StoredReviewPolicy>;
   history(scope: ReviewPolicyScope, limit?: number): Promise<ReviewPolicyChange[]>;
+  deleteRepository(scope: RepositoryPolicyScope): Promise<number>;
+  deleteInstallation(installationId: number): Promise<number>;
 }
 
 export class ReviewPolicyVersionConflictError extends Error {
@@ -180,6 +182,28 @@ export class InMemoryReviewPolicyStore implements ReviewPolicyStore {
     const key = scopeKey(scope);
     return structuredClone(this.changes.filter((change) => scopeKey(change.scope) === key).slice(-limit).reverse());
   }
+
+  async deleteRepository(scope: RepositoryPolicyScope) {
+    const key = scopeKey(scope);
+    const deletedPolicy = this.policies.delete(key) ? 1 : 0;
+    const retainedChanges = this.changes.filter((change) => scopeKey(change.scope) !== key);
+    const deletedChanges = this.changes.length - retainedChanges.length;
+    this.changes.splice(0, this.changes.length, ...retainedChanges);
+    return deletedPolicy + deletedChanges;
+  }
+
+  async deleteInstallation(installationId: number) {
+    let deletedPolicies = 0;
+    for (const [key, policy] of this.policies) {
+      if (policy.scope.installationId !== installationId) continue;
+      this.policies.delete(key);
+      deletedPolicies += 1;
+    }
+    const retainedChanges = this.changes.filter((change) => change.scope.installationId !== installationId);
+    const deletedChanges = this.changes.length - retainedChanges.length;
+    this.changes.splice(0, this.changes.length, ...retainedChanges);
+    return deletedPolicies + deletedChanges;
+  }
 }
 
 type SaveOptions = { actor: string; expectedVersion: number };
@@ -219,6 +243,14 @@ export class ReviewPolicyService {
 
   history(scope: ReviewPolicyScope, limit?: number) {
     return this.store.history(scope, limit);
+  }
+
+  deleteRepository(scope: Omit<RepositoryPolicyScope, "kind">) {
+    return this.store.deleteRepository({ kind: "repository", ...scope });
+  }
+
+  deleteInstallation(installationId: number) {
+    return this.store.deleteInstallation(installationId);
   }
 
   private async save(scope: ReviewPolicyScope, policy: ReviewPolicyOverride, options: SaveOptions) {

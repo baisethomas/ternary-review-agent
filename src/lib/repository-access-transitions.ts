@@ -8,10 +8,14 @@ import {
 import { deleteInstallationReviewEvents, deleteRepositoryReviewEvents, restoreInstallationReviewEventAccess, restoreRepositoryReviewEventAccess } from "./review-event-ledger-service";
 import type { RepositoryIndexTask } from "./repository-index-dispatcher";
 import { installationIsCurrentlyAccessible, repositoryIsCurrentlyAccessible } from "./repository-access-verification";
+import { deleteInstallationReviewPolicies, deleteRepositoryReviewPolicies } from "./review-policy-service";
 
 async function revokeInstallationAccessState(installationId: number, changedAt: number, forceAuthoritative: boolean) {
   const effectiveAt = await deleteInstallationIndexState(installationId, changedAt, forceAuthoritative);
-  if (effectiveAt !== null) await deleteInstallationReviewEvents(installationId, effectiveAt ?? changedAt, forceAuthoritative);
+  if (effectiveAt !== null) {
+    await deleteInstallationReviewEvents(installationId, effectiveAt ?? changedAt, forceAuthoritative);
+    await deleteInstallationReviewPolicies(installationId);
+  }
   return effectiveAt;
 }
 
@@ -23,7 +27,10 @@ async function activateInstallationAccessState(installationId: number, changedAt
 
 async function revokeRepositoryAccessState(task: { installationId: number; owner: string; repo: string }, changedAt: number, forceAuthoritative: boolean) {
   const effectiveAt = await deleteRepositoryIndexState(task, changedAt, forceAuthoritative);
-  if (effectiveAt !== null) await deleteRepositoryReviewEvents(task, effectiveAt ?? changedAt, forceAuthoritative);
+  if (effectiveAt !== null) {
+    await deleteRepositoryReviewEvents(task, effectiveAt ?? changedAt, forceAuthoritative);
+    await deleteRepositoryReviewPolicies(task);
+  }
   return effectiveAt;
 }
 
