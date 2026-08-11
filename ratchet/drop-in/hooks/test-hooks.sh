@@ -38,6 +38,12 @@ assert_guard 2 'git push origin main --force-if-includes'
 assert_guard 2 'git reset --hard origin/main'
 assert_guard 2 'git branch -D feature/x'
 assert_guard 2 'git branch --delete --force feature/x'
+# Branch deletion is a hard stop on its own, in every flag order/cluster.
+assert_guard 2 'git branch -d feature/x'
+assert_guard 2 'git branch -d -f feature/x'
+assert_guard 2 'git branch -df feature/x'
+assert_guard 2 'git branch -fd feature/x'
+assert_guard 2 'git branch --delete feature/x'
 assert_guard 2 'git clean -fd'
 assert_guard 2 'git filter-branch --tree-filter rm -rf secrets'
 assert_guard 2 'rm -rf node_modules'
@@ -60,6 +66,15 @@ assert_guard 0 'ls -f'
 assert_guard 0 'grep -rf patterns.txt src'
 assert_guard 0 'git log --oneline -5'
 assert_guard 0 'git reset HEAD~1'
+assert_guard 0 'git branch --show-current'
+assert_guard 0 'git branch -m old new'
+
+echo "== guard: a match must survive a payload larger than a pipe buffer =="
+# Regression for the pipefail/SIGPIPE trap: if the matcher pipes into `grep -q`,
+# an early match can kill the producer and make the match read as a non-match.
+big_pad=$(head -c 200000 /dev/zero | tr '\0' 'x')
+assert_guard 2 "git push --force origin main # ${big_pad}"
+assert_guard 2 "# ${big_pad} && git push origin --force"
 
 echo "== guard: malformed / empty payloads must not crash or block =="
 echo '{}' | ./guard-destructive.sh >/dev/null 2>&1

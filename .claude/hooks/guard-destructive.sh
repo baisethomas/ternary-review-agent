@@ -25,8 +25,13 @@ block() {
   exit 2
 }
 
-has() { printf '%s' "$norm" | grep -qE "$1"; }
-has_i() { printf '%s' "$norm" | grep -qiE "$1"; }
+# Here-strings, not `printf | grep -q`: with `pipefail` set, a grep that exits
+# early on a match can SIGPIPE the producer, and the pipeline then reports
+# failure — i.e. a match would read as NO match, silently unblocking the guard.
+# Whether that fires depends on the platform's grep (GNU exits immediately,
+# macOS drains its input), so this avoids the pipeline entirely.
+has() { grep -qE "$1" <<<"$norm"; }
+has_i() { grep -qiE "$1" <<<"$norm"; }
 
 # A force flag anywhere in the argument list, in any order, including clustered
 # short flags (-fd) and lease variants (--force-with-lease, --force-if-includes).
@@ -41,9 +46,11 @@ has "$(git_sub push)" && has "$FORCE_FLAG" \
 has "$(git_sub reset)" && has '(^|[[:space:]])--hard([[:space:]]|$)' \
   && block "git reset --hard (discards committed and working-tree state)"
 
+# AGENTS.md makes branch deletion itself a hard stop, so this matches -d and -D
+# in any clustered order (-df, -fd) plus --delete, regardless of force.
 has "$(git_sub branch)" \
-  && { has '(^|[[:space:]])-[[:alpha:]]*D([[:space:]]|$)' || { has '(^|[[:space:]])--delete([[:space:]]|$)' && has "$FORCE_FLAG"; }; } \
-  && block "a force branch deletion"
+  && { has '(^|[[:space:]])-[[:alpha:]]*[dD]([[:alpha:]]*)?([[:space:]]|$)' || has '(^|[[:space:]])--delete([[:space:]]|$)'; } \
+  && block "a branch deletion"
 
 has "$(git_sub clean)" && has "$FORCE_FLAG" \
   && block "git clean -f (deletes untracked files)"
