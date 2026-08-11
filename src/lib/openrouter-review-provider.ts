@@ -1,5 +1,6 @@
 import type { ReviewFinding, ReviewResult, SandboxResult } from "./types";
 import { isRetryableHttpStatus, NonRetryableReviewError } from "./review-errors";
+import type { ResolvedReviewPolicy } from "./review-policy";
 
 const systemPrompt = `You are Ternary, a senior code review agent. Review only material problems introduced by this pull request. Prioritize correctness, security, concurrency, data loss, and missing tests. Do not report style preferences. Return strict JSON with: verdict (approve|request_changes|comment), summary, and findings. Each finding has a ruleId for its stable review-rule family (for example security-authorization or correctness-concurrency), plus a unique findingKey that combines that rule with the affected symbol and remains stable when line numbers or wording change. Set supersedesFindingKey only when this finding explicitly replaces a semantically equivalent finding key from an earlier review; otherwise set it to null. Each finding also has severity (blocking|warning|suggestion), file, optional line, title, explanation, and optional suggestedFix.`;
 
@@ -127,11 +128,12 @@ export async function generateOpenRouterReview(
   diff: string,
   sandbox: SandboxResult,
   repositoryContext: string,
+  policy?: ResolvedReviewPolicy,
 ): Promise<ReviewResult> {
   if (!process.env.OPENROUTER_API_KEY) return fallbackReview(sandbox);
   const maxDiffChars = Number(process.env.MAX_DIFF_CHARS ?? 160_000);
   const input = `PR DIFF:\n${diff.slice(0, maxDiffChars)}\n\nREPOSITORY CONTEXT:\n${repositoryContext || "No matching repository context was available."}\n\nSANDBOX RESULT:\n${JSON.stringify(sandbox)}`;
-  const model = process.env.OPENROUTER_MODEL ?? "openai/gpt-5.6-terra";
+  const model = policy?.model ?? process.env.OPENROUTER_MODEL ?? "openai/gpt-5.6-terra";
   const startedAt = Date.now();
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",

@@ -35,3 +35,23 @@ _Avoid_: Comment, issue, warning
 **Finding State**:
 The current projection of a Finding as open, fixed, dismissed, superseded, or stale, derived from immutable Review Events and GitHub developer feedback.
 _Avoid_: Comment status, mutable finding row
+
+**Review Policy**:
+Versioned instructions that control when Ternary reviews code and how it evaluates a Review within an Organization or Repository Scope.
+_Avoid_: Settings blob, reviewer config
+
+**Organization Policy**:
+The default Review Policy owned by one GitHub App installation account and inherited by its repositories.
+_Avoid_: Global policy, installation config
+
+**Repository Policy Override**:
+The explicitly supplied Review Policy fields that replace corresponding Organization Policy fields for one Repository Scope.
+_Avoid_: Repository policy, copied defaults
+
+**Resolved Review Policy**:
+The complete Review Policy produced deterministically from safe defaults, an Organization Policy, and a Repository Policy Override, in that order.
+_Avoid_: Effective config, merged settings
+
+**Policy Change**:
+An immutable audit fact recording who changed a Review Policy, when it changed, and its before-and-after values.
+_Avoid_: Settings log, update record

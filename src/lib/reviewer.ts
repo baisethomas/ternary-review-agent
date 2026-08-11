@@ -8,6 +8,8 @@ import type { ReviewFinding, ReviewRequest, ReviewResult } from "./types";
 import { findingIdentity } from "./review-event-ledger";
 import { formatFindingComment } from "./finding-comment";
 import { generateOpenRouterReview } from "./openrouter-review-provider";
+import { safeReviewPolicy } from "./review-policy";
+import { applyReviewPolicyToResult, filterReviewDiff } from "./review-policy-execution";
 
 function formatReview(result: ReviewResult) {
   const icon = result.verdict === "approve" ? "✅" : result.verdict === "request_changes" ? "⛔" : "💬";
@@ -21,6 +23,7 @@ function formatReview(result: ReviewResult) {
 }
 
 export async function runReview(request: ReviewRequest & { id?: string }, lease?: ReviewLease) {
+  const policy = request.policy ?? { ...safeReviewPolicy, model: process.env.OPENROUTER_MODEL ?? safeReviewPolicy.model };
   const token = await createInstallationToken(request.installationId);
   await lease?.assertActive();
   const check = await getOrCreateCheckRun(request.owner, request.repo, request.headSha, token, request.id);
@@ -30,8 +33,10 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
       getPullRequestDiff(request.owner, request.repo, request.pullNumber, token),
       runInSandbox(request, token),
     ]);
-    const repositoryContext = await getRepositoryReviewContext(request, token, diff);
-    const result = await generateOpenRouterReview(diff, sandbox, repositoryContext.text);
+    const reviewDiff = filterReviewDiff(diff, policy.excludedPaths);
+    const repositoryContext = await getRepositoryReviewContext(request, token, reviewDiff);
+    const generated = await generateOpenRouterReview(reviewDiff, sandbox, repositoryContext.text, policy);
+    const result = applyReviewPolicyToResult(generated, policy);
     const marker = request.id ? `\n\n<!-- ternary-review-job:${request.id} -->` : "";
     const markdown = `${formatReview(result)}${marker}`;
     await lease?.assertActive();

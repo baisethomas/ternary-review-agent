@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   recordHeadChanged: vi.fn(async () => undefined),
   ingestFeedback: vi.fn(async () => ({ accepted: true, findingId: "finding-auth" })),
   getApp: vi.fn(async () => ({ slug: "ternary-review-agent" })),
+  resolvePolicy: vi.fn(),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -25,11 +26,18 @@ vi.mock("./review-event-ledger-service", () => ({
 vi.mock("./review-submission", () => ({ webhookReviewIdempotencyKeys: vi.fn(() => []) }));
 vi.mock("./github-finding-feedback", () => ({ ingestGitHubFindingFeedback: mocks.ingestFeedback }));
 vi.mock("./github", () => ({ getGitHubApp: mocks.getApp }));
+vi.mock("./review-policy-service", () => ({ resolveReviewPolicyFor: mocks.resolvePolicy }));
 
 import { handleGitHubWebhook } from "./github-webhook-events";
 
 describe("repository index webhook events", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.resolvePolicy.mockResolvedValue({
+      automaticReview: { opened: true, reopened: true, synchronize: true, readyForReview: true },
+      minimumSeverity: "suggestion", model: "openai/gpt-5.6-terra", reviewCommands: [], excludedPaths: [],
+    });
+  });
 
   it("indexes the current default branch when watched repository access is added", async () => {
     const response = await handleGitHubWebhook("installation_repositories", JSON.stringify({
@@ -131,7 +139,26 @@ describe("repository index webhook events", () => {
 
     expect(response.status).toBe(202);
     expect(mocks.recordReopened).toHaveBeenCalledWith(expect.objectContaining({ pullNumber: 8 }), { deliveryId: "delivery-reopened", reopenedAt: "2026-08-09T04:00:00.000Z" });
-    expect(mocks.enqueueReview).toHaveBeenCalledOnce();
+    expect(mocks.enqueueReview).toHaveBeenCalledWith(expect.objectContaining({
+      policy: expect.objectContaining({ model: "openai/gpt-5.6-terra" }),
+    }), expect.anything(), "delivery-reopened");
+  });
+
+  it("does not submit an automatic review when the resolved policy disables that event", async () => {
+    mocks.resolvePolicy.mockResolvedValueOnce({
+      automaticReview: { opened: false, reopened: true, synchronize: true, readyForReview: true },
+      minimumSeverity: "suggestion", model: "openai/gpt-5.6-terra", reviewCommands: [], excludedPaths: [],
+    });
+    const response = await handleGitHubWebhook("pull_request", JSON.stringify({
+      action: "opened",
+      installation: { id: 7 },
+      repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" },
+      pull_request: { number: 8, draft: false, head: { sha: "head" } },
+    }), "delivery-policy-disabled");
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Automatic review is disabled by policy for opened" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
   });
 
   it("records the previous and current heads before reviewing a synchronized pull request", async () => {
