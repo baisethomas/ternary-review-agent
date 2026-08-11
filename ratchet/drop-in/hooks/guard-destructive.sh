@@ -82,6 +82,24 @@ FORCE_FLAG='(^|[[:space:]])(-[[:alpha:]]*f[[:alpha:]]*|--force[^[:space:]]*)([[:
 # `git <subcommand>` allowing global options in between, e.g. `git -C dir push`.
 git_sub() { printf 'git[[:space:]]+([^|;&]*[[:space:]]+)?%s([[:space:]]|$)' "$1"; }
 
+# --- Git aliases -------------------------------------------------------------
+# `git p` can be `push --force`, and `git -c alias.p='push --force' p` defines
+# that inline. The literal subcommand is `p`, so every rule below would miss it.
+# An inline definition is uninspectable; a configured one is resolved from the
+# repo so the rules see the real subcommand.
+has_raw '(^|[[:space:]])-c[[:space:]]*alias\.' \
+  && block "an inline git alias definition, which cannot be checked"
+
+if [[ "$norm" =~ (^|[[:space:]])git[[:space:]]+((-[^[:space:]]+[[:space:]]+)*)([^[:space:];\&\|-][^[:space:];\&\|]*) ]]; then
+  git_subcmd="${BASH_REMATCH[4]}"
+  alias_expansion=$(cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null \
+    && git config --get "alias.${git_subcmd}" 2>/dev/null)
+  if [ -n "${alias_expansion:-}" ]; then
+    norm="${norm/git $git_subcmd/git $alias_expansion}"
+    norm_raw="${norm_raw/git $git_subcmd/git $alias_expansion}"
+  fi
+fi
+
 # --- Shell indirection -------------------------------------------------------
 # This guard matches literal text, but bash executes what expansions produce:
 # `sub=push; git "$sub" --force` never contains "git push". Pattern matching

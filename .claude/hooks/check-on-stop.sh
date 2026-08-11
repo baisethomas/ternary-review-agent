@@ -32,7 +32,10 @@ session=$(payload_field "$input" '.session_id' '?.session_id') || session=""
 # on the stop attempt that follows a block, so returning 0 here would release a
 # still-failing suite after a single message — the model could ignore the
 # failure and finish immediately, and MAX_BLOCKS would never be reached. The
-# checks are re-run every time; MAX_BLOCKS alone bounds the loop.
+# checks are re-run every time; MAX_BLOCKS alone bounds the loop. It is used
+# only far below, as the fallback bound when the counter cannot be persisted.
+active=$(payload_field "$input" '.stop_hook_active' '?.stop_hook_active') || active="false"
+[ "$active" = "true" ] || active="false"
 
 cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
 
@@ -72,9 +75,23 @@ if [ -n "$counter" ] && [ -f "$counter" ] && [ ! -L "$counter" ]; then
   [ -n "$raw" ] && prev=$raw
 fi
 blocks=$((prev + 1))
+
+# Persistence can fail (unwritable TMPDIR, refused state dir). Without it every
+# invocation restarts at blocks=1 and the cap is never reached, which traps the
+# session on exactly the environmental failure the cap exists to escape. So when
+# state cannot be kept, fall back to stop_hook_active as the bound: block once,
+# release on the retry. Weaker than the counter, but bounded.
+persisted=0
 if [ -n "$counter" ]; then
   rm -f "$counter" 2>/dev/null
-  (umask 077; printf '%s\n' "$blocks" > "$counter" 2>/dev/null) || true
+  if (umask 077; printf '%s\n' "$blocks" > "$counter" 2>/dev/null); then
+    [ -s "$counter" ] && persisted=1
+  fi
+fi
+
+if [ "$persisted" -eq 0 ] && [ "$active" = "true" ]; then
+  echo "Verification is still failing, but the stop-gate counter cannot be persisted, so the retry cap cannot be enforced. Releasing rather than trapping the session — report the failure honestly instead of claiming success." >&2
+  exit 0
 fi
 
 if [ "$blocks" -gt "$MAX_BLOCKS" ]; then

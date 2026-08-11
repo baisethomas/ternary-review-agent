@@ -203,6 +203,34 @@ assert_guard 0 'npm test -- --grep "$PATTERN"'
 assert_guard 0 'git diff "$BASE"..HEAD'
 assert_guard 0 'git status --porcelain'
 
+echo "== guard: git aliases must not hide the real subcommand =="
+# An inline alias definition is uninspectable and blocks outright.
+assert_guard 2 "git -c alias.p='push --force' p origin main"
+assert_guard 2 'git -c alias.nuke="reset --hard" nuke'
+# A configured alias is resolved from the repo before the rules run.
+aliasrepo=$(mktemp -d)
+git -C "$aliasrepo" init -q 2>/dev/null
+git -C "$aliasrepo" config alias.p 'push --force'
+git -C "$aliasrepo" config alias.st 'status --short'
+assert_guard_in() {
+  local expected="$1" cmd="$2" actual
+  printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(json_str "$cmd")" \
+    | CLAUDE_PROJECT_DIR="$aliasrepo" ./guard-destructive.sh >/dev/null 2>&1
+  actual=$?
+  if [ "$actual" -eq "$expected" ]; then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1))
+    printf 'FAIL (alias repo): expected exit %s, got %s for: %s\n' "$expected" "$actual" "$cmd"
+  fi
+}
+assert_guard_in 2 'git p origin main'
+# A harmless alias must stay harmless, and unknown subcommands must not block.
+assert_guard_in 0 'git st'
+assert_guard_in 0 'git status'
+assert_guard_in 0 'git unknown-subcommand'
+rm -rf "$aliasrepo"
+
 echo "== guard: must FAIL CLOSED when no JSON parser is available =="
 # A guard that cannot read its input must block, not allow everything.
 # mktemp, never a fixed /tmp path: a predictable shared name can already exist
@@ -264,6 +292,27 @@ assert_stop 2 "{\"session_id\":\"${sid}c\"}" 'cap attempt 2'
 assert_stop 2 "{\"session_id\":\"${sid}c\"}" 'cap attempt 3'
 assert_stop 0 "{\"session_id\":\"${sid}c\"}" 'cap released on attempt 4'
 rm -rf "$stopstate"
+
+echo "== stop gate: an unpersistable counter must not trap the session =="
+# Without state the cap can never be reached, so the fallback bound applies.
+trapdir=$(mktemp -d)
+cp ./check-on-stop.sh ./lib-payload.sh "$trapdir/"
+printf '{"name":"f","version":"1.0.0","scripts":{"lint":"exit 1","test":"exit 1"}}' > "$trapdir/package.json"
+rodir=$(mktemp -d); chmod 500 "$rodir"
+trapstop() {
+  local expected="$1" payload="$2" label="$3" actual
+  echo "$payload" | TMPDIR="$rodir" CLAUDE_PROJECT_DIR="$trapdir" "$trapdir/check-on-stop.sh" >/dev/null 2>&1
+  actual=$?
+  if [ "$actual" -eq "$expected" ]; then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1))
+    printf 'FAIL: expected exit %s, got %s for: %s\n' "$expected" "$actual" "$label"
+  fi
+}
+trapstop 2 '{"session_id":"trap"}' 'unwritable state: first stop still blocks'
+trapstop 0 '{"session_id":"trap","stop_hook_active":true}' 'unwritable state: retry releases rather than trapping'
+chmod 700 "$rodir"; rm -rf "$rodir" "$trapdir"
 rm -rf "$stopdir"
 
 echo "== guard: parseable-but-empty allows; unparseable blocks =="
