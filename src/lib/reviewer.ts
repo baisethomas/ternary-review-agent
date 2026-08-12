@@ -7,7 +7,7 @@ import type { ReviewLease } from "./review-queue";
 import type { ReviewFinding, ReviewRequest, ReviewResult } from "./types";
 import { findingIdentity } from "./review-event-ledger";
 import { formatFindingComment } from "./finding-comment";
-import { generateOpenRouterReview } from "./openrouter-review-provider";
+import { generateOpenRouterReview, remainingInvocationBudgetMs } from "./openrouter-review-provider";
 import { safeReviewPolicy } from "./review-policy";
 import { applyReviewPolicyToResult, filterReviewDiff } from "./review-policy-execution";
 
@@ -23,6 +23,7 @@ function formatReview(result: ReviewResult) {
 }
 
 export async function runReview(request: ReviewRequest & { id?: string }, lease?: ReviewLease) {
+  const invocationStartedAt = Date.now();
   const policy = request.policy ?? { ...safeReviewPolicy, model: process.env.OPENROUTER_MODEL ?? safeReviewPolicy.model };
   const token = await createInstallationToken(request.installationId);
   await lease?.assertActive();
@@ -35,7 +36,13 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
     ]);
     const reviewDiff = filterReviewDiff(diff, policy.excludedPaths);
     const repositoryContext = await getRepositoryReviewContext(request, token, reviewDiff);
-    const generated = await generateOpenRouterReview(reviewDiff, sandbox, repositoryContext.text, policy);
+    const generated = await generateOpenRouterReview(
+      reviewDiff,
+      sandbox,
+      repositoryContext.text,
+      policy,
+      { remainingMs: remainingInvocationBudgetMs(invocationStartedAt) },
+    );
     const result = applyReviewPolicyToResult(generated, policy);
     const marker = request.id ? `\n\n<!-- ternary-review-job:${request.id} -->` : "";
     const markdown = `${formatReview(result)}${marker}`;
