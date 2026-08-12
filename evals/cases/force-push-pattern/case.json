@@ -1,0 +1,17 @@
+{
+  "id": "force-push-pattern",
+  "title": "Force-push guard misses git push origin --force",
+  "tags": ["security", "hooks"],
+  "expectedFindings": [
+    {
+      "ruleId": "security-destructive-commands",
+      "severity": "blocking",
+      "file": "hooks/guard-destructive.sh",
+      "line": 5,
+      "lineTolerance": 4,
+      "titleContains": "force",
+      "required": true
+    }
+  ],
+  "expectedNonFindings": []
+}

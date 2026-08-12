@@ -1,0 +1,15 @@
+diff --git a/hooks/stop-gate.sh b/hooks/stop-gate.sh
+new file mode 100755
+index 0000000..2222222
+--- /dev/null
++++ b/hooks/stop-gate.sh
+@@ -0,0 +1,10 @@
++#!/usr/bin/env bash
++# Stop hook: refuse completion when lint or tests fail.
++# Bug: piping to tail replaces the failing exit status with 0.
++
++npm run lint | tail -n 20
++npm test | tail -n 50
++
++# Claude Code only blocks on exit code 2; exit 1 is ignored.
++exit 1

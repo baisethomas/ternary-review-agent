@@ -1,0 +1,16 @@
+diff --git a/src/app/api/notes/route.ts b/src/app/api/notes/route.ts
+new file mode 100644
+index 0000000..4444444
+--- /dev/null
++++ b/src/app/api/notes/route.ts
+@@ -0,0 +1,16 @@
++import { NextRequest, NextResponse } from "next/server";
++import { db } from "@/lib/db";
++
++export async function GET(request: NextRequest) {
++  const noteId = request.nextUrl.searchParams.get("id");
++  console.log("auth", request.headers.get("authorization"));
++  // Bug: returns any note by id without checking the caller owns it.
++  const note = await db.notes.findUnique({ where: { id: noteId } });
++  return NextResponse.json(note);
++}
