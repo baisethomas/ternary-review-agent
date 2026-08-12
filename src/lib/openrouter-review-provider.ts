@@ -100,6 +100,54 @@ function parseReviewOutput(text: string): Omit<ReviewResult, "sandbox" | "ai" | 
 
 type OpenRouterError = { code?: number; message?: string; metadata?: { error_type?: string } };
 
+function isAbortError(error: unknown) {
+  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+}
+
+export const DEFAULT_OPENROUTER_TIMEOUT_MS = 240_000;
+export const MAX_OPENROUTER_TIMEOUT_MS = 240_000;
+export const MIN_OPENROUTER_TIMEOUT_MS = 1_000;
+/** Matches the worker route `maxDuration` so provider aborts beat platform kills. */
+export const WORKER_INVOCATION_BUDGET_MS = 300_000;
+/** Leave headroom after the model call for GitHub publish / check-run finish. */
+export const REVIEW_PUBLISH_RESERVE_MS = 30_000;
+
+export type OpenRouterTimeoutOptions = {
+  /** Milliseconds remaining before the worker invocation deadline. */
+  remainingMs?: number;
+};
+
+export function resolveConfiguredOpenRouterTimeoutMs(raw = process.env.OPENROUTER_TIMEOUT_MS) {
+  const parsed = raw === undefined || raw === "" ? DEFAULT_OPENROUTER_TIMEOUT_MS : Number(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_OPENROUTER_TIMEOUT_MS;
+  const rounded = Math.floor(parsed);
+  if (rounded < MIN_OPENROUTER_TIMEOUT_MS) return DEFAULT_OPENROUTER_TIMEOUT_MS;
+  return Math.min(rounded, MAX_OPENROUTER_TIMEOUT_MS);
+}
+
+export function resolveOpenRouterTimeoutMs(
+  raw = process.env.OPENROUTER_TIMEOUT_MS,
+  options: OpenRouterTimeoutOptions = {},
+) {
+  const configured = resolveConfiguredOpenRouterTimeoutMs(raw);
+  if (options.remainingMs === undefined) return configured;
+  const remaining = Math.floor(options.remainingMs);
+  if (!Number.isFinite(remaining)) return configured;
+  if (remaining < MIN_OPENROUTER_TIMEOUT_MS) {
+    throw new Error(`AI review skipped: only ${remaining}ms left in the invocation budget`);
+  }
+  return Math.min(configured, remaining);
+}
+
+export function remainingInvocationBudgetMs(
+  startedAt: number,
+  now = Date.now(),
+  budgetMs = WORKER_INVOCATION_BUDGET_MS,
+  reserveMs = REVIEW_PUBLISH_RESERVE_MS,
+) {
+  return startedAt + budgetMs - reserveMs - now;
+}
+
 function throwProviderError(error: OpenRouterError | undefined, finishReason?: string) {
   if (!error && finishReason !== "error") return;
   const errorType = error?.metadata?.error_type;
@@ -129,61 +177,73 @@ export async function generateOpenRouterReview(
   sandbox: SandboxResult,
   repositoryContext: string,
   policy?: ResolvedReviewPolicy,
+  timeoutOptions?: OpenRouterTimeoutOptions,
 ): Promise<ReviewResult> {
   if (!process.env.OPENROUTER_API_KEY) return fallbackReview(sandbox);
   const maxDiffChars = Number(process.env.MAX_DIFF_CHARS ?? 160_000);
   const input = `PR DIFF:\n${diff.slice(0, maxDiffChars)}\n\nREPOSITORY CONTEXT:\n${repositoryContext || "No matching repository context was available."}\n\nSANDBOX RESULT:\n${JSON.stringify(sandbox)}`;
   const model = policy?.model ?? process.env.OPENROUTER_MODEL ?? "~deepseek/deepseek-v4-flash-latest";
   const startedAt = Date.now();
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: input },
-      ],
-      response_format: { type: "json_schema", json_schema: { name: "code_review", strict: true, schema: reviewSchema } },
-      provider: { require_parameters: true },
-    }),
-  });
-  if (!response.ok) {
-    const message = `AI review failed (${response.status}): ${await response.text()}`;
-    throw isRetryableHttpStatus(response.status) ? new Error(message) : new NonRetryableReviewError(message);
-  }
-  const payload = await response.json() as {
-    model?: string;
-    error?: OpenRouterError;
-    choices?: Array<{ message?: { content?: string | null }; finish_reason?: string; error?: OpenRouterError }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
-  };
-  const choice = payload.choices?.[0];
-  throwProviderError(choice?.error ?? payload.error, choice?.finish_reason);
-  const text = choice?.message?.content;
-  if (!text) throw new NonRetryableReviewError("AI response did not include review output");
+  const timeoutMs = resolveOpenRouterTimeoutMs(process.env.OPENROUTER_TIMEOUT_MS, timeoutOptions);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const review = parseReviewOutput(text);
-    const inputTokens = payload.usage?.prompt_tokens;
-    const outputTokens = payload.usage?.completion_tokens;
-    const estimatedCostUsd = payload.usage?.cost;
-    return {
-      ...review,
-      sandbox,
-      authoritativeFindings: true,
-      ai: {
-        model: payload.model ?? model,
-        latencyMs: Date.now() - startedAt,
-        ...(inputTokens !== undefined ? { inputTokens } : {}),
-        ...(outputTokens !== undefined ? { outputTokens } : {}),
-        ...(estimatedCostUsd !== undefined ? { estimatedCostUsd } : {}),
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
       },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: input },
+        ],
+        response_format: { type: "json_schema", json_schema: { name: "code_review", strict: true, schema: reviewSchema } },
+        provider: { require_parameters: true },
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const message = `AI review failed (${response.status}): ${await response.text()}`;
+      throw isRetryableHttpStatus(response.status) ? new Error(message) : new NonRetryableReviewError(message);
+    }
+    const payload = await response.json() as {
+      model?: string;
+      error?: OpenRouterError;
+      choices?: Array<{ message?: { content?: string | null }; finish_reason?: string; error?: OpenRouterError }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
     };
+    const choice = payload.choices?.[0];
+    throwProviderError(choice?.error ?? payload.error, choice?.finish_reason);
+    const text = choice?.message?.content;
+    if (!text) throw new NonRetryableReviewError("AI response did not include review output");
+    try {
+      const review = parseReviewOutput(text);
+      const inputTokens = payload.usage?.prompt_tokens;
+      const outputTokens = payload.usage?.completion_tokens;
+      const estimatedCostUsd = payload.usage?.cost;
+      return {
+        ...review,
+        sandbox,
+        authoritativeFindings: true,
+        ai: {
+          model: payload.model ?? model,
+          latencyMs: Date.now() - startedAt,
+          ...(inputTokens !== undefined ? { inputTokens } : {}),
+          ...(outputTokens !== undefined ? { outputTokens } : {}),
+          ...(estimatedCostUsd !== undefined ? { estimatedCostUsd } : {}),
+        },
+      };
+    } catch (error) {
+      if (error instanceof NonRetryableReviewError) throw error;
+      throw new NonRetryableReviewError("AI response was not valid review JSON", { cause: error });
+    }
   } catch (error) {
-    if (error instanceof NonRetryableReviewError) throw error;
-    throw new NonRetryableReviewError("AI response was not valid review JSON", { cause: error });
+    if (isAbortError(error) || controller.signal.aborted) throw new Error(`AI review timed out after ${timeoutMs}ms`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
 }

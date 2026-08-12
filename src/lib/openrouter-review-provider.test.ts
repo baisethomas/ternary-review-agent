@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { generateOpenRouterReview } from "./openrouter-review-provider";
+import { generateOpenRouterReview, remainingInvocationBudgetMs, resolveOpenRouterTimeoutMs } from "./openrouter-review-provider";
 import { NonRetryableReviewError } from "./review-errors";
 import { safeReviewPolicy } from "./review-policy";
 
@@ -13,6 +13,29 @@ const sandbox = {
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+});
+
+describe("resolveOpenRouterTimeoutMs", () => {
+  it("defaults and rejects invalid or out-of-range values", () => {
+    expect(resolveOpenRouterTimeoutMs(undefined)).toBe(240_000);
+    expect(resolveOpenRouterTimeoutMs("")).toBe(240_000);
+    expect(resolveOpenRouterTimeoutMs("nope")).toBe(240_000);
+    expect(resolveOpenRouterTimeoutMs("0")).toBe(240_000);
+    expect(resolveOpenRouterTimeoutMs("-5")).toBe(240_000);
+    expect(resolveOpenRouterTimeoutMs("500")).toBe(240_000);
+    expect(resolveOpenRouterTimeoutMs("120000")).toBe(120_000);
+    expect(resolveOpenRouterTimeoutMs("999999")).toBe(240_000);
+  });
+
+  it("caps the configured timeout to the remaining invocation budget", () => {
+    expect(resolveOpenRouterTimeoutMs("240000", { remainingMs: 90_000 })).toBe(90_000);
+    expect(resolveOpenRouterTimeoutMs("240000", { remainingMs: 300_000 })).toBe(240_000);
+    expect(() => resolveOpenRouterTimeoutMs("240000", { remainingMs: 500 })).toThrow(/invocation budget/i);
+  });
+
+  it("computes remaining budget with publish reserve", () => {
+    expect(remainingInvocationBudgetMs(1_000, 61_000, 300_000, 30_000)).toBe(210_000);
+  });
 });
 
 describe("OpenRouter review provider", () => {
@@ -85,6 +108,34 @@ describe("OpenRouter review provider", () => {
       message: expect.stringContaining("AI review failed (429)"),
     });
     await expect(generateOpenRouterReview("diff", sandbox, "context")).rejects.not.toBeInstanceOf(NonRetryableReviewError);
+  });
+
+  it("treats provider abort timeouts as retryable failures", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "router-key");
+    vi.stubEnv("OPENROUTER_TIMEOUT_MS", "240000");
+    const aborted = Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(aborted));
+
+    const error = await generateOpenRouterReview("diff", sandbox, "context").catch((caught) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(NonRetryableReviewError);
+    expect(error.message).toContain("AI review timed out after 240000ms");
+  });
+
+  it("keeps the abort active while reading a stalled response body", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "router-key");
+    vi.stubEnv("OPENROUTER_TIMEOUT_MS", "240000");
+    const aborted = Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => { throw aborted; },
+      text: async () => { throw aborted; },
+    }));
+
+    const error = await generateOpenRouterReview("diff", sandbox, "context").catch((caught) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(NonRetryableReviewError);
+    expect(error.message).toContain("AI review timed out after 240000ms");
   });
 
   it("marks permanent OpenRouter failures as non-retryable", async () => {

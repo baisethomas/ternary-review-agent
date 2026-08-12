@@ -8,6 +8,8 @@ export function GET() {
       sandbox: Boolean(process.env.VERCEL || process.env.VERCEL_OIDC_TOKEN || (process.env.VERCEL_TOKEN && process.env.VERCEL_TEAM_ID && process.env.VERCEL_PROJECT_ID)),
       watchStorage: Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN),
       eventLedger: Boolean(process.env.DATABASE_URL),
+      cronAuth: Boolean(process.env.CRON_SECRET),
+      queueDispatch: Boolean(process.env.QSTASH_TOKEN && process.env.INTERNAL_API_TOKEN && process.env.TERNARY_BASE_URL),
     },
   });
 }
