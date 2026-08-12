@@ -1,6 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ catalog: vi.fn(), pages: vi.fn(), loadVisibility: vi.fn(async () => null), usageStore: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  catalog: vi.fn(),
+  pages: vi.fn(),
+  loadVisibility: vi.fn(async (): Promise<{
+    scope: { kind: "repository"; installationId: number; owner: string; repo: string };
+    source: "repository";
+    monthlyCeilingUsd: number;
+    spentUsd: number;
+    remainingUsd: number;
+    utilization: number;
+    status: "ok" | "approaching" | "exceeded";
+    enforcement: "visibility";
+  } | null> => null),
+  usageStore: vi.fn(),
+}));
 vi.mock("server-only", () => ({}));
 vi.mock("./dashboard-data", () => ({ getRepositoryDashboardData: mocks.catalog }));
 vi.mock("./review-event-query-service", () => ({ reviewEventPagesForScope: mocks.pages }));
@@ -151,14 +165,14 @@ describe("review analytics service", () => {
   it("attaches spend-ceiling visibility for a single repository filter", async () => {
     mocks.catalog.mockResolvedValue({ repositories: [repositories[0]] });
     mocks.loadVisibility.mockResolvedValueOnce({
-      scope: { kind: "repository", installationId: 7, owner: "ternary", repo: "agent" },
-      source: "repository",
+      scope: { kind: "repository" as const, installationId: 7, owner: "ternary", repo: "agent" },
+      source: "repository" as const,
       monthlyCeilingUsd: 10,
       spentUsd: 0,
       remainingUsd: 10,
       utilization: 0,
-      status: "ok",
-      enforcement: "visibility",
+      status: "ok" as const,
+      enforcement: "visibility" as const,
     });
     const data = await loadReviewAnalytics({ repository: "Ternary/Agent" });
     expect(mocks.loadVisibility).toHaveBeenCalledWith(expect.objectContaining({

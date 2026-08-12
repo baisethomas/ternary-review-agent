@@ -112,6 +112,8 @@ export async function runOpsAlertCheck(options: RunOpsAlertCheckOptions = {}): P
       await notifier.notify(fired);
     } catch (error) {
       console.error("Unable to deliver ops alerts", error);
+      await Promise.all(fired.map((alert) => cooldown.release(alert.key)));
+      return { snapshot, alerts, fired: [] };
     }
   }
 

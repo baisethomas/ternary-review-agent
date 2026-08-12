@@ -7,6 +7,8 @@ import type { ReviewEvent } from "./review-event-ledger";
 import type { RepositoryScope } from "./repository-index";
 import { evaluateUsageBudgetVisibility, type UsageBudgetVisibility } from "./usage-budget";
 import { loadUsageBudgetVisibility, usageBudgetStore } from "./usage-budget-service";
+import { sumEstimatedSpendUsdForScope } from "./usage-budget-spend";
+import { neon } from "@neondatabase/serverless";
 
 export type ReviewAnalyticsData = Awaited<ReturnType<typeof loadReviewAnalytics>>;
 
@@ -140,20 +142,39 @@ async function aggregateRepository(scope: RepositoryScope, filters: ReviewAnalyt
   return accumulator.result();
 }
 
+async function monthlySpendUsd(scope: { installationId: number; owner?: string; repo?: string; kind: "organization" | "repository" }) {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) return 0;
+  try {
+    return await sumEstimatedSpendUsdForScope(
+      neon(connectionString),
+      scope.kind === "organization"
+        ? { kind: "organization", installationId: scope.installationId }
+        : { kind: "repository", installationId: scope.installationId, owner: scope.owner!, repo: scope.repo! },
+    );
+  } catch {
+    return 0;
+  }
+}
+
 async function spendCeilingVisibility(
   repositories: Array<{ installationId: number; owner: string; name: string }>,
-  spentUsd: number | null,
 ): Promise<UsageBudgetVisibility | null> {
   if (repositories.length === 0) return null;
-  const spent = spentUsd ?? 0;
   try {
     if (repositories.length === 1) {
       const repository = repositories[0];
+      const spentUsd = await monthlySpendUsd({
+        kind: "repository",
+        installationId: repository.installationId,
+        owner: repository.owner,
+        repo: repository.name,
+      });
       return await loadUsageBudgetVisibility({
         installationId: repository.installationId,
         owner: repository.owner,
         repo: repository.name,
-        spentUsd: spent,
+        spentUsd,
       });
     }
     const installationIds = new Set(repositories.map((repository) => repository.installationId));
@@ -161,11 +182,12 @@ async function spendCeilingVisibility(
     const installationId = repositories[0].installationId;
     const organization = await usageBudgetStore().get({ kind: "organization", installationId });
     if (!organization) return null;
+    const spentUsd = await monthlySpendUsd({ kind: "organization", installationId });
     return evaluateUsageBudgetVisibility({
       scope: organization.scope,
       source: "organization",
       monthlyCeilingUsd: organization.monthlyCeilingUsd,
-      spentUsd: spent,
+      spentUsd,
     });
   } catch {
     return null;
@@ -186,7 +208,7 @@ export async function loadReviewAnalytics(filters: ReviewAnalyticsFilters = {}) 
     }
   }
   const analytics = combineReviewAnalytics(repositoryAnalytics);
-  const spendCeiling = await spendCeilingVisibility(repositories, analytics.cost.totalEstimatedUsd);
+  const spendCeiling = await spendCeilingVisibility(repositories);
   const installationIds = new Set(repositories.map((repository) => repository.installationId));
   const budgetTarget = repositories.length === 1
     ? {

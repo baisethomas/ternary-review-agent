@@ -84,4 +84,23 @@ describe("ops-alert-service", () => {
       expect.objectContaining({ kind: "unusual_spend", key: "unusual_spend:ternary/agent" }),
     ]);
   });
+
+  it("releases cooldown claims when notification delivery fails", async () => {
+    const cooldown = new InMemoryOpsAlertCooldownStore();
+    const notify = vi.fn(async () => { throw new Error("webhook unavailable"); });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const result = await runOpsAlertCheck({
+      listJobs: async () => [
+        job({ id: "q1", status: "queued" }),
+        job({ id: "q2", status: "queued" }),
+      ],
+      thresholds: { queueDepth: 2, failedJobCount: 99, cooldownMs: 60_000 },
+      cooldown,
+      notifier: { notify },
+      now: () => 1_000,
+    });
+    expect(result.fired).toEqual([]);
+    expect(consoleError).toHaveBeenCalled();
+    await expect(cooldown.claim("queue_growth", 60_000, 1_500)).resolves.toBe(true);
+  });
 });

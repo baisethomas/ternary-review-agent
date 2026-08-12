@@ -20,7 +20,8 @@ describe("ops-alert-notifier", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
     }));
-    const body = JSON.parse(String(fetchImpl.mock.calls[0][1]?.body));
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, { body?: string }];
+    const body = JSON.parse(String(init.body));
     expect(body.text).toContain("Review queue depth is 30");
     expect(body.alerts).toHaveLength(1);
   });

@@ -23,5 +23,8 @@ export function redisOpsAlertCooldownStore(): OpsAlertCooldownStore {
       const result = await redis().set(redisKey, String(now), { nx: true, ex: ttlSeconds });
       return result === "OK";
     },
+    async release(key) {
+      await redis().del(`${cooldownKeyPrefix}${encodeURIComponent(key)}`);
+    },
   };
 }

@@ -255,4 +255,21 @@ describe("repository index webhook events", () => {
       reason: "Event ignored",
     }));
   });
+
+  it("records a rejected Webhook Delivery Audit when handling throws", async () => {
+    mocks.dispatchIndex.mockRejectedValueOnce(new Error("index unavailable"));
+    await expect(handleGitHubWebhook("push", JSON.stringify({
+      ref: "refs/heads/main",
+      after: "commit",
+      deleted: false,
+      installation: { id: 7 },
+      repository: { name: "agent", default_branch: "main", owner: { login: "ternary" } },
+    }), "delivery-throw")).rejects.toThrow("index unavailable");
+    expect(mocks.recordDelivery).toHaveBeenCalledWith(expect.objectContaining({
+      deliveryId: "delivery-throw",
+      disposition: "rejected",
+      reason: "index unavailable",
+      httpStatus: 500,
+    }));
+  });
 });

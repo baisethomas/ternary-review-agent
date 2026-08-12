@@ -50,7 +50,7 @@ export function AnalyticsDashboard({ data, filters, initialChangeCursor }: { dat
 
   {data.spendCeiling ? <aside className={`mb-5 rounded-xl border px-4 py-3 text-xs ${data.spendCeiling.status === "exceeded" ? "border-[#f0c7c2] bg-[#fff5f4] text-[#9a4842]" : data.spendCeiling.status === "approaching" ? "border-[#ecd7ad] bg-[#fff9eb] text-[#805e1e]" : "border-[#dce8d7] bg-[#f3faf0] text-[#476a40]"}`}>
     <p className="font-semibold">Usage budget ({data.spendCeiling.source} ceiling) · visibility only</p>
-    <p className="mt-1">Selected-period estimated spend {money(data.spendCeiling.spentUsd)} of ${data.spendCeiling.monthlyCeilingUsd.toFixed(2)} monthly ceiling ({Math.round(Math.min(data.spendCeiling.utilization, 9.99) * 100)}% used · ${data.spendCeiling.remainingUsd.toFixed(2)} remaining). Enforcement is not enabled yet.</p>
+    <p className="mt-1">Current UTC-month estimated spend {money(data.spendCeiling.spentUsd)} of ${data.spendCeiling.monthlyCeilingUsd.toFixed(2)} monthly ceiling ({Math.round(Math.min(data.spendCeiling.utilization, 9.99) * 100)}% used · ${data.spendCeiling.remainingUsd.toFixed(2)} remaining). Enforcement is not enabled yet.</p>
   </aside> : null}
 
   {data.budgetTarget ? <section className="mb-5 rounded-2xl border border-[var(--line)] bg-white p-4 shadow-[0_1px_2px_rgba(0,0,0,.025)]">

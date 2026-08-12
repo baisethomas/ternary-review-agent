@@ -251,9 +251,25 @@ export async function handleGitHubWebhook(
 ) {
   const recordDelivery = options.recordDelivery ?? recordWebhookDelivery;
   const handler = event ? handlers[event] : undefined;
-  const response = handler
-    ? await handler(rawBody, deliveryId)
-    : Response.json({ accepted: false, reason: "Event ignored" });
-  await auditWebhookResponse(event, rawBody, deliveryId, response, recordDelivery);
-  return response;
+  try {
+    const response = handler
+      ? await handler(rawBody, deliveryId)
+      : Response.json({ accepted: false, reason: "Event ignored" });
+    await auditWebhookResponse(event, rawBody, deliveryId, response, recordDelivery);
+    return response;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "Webhook handler failed";
+    const repository = webhookRepositoryFromBody(rawBody);
+    await recordDelivery({
+      deliveryId,
+      eventType: event ?? "unknown",
+      installationId: repository.installationId,
+      owner: repository.owner,
+      repo: repository.repo,
+      disposition: "rejected",
+      reason,
+      httpStatus: 500,
+    });
+    throw error;
+  }
 }

@@ -22,7 +22,7 @@ export const defaultOpsAlertThresholds: OpsAlertThresholds = {
 export type OpsAlertSnapshot = {
   activeQueueDepth: number;
   failedJobCount: number;
-  spend?: ReadonlyArray<{
+  spend?: Array<{
     label: string;
     status: "ok" | "approaching" | "exceeded";
     spentUsd: number;
