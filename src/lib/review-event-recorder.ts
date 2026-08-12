@@ -2,6 +2,7 @@ import { findingIdentity, reviewIdentity, type ReviewEvent, type ReviewEventLedg
 import type { ReviewQueueLifecycle, ReviewSubmission } from "./review-queue";
 import type { ReviewRequest, ReviewResult } from "./types";
 import { findingStateForFeedbackKind, projectFindingLifecycles } from "./finding-lifecycle";
+import { redactSecrets, redactSecretsTruncated } from "./secret-redaction";
 
 type EventClock = { eventId?: () => string; now?: () => number };
 type ReviewSource = ReviewSubmission;
@@ -16,15 +17,13 @@ function appendFindingStateChanged(
   return ledger.append({
     ...eventBase(request, change.idempotencyKey, { ...clock, now: () => Date.parse(change.occurredAt) }),
     type: "finding.state_changed",
-    payload: { findingId: change.findingId, state: change.state, ...(change.reason ? { reason: change.reason } : {}), ...(change.source ? { source: change.source } : {}) },
+    payload: {
+      findingId: change.findingId,
+      state: change.state,
+      ...(change.reason ? { reason: redactSecrets(change.reason) } : {}),
+      ...(change.source ? { source: change.source } : {}),
+    },
   });
-}
-
-function sandboxOutput(value: string, remaining: number) {
-  const redacted = value
-    .replace(/\b(?:gh[opsu]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g, "[REDACTED]")
-    .replace(/(authorization\s*:\s*bearer\s+)[^\s]+/gi, "$1[REDACTED]");
-  return redacted.slice(0, Math.max(0, remaining));
 }
 
 function eventBase(request: ReviewRequest, idempotencyKey: string, clock: EventClock = {}) {
@@ -149,7 +148,7 @@ export async function recordFindingFeedback(
       findingId: feedback.findingId,
       kind: feedback.kind,
       ...(feedback.actor ? { actor: feedback.actor } : {}),
-      ...(feedback.reason ? { reason: feedback.reason } : {}),
+      ...(feedback.reason ? { reason: redactSecrets(feedback.reason) } : {}),
       ...(feedback.signal ? { signal: feedback.signal } : {}),
     },
   });
@@ -209,7 +208,11 @@ export function createReviewEventLifecycle(ledger: ReviewEventLedger, clock: Eve
             durationMs: result.sandbox.durationMs,
             commands: result.sandbox.commands.reduce<Array<{ command: string; exitCode: number; output: string }>>((commands, item) => {
               const used = commands.reduce((total, command) => total + command.output.length, 0);
-              commands.push({ command: item.command, exitCode: item.exitCode, output: sandboxOutput(item.output, sandboxEvidenceLimit - used) });
+              commands.push({
+                command: item.command,
+                exitCode: item.exitCode,
+                output: redactSecretsTruncated(item.output, sandboxEvidenceLimit - used),
+              });
               return commands;
             }, []),
           },
@@ -223,14 +226,19 @@ export function createReviewEventLifecycle(ledger: ReviewEventLedger, clock: Eve
       await ledger.append({
         ...eventBase(job, `job:${job.id}:retry:${job.attempts}`, { ...clock, now: () => job.updatedAt }),
         type: "review.retry_scheduled",
-        payload: { jobId: job.id, attempt: job.attempts, availableAt: new Date(job.availableAt).toISOString(), error: job.lastError ?? "Unknown review failure" },
+        payload: {
+          jobId: job.id,
+          attempt: job.attempts,
+          availableAt: new Date(job.availableAt).toISOString(),
+          error: redactSecrets(job.lastError ?? "Unknown review failure"),
+        },
       });
     },
     async failed(job) {
       await ledger.append({
         ...eventBase(job, `job:${job.id}:failed`, { ...clock, now: () => job.completedAt ?? job.updatedAt }),
         type: "review.failed",
-        payload: { jobId: job.id, attempt: job.attempts, error: job.lastError ?? "Unknown review failure" },
+        payload: { jobId: job.id, attempt: job.attempts, error: redactSecrets(job.lastError ?? "Unknown review failure") },
       });
     },
   };

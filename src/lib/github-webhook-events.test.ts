@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   ingestFeedback: vi.fn(async () => ({ accepted: true, findingId: "finding-auth" })),
   getApp: vi.fn(async () => ({ slug: "ternary-review-agent" })),
   resolvePolicy: vi.fn(),
+  recordDelivery: vi.fn(async () => null),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -27,6 +28,7 @@ vi.mock("./review-submission", () => ({ webhookReviewIdempotencyKeys: vi.fn(() =
 vi.mock("./github-finding-feedback", () => ({ ingestGitHubFindingFeedback: mocks.ingestFeedback }));
 vi.mock("./github", () => ({ getGitHubApp: mocks.getApp }));
 vi.mock("./review-policy-service", () => ({ resolveReviewPolicyFor: mocks.resolvePolicy }));
+vi.mock("./webhook-delivery-audit-service", () => ({ recordWebhookDelivery: mocks.recordDelivery }));
 
 import { handleGitHubWebhook } from "./github-webhook-events";
 
@@ -213,5 +215,44 @@ describe("repository index webhook events", () => {
     const payload = { action: "deleted", installation: { id: 7 }, repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" }, sender: { login: "maintainer" }, reaction: { id: 11, content: "-1" }, comment: { id: 10, body: "<!-- ternary-finding:finding-auth -->", commit_id: "head", pull_request_url: "https://api.github.com/repos/ternary/agent/pulls/8" } };
     await handleGitHubWebhook("reaction", JSON.stringify(payload), "delivery-delete-downvote");
     expect(mocks.ingestFeedback).toHaveBeenCalledWith(expect.objectContaining({ kind: "reaction", deliveryId: "delivery-delete-downvote", signal: { id: "github-reaction:11", type: "dismissal_reaction", active: false } }));
+  });
+
+  it("records Webhook Delivery Audits for accepted, ignored, and unknown events", async () => {
+    mocks.enqueueReview.mockResolvedValueOnce({ id: "job-1" });
+    await handleGitHubWebhook("pull_request", JSON.stringify({
+      action: "opened",
+      installation: { id: 7 },
+      repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" },
+      pull_request: { number: 8, draft: false, head: { sha: "head" }, user: { login: "dev" } },
+    }), "delivery-accepted");
+    await handleGitHubWebhook("push", JSON.stringify({
+      ref: "refs/heads/feature",
+      after: "commit",
+      deleted: false,
+      installation: { id: 7 },
+      repository: { name: "agent", default_branch: "main", owner: { login: "ternary" } },
+    }), "delivery-ignored");
+    await handleGitHubWebhook("label", "{}", "delivery-unknown");
+
+    expect(mocks.recordDelivery).toHaveBeenCalledWith(expect.objectContaining({
+      deliveryId: "delivery-accepted",
+      eventType: "pull_request",
+      disposition: "accepted",
+      httpStatus: 202,
+      owner: "ternary",
+      repo: "agent",
+    }));
+    expect(mocks.recordDelivery).toHaveBeenCalledWith(expect.objectContaining({
+      deliveryId: "delivery-ignored",
+      eventType: "push",
+      disposition: "ignored",
+      reason: "Push does not require indexing",
+    }));
+    expect(mocks.recordDelivery).toHaveBeenCalledWith(expect.objectContaining({
+      deliveryId: "delivery-unknown",
+      eventType: "label",
+      disposition: "ignored",
+      reason: "Event ignored",
+    }));
   });
 });

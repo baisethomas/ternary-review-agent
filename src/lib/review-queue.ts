@@ -2,6 +2,7 @@ import type { ReviewRequest } from "./types";
 import { isRetryableReviewError, ReviewLeaseLostError } from "./review-errors";
 import { terminalJobRetentionMs } from "./review-retention";
 import { ReviewEventAccessRevokedError } from "./review-event-ledger";
+import { redactSecrets } from "./secret-redaction";
 
 export type ReviewJobStatus = "queued" | "running" | "retrying" | "failed" | "completed";
 
@@ -86,7 +87,8 @@ export type ReviewLease = {
 };
 
 function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Unknown review failure";
+  const message = error instanceof Error ? error.message : "Unknown review failure";
+  return redactSecrets(message);
 }
 
 export class ReviewQueue {

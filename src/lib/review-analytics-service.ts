@@ -5,6 +5,8 @@ import { combineReviewAnalytics, filterReviewEvents, reviewEventRunKey, reviewPu
 import { reviewEventPagesForScope } from "./review-event-query-service";
 import type { ReviewEvent } from "./review-event-ledger";
 import type { RepositoryScope } from "./repository-index";
+import { evaluateUsageBudgetVisibility, type UsageBudgetVisibility } from "./usage-budget";
+import { loadUsageBudgetVisibility, usageBudgetStore } from "./usage-budget-service";
 
 export type ReviewAnalyticsData = Awaited<ReturnType<typeof loadReviewAnalytics>>;
 
@@ -138,6 +140,38 @@ async function aggregateRepository(scope: RepositoryScope, filters: ReviewAnalyt
   return accumulator.result();
 }
 
+async function spendCeilingVisibility(
+  repositories: Array<{ installationId: number; owner: string; name: string }>,
+  spentUsd: number | null,
+): Promise<UsageBudgetVisibility | null> {
+  if (repositories.length === 0) return null;
+  const spent = spentUsd ?? 0;
+  try {
+    if (repositories.length === 1) {
+      const repository = repositories[0];
+      return await loadUsageBudgetVisibility({
+        installationId: repository.installationId,
+        owner: repository.owner,
+        repo: repository.name,
+        spentUsd: spent,
+      });
+    }
+    const installationIds = new Set(repositories.map((repository) => repository.installationId));
+    if (installationIds.size !== 1) return null;
+    const installationId = repositories[0].installationId;
+    const organization = await usageBudgetStore().get({ kind: "organization", installationId });
+    if (!organization) return null;
+    return evaluateUsageBudgetVisibility({
+      scope: organization.scope,
+      source: "organization",
+      monthlyCeilingUsd: organization.monthlyCeilingUsd,
+      spentUsd: spent,
+    });
+  } catch {
+    return null;
+  }
+}
+
 export async function loadReviewAnalytics(filters: ReviewAnalyticsFilters = {}) {
   const repositoryData = await getRepositoryDashboardData();
   const repositories = selectRepositories(repositoryData.repositories, filters);
@@ -151,8 +185,29 @@ export async function loadReviewAnalytics(filters: ReviewAnalyticsFilters = {}) 
       failedRepositories += 1;
     }
   }
+  const analytics = combineReviewAnalytics(repositoryAnalytics);
+  const spendCeiling = await spendCeilingVisibility(repositories, analytics.cost.totalEstimatedUsd);
+  const installationIds = new Set(repositories.map((repository) => repository.installationId));
+  const budgetTarget = repositories.length === 1
+    ? {
+        kind: "repository" as const,
+        installationId: repositories[0].installationId,
+        owner: repositories[0].owner,
+        repo: repositories[0].name,
+        label: repositories[0].fullName,
+      }
+    : repositories.length > 0 && installationIds.size === 1
+      ? {
+          kind: "organization" as const,
+          installationId: repositories[0].installationId,
+          owner: repositories[0].owner,
+          label: repositories[0].owner,
+        }
+      : null;
   return {
-    analytics: combineReviewAnalytics(repositoryAnalytics),
+    analytics,
+    spendCeiling,
+    budgetTarget,
     repositories: repositoryData.repositories.map((repository) => repository.fullName),
     organizations: [...new Set(repositoryData.repositories.map((repository) => repository.owner))].sort((a, b) => a.localeCompare(b)),
     options: {

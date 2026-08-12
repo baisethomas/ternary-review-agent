@@ -246,4 +246,19 @@ describe("review event recorder", () => {
       events: [expect.objectContaining({ type: "review.requested" }), expect.objectContaining({ type: "pull_request.reopened", payload: { reopenedAt: "2026-08-09T04:00:00.000Z" } })],
     });
   });
+
+  it("redacts secrets in failed and retry error payloads", async () => {
+    const ledger = new InMemoryReviewEventLedger();
+    const lifecycle = createReviewEventLifecycle(ledger);
+    const secretError = "OpenRouter rejected key sk-abcdefghijklmnopqrstuvwxyz12";
+
+    await lifecycle.retryScheduled({ ...job, status: "retrying", attempts: 1, lastError: secretError, availableAt: 2_000, updatedAt: 1_500 });
+    await lifecycle.failed({ ...job, status: "failed", attempts: 3, lastError: secretError, completedAt: 2_500, updatedAt: 2_500 });
+
+    const page = await ledger.list({ installationId: 7, owner: "ternary", repo: "agent" });
+    expect(page.events).toEqual([
+      expect.objectContaining({ type: "review.retry_scheduled", payload: expect.objectContaining({ error: "OpenRouter rejected key [REDACTED]" }) }),
+      expect.objectContaining({ type: "review.failed", payload: expect.objectContaining({ error: "OpenRouter rejected key [REDACTED]" }) }),
+    ]);
+  });
 });

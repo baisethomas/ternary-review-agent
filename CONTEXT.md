@@ -55,3 +55,19 @@ _Avoid_: Effective config, merged settings
 **Policy Change**:
 An immutable audit fact recording who changed a Review Policy, when it changed, and its before-and-after values.
 _Avoid_: Settings log, update record
+
+**Settings Change**:
+An immutable audit fact recording who changed a non-policy setting (for example repository Watch/Pause), when it changed, and its before-and-after values.
+_Avoid_: Settings log, update record, Policy Change
+
+**Webhook Delivery Audit**:
+An immutable audit fact for one GitHub webhook delivery, including delivery ID, event type, repository when known, and disposition (accepted, ignored, or rejected).
+_Avoid_: webhook log, delivery log
+
+**Usage Budget**:
+A configured monthly spend ceiling for an Organization or Repository Scope. Visibility compares estimated review spend to the ceiling before any enforcement exists.
+_Avoid_: rate limit, dispatch budget, invocation budget, quota
+
+**Ops Alert**:
+A cooldown-gated notification for sustained review failures, queue growth, or unusual spend relative to a Usage Budget.
+_Avoid_: page, pager, monitor check

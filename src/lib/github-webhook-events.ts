@@ -9,6 +9,12 @@ import { ingestGitHubFindingFeedback } from "./github-finding-feedback";
 import { getGitHubApp } from "./github";
 import { resolveReviewPolicyFor } from "./review-policy-service";
 import type { AutomaticReviewEvent } from "./review-policy";
+import { recordWebhookDelivery } from "./webhook-delivery-audit-service";
+import {
+  webhookDispositionFromResponseBody,
+  webhookRepositoryFromBody,
+  type AppendWebhookDelivery,
+} from "./webhook-delivery-audit";
 
 type PullRequestWebhook = {
   action: string;
@@ -206,8 +212,48 @@ const handlers: Record<string, WebhookHandler> = {
   reaction: handleReaction,
 };
 
-export async function handleGitHubWebhook(event: string | null, rawBody: string, deliveryId: string) {
+type HandleGitHubWebhookOptions = {
+  recordDelivery?: (delivery: AppendWebhookDelivery) => Promise<unknown>;
+};
+
+async function auditWebhookResponse(
+  event: string | null,
+  rawBody: string,
+  deliveryId: string,
+  response: Response,
+  recordDelivery: (delivery: AppendWebhookDelivery) => Promise<unknown>,
+) {
+  let body: unknown = null;
+  try {
+    body = await response.clone().json();
+  } catch {
+    body = null;
+  }
+  const repository = webhookRepositoryFromBody(rawBody);
+  const { disposition, reason } = webhookDispositionFromResponseBody(response.status, body);
+  await recordDelivery({
+    deliveryId,
+    eventType: event ?? "unknown",
+    installationId: repository.installationId,
+    owner: repository.owner,
+    repo: repository.repo,
+    disposition,
+    reason,
+    httpStatus: response.status,
+  });
+}
+
+export async function handleGitHubWebhook(
+  event: string | null,
+  rawBody: string,
+  deliveryId: string,
+  options: HandleGitHubWebhookOptions = {},
+) {
+  const recordDelivery = options.recordDelivery ?? recordWebhookDelivery;
   const handler = event ? handlers[event] : undefined;
-  if (!handler) return Response.json({ accepted: false, reason: "Event ignored" });
-  return handler(rawBody, deliveryId);
+  const response = handler
+    ? await handler(rawBody, deliveryId)
+    : Response.json({ accepted: false, reason: "Event ignored" });
+  await auditWebhookResponse(event, rawBody, deliveryId, response, recordDelivery);
+  return response;
 }

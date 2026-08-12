@@ -1,5 +1,6 @@
 import { DashboardHeader } from "@/components/dashboard-header";
 import { findingStateOrder, findingStatePresentation } from "@/components/finding-state-presentation";
+import { UsageBudgetForm } from "@/components/usage-budget-form";
 import { reviewAnalyticsMetricDefinitions, type ReviewAnalyticsFilters } from "@/lib/review-analytics";
 import type { ReviewAnalyticsData } from "@/lib/review-analytics-service";
 
@@ -46,6 +47,24 @@ export function AnalyticsDashboard({ data, filters, initialChangeCursor }: { dat
   </form>
 
   {data.freshness !== "complete" ? <aside className="mb-5 rounded-xl border border-[#ecd7ad] bg-[#fff9eb] px-4 py-3 text-xs text-[#805e1e]">{data.freshness === "missing" ? "Analytics data is not available yet. Reviews will appear after the event ledger is configured and receives activity." : `${data.failedRepositories} repository data source${data.failedRepositories === 1 ? " is" : "s are"} delayed. Metrics below use the data currently available.`}</aside> : null}
+
+  {data.spendCeiling ? <aside className={`mb-5 rounded-xl border px-4 py-3 text-xs ${data.spendCeiling.status === "exceeded" ? "border-[#f0c7c2] bg-[#fff5f4] text-[#9a4842]" : data.spendCeiling.status === "approaching" ? "border-[#ecd7ad] bg-[#fff9eb] text-[#805e1e]" : "border-[#dce8d7] bg-[#f3faf0] text-[#476a40]"}`}>
+    <p className="font-semibold">Usage budget ({data.spendCeiling.source} ceiling) · visibility only</p>
+    <p className="mt-1">Selected-period estimated spend {money(data.spendCeiling.spentUsd)} of ${data.spendCeiling.monthlyCeilingUsd.toFixed(2)} monthly ceiling ({Math.round(Math.min(data.spendCeiling.utilization, 9.99) * 100)}% used · ${data.spendCeiling.remainingUsd.toFixed(2)} remaining). Enforcement is not enabled yet.</p>
+  </aside> : null}
+
+  {data.budgetTarget ? <section className="mb-5 rounded-2xl border border-[var(--line)] bg-white p-4 shadow-[0_1px_2px_rgba(0,0,0,.025)]">
+    <h2 className="text-sm font-semibold">Set usage budget</h2>
+    <p className="mt-1 text-[11px] leading-5 text-[var(--muted)]">Define a monthly spend ceiling for the filtered {data.budgetTarget.kind}. Analytics shows estimated spend against it; Ternary does not block reviews yet.</p>
+    <UsageBudgetForm
+      kind={data.budgetTarget.kind}
+      installationId={data.budgetTarget.installationId}
+      owner={data.budgetTarget.kind === "repository" ? data.budgetTarget.owner : undefined}
+      repo={data.budgetTarget.kind === "repository" ? data.budgetTarget.repo : undefined}
+      label={data.budgetTarget.label}
+      currentCeilingUsd={data.spendCeiling?.monthlyCeilingUsd}
+    />
+  </section> : null}
 
   <section className="mb-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><Metric label="Reviews" value={analytics.outcomes.reviews} detail={coverageLabel(analytics.coverage.reviewOutcomes)}/><Metric label="Pass rate" value={percent(analytics.outcomes.passRate)} detail={`${analytics.outcomes.pass} passed`}/><Metric label="Changes requested" value={percent(analytics.outcomes.changeRate)} detail={`${analytics.outcomes.changesRequested} reviews`}/><Metric label="Failure rate" value={percent(analytics.outcomes.failureRate)} detail={`${analytics.outcomes.failed} failed`}/></section>
   <section className="mb-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><Metric label="Queue time" value={duration(analytics.latency.averageQueueMs)} detail={`${analytics.latency.queueSamples} samples · ${coverageLabel(analytics.coverage.queueTime)}`}/><Metric label="Sandbox duration" value={duration(analytics.latency.averageSandboxMs)} detail={`${analytics.latency.sandboxSamples} samples · ${coverageLabel(analytics.coverage.sandboxDuration)}`}/><Metric label="Model latency" value={duration(analytics.latency.averageModelMs)} detail={`${analytics.latency.modelSamples} samples · ${coverageLabel(analytics.coverage.modelLatency)}`}/><Metric label="Estimated cost" value={money(analytics.cost.totalEstimatedUsd)} detail={`${analytics.cost.samples} samples · ${coverageLabel(analytics.coverage.estimatedCost)}`}/></section>
