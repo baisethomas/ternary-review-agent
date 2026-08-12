@@ -1,9 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ catalog: vi.fn(), pages: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  catalog: vi.fn(),
+  pages: vi.fn(),
+  loadVisibility: vi.fn(async (): Promise<{
+    scope: { kind: "repository"; installationId: number; owner: string; repo: string };
+    source: "repository";
+    monthlyCeilingUsd: number;
+    spentUsd: number;
+    remainingUsd: number;
+    utilization: number;
+    status: "ok" | "approaching" | "exceeded";
+    enforcement: "visibility";
+  } | null> => null),
+  usageStore: vi.fn(),
+}));
 vi.mock("server-only", () => ({}));
 vi.mock("./dashboard-data", () => ({ getRepositoryDashboardData: mocks.catalog }));
 vi.mock("./review-event-query-service", () => ({ reviewEventPagesForScope: mocks.pages }));
+vi.mock("./usage-budget-service", () => ({
+  loadUsageBudgetVisibility: mocks.loadVisibility,
+  usageBudgetStore: mocks.usageStore,
+}));
 
 import { analyticsEventPages, loadReviewAnalytics } from "./review-analytics-service";
 import type { ReviewEvent } from "./review-event-ledger";
@@ -142,5 +160,27 @@ describe("review analytics service", () => {
     await loading;
 
     expect(mocks.pages).toHaveBeenCalledTimes(repositories.length);
+  });
+
+  it("attaches spend-ceiling visibility for a single repository filter", async () => {
+    mocks.catalog.mockResolvedValue({ repositories: [repositories[0]] });
+    mocks.loadVisibility.mockResolvedValueOnce({
+      scope: { kind: "repository" as const, installationId: 7, owner: "ternary", repo: "agent" },
+      source: "repository" as const,
+      monthlyCeilingUsd: 10,
+      spentUsd: 0,
+      remainingUsd: 10,
+      utilization: 0,
+      status: "ok" as const,
+      enforcement: "visibility" as const,
+    });
+    const data = await loadReviewAnalytics({ repository: "Ternary/Agent" });
+    expect(mocks.loadVisibility).toHaveBeenCalledWith(expect.objectContaining({
+      installationId: 7,
+      owner: "Ternary",
+      repo: "Agent",
+      spentUsd: 0,
+    }));
+    expect(data.spendCeiling).toMatchObject({ status: "ok", monthlyCeilingUsd: 10, enforcement: "visibility" });
   });
 });

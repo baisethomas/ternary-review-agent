@@ -5,6 +5,7 @@ import { runReviewWorkerCycle } from "@/lib/review-worker-cycle";
 import { redisEmptyCycleBackoff } from "@/lib/review-worker-empty-backoff";
 import { guardedWorkerDispatch } from "@/lib/review-worker-dispatch-guard";
 import { getInvocationStartedAt, withInvocationStartedAt } from "@/lib/review-invocation-budget";
+import { runOpsAlertCheck } from "@/lib/ops-alert-service";
 
 export const maxDuration = 300;
 
@@ -30,6 +31,14 @@ async function processAvailableJobs() {
   return processed;
 }
 
+async function maybeRunOpsAlerts(includeSpend: boolean) {
+  try {
+    await runOpsAlertCheck({ includeSpend });
+  } catch (error) {
+    console.error("Unable to run ops alert check", error);
+  }
+}
+
 async function runWorker(request: Request, pruneHistory = false) {
   return withInvocationStartedAt(Date.now(), async () => {
     if (!isAuthorized(request)) return Response.json({ error: "Unauthorized" }, { status: 401 });
@@ -41,6 +50,8 @@ async function runWorker(request: Request, pruneHistory = false) {
       dispatch: (at) => guardedWorkerDispatch(dispatchReviewWorker, at),
       emptyCycleBackoff: redisEmptyCycleBackoff(),
     });
+    // Daily cron (GET) also evaluates spend; every wake checks queue/failure pressure.
+    await maybeRunOpsAlerts(pruneHistory);
     return Response.json({
       processed: jobs.map((job) => ({ id: job.id, status: job.status, attempts: job.attempts })),
       ...(dispatchError ? { dispatchError } : {}),
