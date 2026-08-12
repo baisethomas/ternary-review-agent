@@ -7,6 +7,7 @@ import type { ReviewLease } from "./review-queue";
 import type { ReviewFinding, ReviewRequest, ReviewResult } from "./types";
 import { findingIdentity } from "./review-event-ledger";
 import { formatFindingComment } from "./finding-comment";
+import { getInvocationStartedAt } from "./review-invocation-budget";
 import { generateOpenRouterReview, remainingInvocationBudgetMs } from "./openrouter-review-provider";
 import { safeReviewPolicy } from "./review-policy";
 import { applyReviewPolicyToResult, filterReviewDiff } from "./review-policy-execution";
@@ -23,7 +24,8 @@ function formatReview(result: ReviewResult) {
 }
 
 export async function runReview(request: ReviewRequest & { id?: string }, lease?: ReviewLease) {
-  const invocationStartedAt = Date.now();
+  // Prefer the worker-request start time so queue/setup elapsed time counts against the budget.
+  const invocationStartedAt = getInvocationStartedAt() ?? ("startedAt" in request && typeof request.startedAt === "number" ? request.startedAt : Date.now());
   const policy = request.policy ?? { ...safeReviewPolicy, model: process.env.OPENROUTER_MODEL ?? safeReviewPolicy.model };
   const token = await createInstallationToken(request.installationId);
   await lease?.assertActive();
