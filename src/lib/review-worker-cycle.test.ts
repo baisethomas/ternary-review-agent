@@ -163,7 +163,7 @@ describe("runReviewWorkerCycle empty-cycle backoff", () => {
     expect(backoff.count).toBe(4);
   });
 
-  it("does not inflate a short lock-contention wake with the empty floor", async () => {
+  it("floors short lock-contention wakes so empty cycles cannot republish every 5s", async () => {
     const backoff = memoryBackoff(3);
     const dispatches: number[] = [];
     const now = 80_000;
@@ -174,7 +174,7 @@ describe("runReviewWorkerCycle empty-cycle backoff", () => {
       now: () => now,
       emptyCycleBackoff: backoff,
     });
-    expect(dispatches).toEqual([now + EMPTY_CYCLE_BACKOFF_MS[0]]);
+    expect(dispatches).toEqual([now + EMPTY_CYCLE_BACKOFF_MS[3]]);
     expect(backoff.count).toBe(4);
   });
 

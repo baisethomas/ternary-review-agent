@@ -3,12 +3,31 @@ import { getNextReviewWakeAt, processReviewQueue, pruneReviewEventHistory } from
 import { dispatchReviewWorker } from "@/lib/review-worker-dispatcher";
 import { runReviewWorkerCycle } from "@/lib/review-worker-cycle";
 import { redisEmptyCycleBackoff } from "@/lib/review-worker-empty-backoff";
-import { withInvocationStartedAt } from "@/lib/review-invocation-budget";
+import { guardedWorkerDispatch } from "@/lib/review-worker-dispatch-guard";
+import { getInvocationStartedAt, withInvocationStartedAt } from "@/lib/review-invocation-budget";
 
 export const maxDuration = 300;
 
+/** Keep enough time for OpenRouter abort + trailing QStash publish. */
+const DRAIN_RESERVE_MS = 90_000;
+
 function isAuthorized(request: Request) {
   return hasBearerToken(request, "CRON_SECRET") || hasBearerToken(request, "INTERNAL_API_TOKEN");
+}
+
+function remainingInvocationMs() {
+  const startedAt = getInvocationStartedAt() ?? Date.now();
+  return maxDuration * 1_000 - (Date.now() - startedAt);
+}
+
+async function processAvailableJobs() {
+  const processed = [];
+  while (remainingInvocationMs() > DRAIN_RESERVE_MS) {
+    const batch = await processReviewQueue(1);
+    if (batch.length === 0) break;
+    processed.push(...batch);
+  }
+  return processed;
 }
 
 async function runWorker(request: Request, pruneHistory = false) {
@@ -16,9 +35,10 @@ async function runWorker(request: Request, pruneHistory = false) {
     if (!isAuthorized(request)) return Response.json({ error: "Unauthorized" }, { status: 401 });
     if (pruneHistory) await pruneReviewEventHistory();
     const { jobs, dispatchError } = await runReviewWorkerCycle({
-      processAvailableJobs: () => processReviewQueue(),
+      processAvailableJobs,
       nextWakeAt: getNextReviewWakeAt,
-      dispatch: dispatchReviewWorker,
+      // Budget/cooldown only the trailing self-wake — webhook/manual enqueue stays unblocked.
+      dispatch: (at) => guardedWorkerDispatch(dispatchReviewWorker, at),
       emptyCycleBackoff: redisEmptyCycleBackoff(),
     });
     return Response.json({

@@ -61,17 +61,11 @@ export async function runReviewWorkerCycle(options: ReviewWorkerCycle): Promise<
   const now = options.now?.() ?? Date.now();
   let dispatchAt = Math.max(nextWakeAt, now);
   if (jobs.length === 0) {
-    // Always advance empty-cycle backoff so retry-only queues climb 5→15→60→300.
-    // Short lock-contention deferrals (≤ first step) keep their near-term wake so
-    // pending work is not postponed by a large floor; longer retry wakes use
-    // max(nextWakeAt, floor).
+    // Always advance empty-cycle backoff — including short lock-contention wakes.
+    // Honoring the 5s contention deferral without a floor recreated the QStash
+    // burn: one leased job made every other claim look empty and republish ~every 5s.
     const floor = now + emptyCycleBackoffMs(await nextEmptyCount(options.emptyCycleBackoff));
-    const wakeDelayMs = nextWakeAt - now;
-    if (wakeDelayMs > 0 && wakeDelayMs <= EMPTY_CYCLE_BACKOFF_MS[0]) {
-      dispatchAt = nextWakeAt;
-    } else {
-      dispatchAt = Math.max(nextWakeAt, floor);
-    }
+    dispatchAt = Math.max(nextWakeAt, floor);
   } else {
     await resetEmptyCount(options.emptyCycleBackoff);
   }
