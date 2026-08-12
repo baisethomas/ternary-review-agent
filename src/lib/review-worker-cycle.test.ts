@@ -134,6 +134,7 @@ describe("runReviewWorkerCycle empty-cycle backoff", () => {
   });
 
   it("does not delay a real future wake behind a lower empty floor", async () => {
+    const backoff = memoryBackoff();
     const dispatches: number[] = [];
     const now = 50_000;
     await runReviewWorkerCycle({
@@ -141,24 +142,25 @@ describe("runReviewWorkerCycle empty-cycle backoff", () => {
       nextWakeAt: async () => now + 120_000,
       dispatch: async (at) => { dispatches.push(at); },
       now: () => now,
-      emptyCycleBackoff: memoryBackoff(),
+      emptyCycleBackoff: backoff,
     });
     expect(dispatches).toEqual([now + 120_000]);
+    expect(backoff.count).toBe(1);
   });
 
-  it("does not let idle backoff override a near-term lock-contention wake", async () => {
+  it("extends short retry wakes once empty-cycle backoff outgrows them", async () => {
     const backoff = memoryBackoff(3);
     const dispatches: number[] = [];
     const now = 60_000;
     await runReviewWorkerCycle({
       processAvailableJobs: async () => [],
-      nextWakeAt: async () => now + 5_000,
+      nextWakeAt: async () => now + 30_000,
       dispatch: async (at) => { dispatches.push(at); },
       now: () => now,
       emptyCycleBackoff: backoff,
     });
-    expect(dispatches).toEqual([now + 5_000]);
-    expect(backoff.count).toBe(3);
+    expect(dispatches).toEqual([now + EMPTY_CYCLE_BACKOFF_MS[3]]);
+    expect(backoff.count).toBe(4);
   });
 
   it("returns dispatchError instead of throwing when re-wake publish fails", async () => {
