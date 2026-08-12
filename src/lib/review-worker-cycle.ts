@@ -61,12 +61,17 @@ export async function runReviewWorkerCycle(options: ReviewWorkerCycle): Promise<
   const now = options.now?.() ?? Date.now();
   let dispatchAt = Math.max(nextWakeAt, now);
   if (jobs.length === 0) {
-    // Always advance empty-cycle backoff — including future retry wakes — so a
-    // retry-only queue cannot keep publishing on the short job-retry cadence.
-    // Dispatch at max(nextWakeAt, floor) so real later wakes are still honored
-    // when they exceed the current floor.
+    // Always advance empty-cycle backoff so retry-only queues climb 5→15→60→300.
+    // Short lock-contention deferrals (≤ first step) keep their near-term wake so
+    // pending work is not postponed by a large floor; longer retry wakes use
+    // max(nextWakeAt, floor).
     const floor = now + emptyCycleBackoffMs(await nextEmptyCount(options.emptyCycleBackoff));
-    dispatchAt = Math.max(nextWakeAt, floor);
+    const wakeDelayMs = nextWakeAt - now;
+    if (wakeDelayMs > 0 && wakeDelayMs <= EMPTY_CYCLE_BACKOFF_MS[0]) {
+      dispatchAt = nextWakeAt;
+    } else {
+      dispatchAt = Math.max(nextWakeAt, floor);
+    }
   } else {
     await resetEmptyCount(options.emptyCycleBackoff);
   }

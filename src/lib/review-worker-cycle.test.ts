@@ -163,6 +163,21 @@ describe("runReviewWorkerCycle empty-cycle backoff", () => {
     expect(backoff.count).toBe(4);
   });
 
+  it("does not inflate a short lock-contention wake with the empty floor", async () => {
+    const backoff = memoryBackoff(3);
+    const dispatches: number[] = [];
+    const now = 80_000;
+    await runReviewWorkerCycle({
+      processAvailableJobs: async () => [],
+      nextWakeAt: async () => now + EMPTY_CYCLE_BACKOFF_MS[0],
+      dispatch: async (at) => { dispatches.push(at); },
+      now: () => now,
+      emptyCycleBackoff: backoff,
+    });
+    expect(dispatches).toEqual([now + EMPTY_CYCLE_BACKOFF_MS[0]]);
+    expect(backoff.count).toBe(4);
+  });
+
   it("returns dispatchError instead of throwing when re-wake publish fails", async () => {
     const result = await runReviewWorkerCycle({
       processAvailableJobs: async () => [job("job-2")],
