@@ -84,4 +84,67 @@ describe("review-eval-runner", () => {
       resultsDir: "/tmp/results",
     })).rejects.toThrow(/OPENROUTER_API_KEY/);
   });
+
+  it("continues the suite when one case provider call fails", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    const root = await mkdtemp(join(tmpdir(), "ternary-eval-"));
+    const casesDir = join(root, "cases");
+    for (const id of ["ok-case", "fail-case"]) {
+      const caseDir = join(casesDir, id);
+      await mkdir(caseDir, { recursive: true });
+      await writeFile(join(caseDir, "case.json"), JSON.stringify({
+        id,
+        title: id,
+        tags: [],
+        expectedFindings: [{
+          ruleId: "correctness-bounds",
+          severity: "blocking",
+          file: "a.ts",
+          line: 1,
+          titleContains: "bound",
+          required: true,
+        }],
+        expectedNonFindings: [],
+      }));
+      await writeFile(join(caseDir, "diff.patch"), "diff --git a/a.ts b/a.ts\n");
+    }
+    const thresholdsPath = join(root, "thresholds.json");
+    await writeFile(thresholdsPath, JSON.stringify({
+      blockingRecallMin: 0,
+      precisionMin: 0,
+      severityAgreementMin: 0,
+      locationAccuracyMin: 0,
+    }));
+
+    const generateReview = vi.fn(async (_diff: string, _sandbox: unknown, _context: string): Promise<ReviewResult> => {
+      if (generateReview.mock.calls.length === 1) throw new Error("AI review timed out after 240000ms");
+      return {
+        verdict: "request_changes",
+        summary: "found",
+        findings: [{
+          ruleId: "correctness-bounds",
+          findingKey: "correctness-bounds:a",
+          severity: "blocking",
+          file: "a.ts",
+          line: 1,
+          title: "Loop bound bug",
+          explanation: "fix",
+        }],
+        sandbox: { ok: true, commands: [], durationMs: 1, sandboxId: "eval" },
+        ai: { model: "test/model", latencyMs: 1 },
+      };
+    });
+
+    const report = await runReviewEvalSuite({
+      casesDir,
+      thresholdsPath,
+      resultsDir: join(root, "results"),
+      generateReview,
+      now: () => new Date("2026-08-13T00:00:00.000Z"),
+    });
+
+    expect(report.cases).toHaveLength(2);
+    expect(report.cases.find((entry) => entry.id === "fail-case")?.error).toMatch(/timed out/);
+    expect(report.cases.find((entry) => entry.id === "ok-case")?.metrics.truePositives).toBe(1);
+  });
 });

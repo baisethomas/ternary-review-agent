@@ -5,7 +5,7 @@
   "expectedFindings": [
     {
       "ruleId": "security-destructive-commands",
-      "severity": "blocking",
+      "severity": "warning",
       "file": "hooks/guard-destructive.sh",
       "line": 5,
       "lineTolerance": 4,

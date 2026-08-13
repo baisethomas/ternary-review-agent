@@ -44,6 +44,7 @@ export type EvalCaseReport = {
   truePositiveKeys: string[];
   falseNegativeRuleIds: string[];
   falsePositiveTitles: string[];
+  error?: string;
 };
 
 export type EvalRunReport = {
@@ -114,18 +115,36 @@ export async function runReviewEvalSuite(options: ReviewEvalRunnerOptions): Prom
   const reports: EvalCaseReport[] = [];
   for (const evalCase of cases) {
     const context = contextMode === "empty" ? "" : evalCase.context;
-    const result = await generateReview(evalCase.diff, evalCase.sandbox, context, policy);
-    const match = matchEvalFindings(evalCase, result.findings);
-    const metrics = scoreEvalCase(match, result);
-    reports.push({
-      id: evalCase.id,
-      title: evalCase.title,
-      metrics,
-      predictedFindings: result.findings,
-      truePositiveKeys: match.truePositives.map((entry) => entry.predicted.findingKey ?? entry.predicted.title),
-      falseNegativeRuleIds: match.falseNegatives.map((entry) => entry.ruleId),
-      falsePositiveTitles: match.falsePositives.map((entry) => entry.title),
-    });
+    try {
+      const result = await generateReview(evalCase.diff, evalCase.sandbox, context, policy);
+      const match = matchEvalFindings(evalCase, result.findings);
+      const metrics = scoreEvalCase(match, result);
+      reports.push({
+        id: evalCase.id,
+        title: evalCase.title,
+        metrics,
+        predictedFindings: result.findings,
+        truePositiveKeys: match.truePositives.map((entry) => entry.predicted.findingKey ?? entry.predicted.title),
+        falseNegativeRuleIds: match.falseNegatives.map((entry) => entry.ruleId),
+        falsePositiveTitles: match.falsePositives.map((entry) => entry.title),
+      });
+    } catch (error) {
+      // Keep the suite moving through provider timeouts/errors; score as all required FNs.
+      const match = matchEvalFindings(evalCase, []);
+      const metrics = scoreEvalCase(match);
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Eval Case ${evalCase.id} failed: ${message}`);
+      reports.push({
+        id: evalCase.id,
+        title: evalCase.title,
+        metrics,
+        predictedFindings: [],
+        truePositiveKeys: [],
+        falseNegativeRuleIds: match.falseNegatives.map((entry) => entry.ruleId),
+        falsePositiveTitles: [],
+        error: message,
+      });
+    }
   }
 
   const suite = aggregateEvalMetrics(reports.map((entry) => entry.metrics));

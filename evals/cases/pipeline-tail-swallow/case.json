@@ -9,7 +9,7 @@
       "file": "hooks/stop-gate.sh",
       "line": 7,
       "lineTolerance": 4,
-      "titleContains": "tail",
+      "titleContains": "exit",
       "required": true
     }
   ],

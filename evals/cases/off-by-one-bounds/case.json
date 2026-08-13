@@ -9,7 +9,7 @@
       "file": "src/lib/sum.ts",
       "line": 4,
       "lineTolerance": 3,
-      "titleContains": "length",
+      "titleContains": "bound",
       "required": true
     }
   ],

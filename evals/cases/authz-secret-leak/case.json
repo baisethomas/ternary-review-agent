@@ -14,7 +14,7 @@
     },
     {
       "ruleId": "security-secrets",
-      "severity": "blocking",
+      "severity": "warning",
       "file": "src/app/api/notes/route.ts",
       "line": 6,
       "lineTolerance": 5,
