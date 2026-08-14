@@ -113,8 +113,13 @@ html:not([data-theme="light"]) .theme-light-only { display: none; }
 
 @keyframes pulse-dot { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
 @keyframes draw { from { width: 0 } }
+@keyframes draw-y { from { transform: scaleY(0) } }
 .pulse-dot { animation: pulse-dot 1.8s ease-in-out infinite; }
 .draw-bar { animation: draw .65s ease-out both; }
+.draw-bar-y { transform-origin: bottom; animation: draw-y .65s ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .draw-bar, .draw-bar-y { animation: none; }
+}
 
 @media (max-width: 900px) {
   .desktop-only { display: none !important; }

@@ -2,6 +2,13 @@ import "server-only";
 import { getRepositoryDashboardData } from "./dashboard-data";
 import { ReviewAnalyticsAccumulator } from "./review-analytics-accumulator";
 import { combineReviewAnalytics, filterReviewEvents, reviewEventRunKey, reviewPullRequestKey, type ReviewAnalyticsFilters } from "./review-analytics";
+import {
+  buildReviewAnalyticsSeries,
+  buildStatStrip,
+  combineReviewAnalyticsSeries,
+  emptyReviewAnalyticsSeries,
+  resolveAnalyticsWindow,
+} from "./review-analytics-series";
 import { reviewEventPagesForScope } from "./review-event-query-service";
 import type { ReviewEvent } from "./review-event-ledger";
 import type { RepositoryScope } from "./repository-index";
@@ -48,6 +55,10 @@ function selectRepositories(repositories: Awaited<ReturnType<typeof getRepositor
 
 function hasLifecycleFilters(filters: ReviewAnalyticsFilters) {
   return Boolean(filters.author || filters.from || filters.to || filters.rule || filters.model || filters.outcome);
+}
+
+function datedFilters(filters: ReviewAnalyticsFilters, from: string, to: string): ReviewAnalyticsFilters {
+  return { ...filters, from, to, range: undefined };
 }
 
 type EventSelection = {
@@ -108,16 +119,18 @@ function eventIsSelected(event: ReviewEvent, selection: EventSelection) {
 }
 
 export async function analyticsEventPages(filters: ReviewAnalyticsFilters = {}) {
+  const window = resolveAnalyticsWindow({ range: filters.range, from: filters.from, to: filters.to });
+  const dated = datedFilters(filters, window.from, window.to);
   const repositoryData = await getRepositoryDashboardData();
-  const repositories = selectRepositories(repositoryData.repositories, filters);
+  const repositories = selectRepositories(repositoryData.repositories, dated);
   return (async function* () {
     for (const repository of repositories) {
       const scope = { installationId: repository.installationId, owner: repository.owner, repo: repository.name };
-      if (!hasLifecycleFilters(filters)) {
+      if (!hasLifecycleFilters(dated)) {
         for await (const page of reviewEventPagesForScope(scope)) yield page;
         continue;
       }
-      const selection = await selectMatchingEvents(scope, filters);
+      const selection = await selectMatchingEvents(scope, dated);
       for await (const page of reviewEventPagesForScope(scope)) {
         const selected = page.filter((event) => eventIsSelected(event, selection));
         if (selected.length) yield selected;
@@ -126,20 +139,30 @@ export async function analyticsEventPages(filters: ReviewAnalyticsFilters = {}) 
   })();
 }
 
-async function aggregateRepository(scope: RepositoryScope, filters: ReviewAnalyticsFilters, options: AnalyticsOptions) {
+async function aggregateRepository(scope: RepositoryScope, filters: ReviewAnalyticsFilters, options?: AnalyticsOptions) {
   const accumulator = new ReviewAnalyticsAccumulator();
+  const events: ReviewEvent[] = [];
   if (!hasLifecycleFilters(filters)) {
     for await (const page of reviewEventPagesForScope(scope)) {
-      for (const event of page) collectOptions(event, options);
-      accumulator.addPage(page.map(analyticsEventProjection));
+      for (const event of page) {
+        if (options) collectOptions(event, options);
+        const projected = analyticsEventProjection(event);
+        events.push(projected);
+        accumulator.add(projected);
+      }
     }
-    return accumulator.result();
+    return { analytics: accumulator.result(), events };
   }
   const selection = await selectMatchingEvents(scope, filters, options);
   for await (const page of reviewEventPagesForScope(scope)) {
-    for (const event of page) if (eventIsSelected(event, selection)) accumulator.add(analyticsEventProjection(event));
+    for (const event of page) {
+      if (!eventIsSelected(event, selection)) continue;
+      const projected = analyticsEventProjection(event);
+      events.push(projected);
+      accumulator.add(projected);
+    }
   }
-  return accumulator.result();
+  return { analytics: accumulator.result(), events };
 }
 
 async function monthlySpendUsd(scope: { installationId: number; owner?: string; repo?: string; kind: "organization" | "repository" }) {
@@ -195,19 +218,34 @@ async function spendCeilingVisibility(
 }
 
 export async function loadReviewAnalytics(filters: ReviewAnalyticsFilters = {}) {
+  const window = resolveAnalyticsWindow({ range: filters.range, from: filters.from, to: filters.to });
+  const currentFilters = datedFilters(filters, window.from, window.to);
+  const priorFilters = datedFilters(filters, window.priorFrom, window.priorTo);
   const repositoryData = await getRepositoryDashboardData();
   const repositories = selectRepositories(repositoryData.repositories, filters);
   const repositoryAnalytics = [];
+  const priorRepositoryAnalytics = [];
+  const repositorySeries = [];
   const options: AnalyticsOptions = { authors: new Set(), rules: new Set(), models: new Set() };
   let failedRepositories = 0;
   for (const repository of repositories) {
+    const scope = { installationId: repository.installationId, owner: repository.owner, repo: repository.name };
     try {
-      repositoryAnalytics.push(await aggregateRepository({ installationId: repository.installationId, owner: repository.owner, repo: repository.name }, filters, options));
+      const current = await aggregateRepository(scope, currentFilters, options);
+      repositoryAnalytics.push(current.analytics);
+      repositorySeries.push(buildReviewAnalyticsSeries(current.events, window.from, window.to));
+      const prior = await aggregateRepository(scope, priorFilters);
+      priorRepositoryAnalytics.push(prior.analytics);
     } catch {
       failedRepositories += 1;
     }
   }
   const analytics = combineReviewAnalytics(repositoryAnalytics);
+  const priorAnalytics = combineReviewAnalytics(priorRepositoryAnalytics);
+  const series = repositorySeries.length
+    ? combineReviewAnalyticsSeries(repositorySeries, window.from, window.to)
+    : emptyReviewAnalyticsSeries(window.from, window.to);
+  const stats = buildStatStrip(analytics, priorAnalytics);
   const spendCeiling = await spendCeilingVisibility(repositories);
   const installationIds = new Set(repositories.map((repository) => repository.installationId));
   const budgetTarget = repositories.length === 1
@@ -228,6 +266,10 @@ export async function loadReviewAnalytics(filters: ReviewAnalyticsFilters = {}) 
       : null;
   return {
     analytics,
+    priorAnalytics,
+    series,
+    stats,
+    window,
     spendCeiling,
     budgetTarget,
     repositories: repositoryData.repositories.map((repository) => repository.fullName),

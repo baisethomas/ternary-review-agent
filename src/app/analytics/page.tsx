@@ -5,16 +5,35 @@ import { getDashboardChangeCursor } from "@/lib/dashboard-change-service";
 import type { ReviewAnalyticsFilters } from "@/lib/review-analytics";
 import { loadReviewAnalytics } from "@/lib/review-analytics-service";
 import type { ReviewAnalyticsData } from "@/lib/review-analytics-service";
+import { parseAnalyticsRange } from "@/lib/review-analytics-series";
 
-type AnalyticsSearchParams = { organization?: string | string[]; repository?: string | string[]; author?: string | string[]; from?: string | string[]; to?: string | string[]; rule?: string | string[]; model?: string | string[]; outcome?: string | string[] };
+type AnalyticsSearchParams = {
+  organization?: string | string[];
+  repository?: string | string[];
+  author?: string | string[];
+  from?: string | string[];
+  to?: string | string[];
+  range?: string | string[];
+  rule?: string | string[];
+  model?: string | string[];
+  outcome?: string | string[];
+};
 function first(value?: string | string[]) { return Array.isArray(value) ? value[0] : value; }
 
 export default async function AnalyticsPage({ searchParams }: { searchParams: Promise<AnalyticsSearchParams> }) {
   if (!await isDashboardAuthenticated()) return <AccessGate redirectTo="/analytics" />;
   const params = await searchParams;
   const outcome = first(params.outcome);
+  const range = parseAnalyticsRange(first(params.range));
   const filters: ReviewAnalyticsFilters = {
-    organization: first(params.organization), repository: first(params.repository), author: first(params.author), from: first(params.from), to: first(params.to), rule: first(params.rule), model: first(params.model),
+    organization: first(params.organization),
+    repository: first(params.repository),
+    author: first(params.author),
+    from: first(params.from),
+    to: first(params.to),
+    range: range ? String(range) as ReviewAnalyticsFilters["range"] : undefined,
+    rule: first(params.rule),
+    model: first(params.model),
     outcome: outcome === "approve" || outcome === "request_changes" || outcome === "comment" || outcome === "failed" ? outcome : undefined,
   };
   const initialChangeCursor = await getDashboardChangeCursor().catch(() => 0);
