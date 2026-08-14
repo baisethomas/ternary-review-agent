@@ -12,7 +12,7 @@ export function ThemeToggle() {
   }
 
   return (
-    <button type="button" onClick={toggle} className="rounded-lg border border-[var(--line)] bg-[var(--panel)] px-3 py-2 text-xs font-semibold shadow-sm" aria-label="Toggle color theme">
+    <button type="button" onClick={toggle} className="rounded-[10px] border border-[var(--line)] bg-[var(--panel)] px-3 py-2 text-xs font-semibold" aria-label="Toggle color theme">
       <span className="theme-dark-only">Light</span>
       <span className="theme-light-only">Dark</span>
     </button>

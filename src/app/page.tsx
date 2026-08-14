@@ -16,7 +16,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ r
     data = await getDashboardData(requestedRepository);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to load GitHub data";
-    return <main className="grid min-h-screen place-items-center p-6"><section className="max-w-lg rounded-2xl border border-[var(--danger-line)] bg-[var(--panel)] p-6"><h1 className="text-lg font-semibold">GitHub data could not be loaded</h1><p className="mt-2 font-mono text-xs leading-6 text-[var(--red)]">{message}</p><form className="mt-5" action="/"><button className="rounded-lg bg-[var(--primary)] px-4 py-2.5 text-xs font-semibold text-[var(--primary-fg)]">Try again</button></form></section></main>;
+    return <main className="grid min-h-screen place-items-center p-6"><section className="max-w-lg rounded-[10px] border border-[var(--danger-line)] bg-[var(--panel)] p-6"><h1 className="text-lg font-semibold">GitHub data could not be loaded</h1><p className="mt-2 font-mono text-xs leading-6 text-[var(--red)]">{message}</p><form className="mt-5" action="/"><button className="rounded-lg bg-[var(--primary)] px-4 py-2.5 text-xs font-semibold text-[var(--primary-fg)]">Try again</button></form></section></main>;
   }
   return <ReviewDashboard data={data} initialChangeCursor={initialChangeCursor}/>;
 }
