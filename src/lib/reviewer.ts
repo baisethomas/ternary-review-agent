@@ -52,16 +52,12 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
     await upsertPullRequestComment(request.owner, request.repo, request.pullNumber, token, markdown, request.id);
     await lease?.assertActive();
     if (result.authoritativeFindings !== false) {
-      try {
-        await syncFindingReviewComments(request.owner, request.repo, request.pullNumber, request.headSha, token, result.findings.filter((finding) => finding.file).map((finding) => {
-          const findingId = findingIdentity(request, finding);
-          return { findingId, body: formatFindingComment(finding, findingId), path: finding.file, line: finding.line };
-        }));
-      } catch (error) {
-        // Finding-thread sync is best-effort: a GraphQL permission miss must not fail the Check
-        // after the summary comment has already been published.
-        console.error("Unable to sync finding review comments", error);
-      }
+      // Finding-thread sync already soft-fails GraphQL FORBIDDEN on list/resolve/unresolve.
+      // Non-permission errors still propagate and fail the Check.
+      await syncFindingReviewComments(request.owner, request.repo, request.pullNumber, request.headSha, token, result.findings.filter((finding) => finding.file).map((finding) => {
+        const findingId = findingIdentity(request, finding);
+        return { findingId, body: formatFindingComment(finding, findingId), path: finding.file, line: finding.line };
+      }));
     }
     await lease?.assertActive();
     await finishCheckRun(request.owner, request.repo, check.id, token, result.verdict === "approve" ? "success" : result.verdict === "request_changes" ? "failure" : "neutral", "Review complete", markdown, JSON.stringify(result));
