@@ -1,5 +1,8 @@
-/** Worker route maxDuration (seconds). Must stay in sync with Vercel plan limits. */
-export const REVIEW_WORKER_MAX_DURATION_SECONDS = 480;
+/**
+ * Worker invocation limits. Vercel Hobby caps function duration at 300s; Pro allows up to 800s.
+ * Raise REVIEW_WORKER_MAX_DURATION_SECONDS (and the worker route literal) after upgrading the plan.
+ */
+export const REVIEW_WORKER_MAX_DURATION_SECONDS = 300;
 
 export const REVIEW_WORKER_MAX_DURATION_MS = REVIEW_WORKER_MAX_DURATION_SECONDS * 1_000;
 
@@ -10,10 +13,13 @@ export const WORKER_INVOCATION_BUDGET_MS = REVIEW_WORKER_MAX_DURATION_MS;
 export const REVIEW_PUBLISH_RESERVE_MS = 30_000;
 
 /** Keep enough time for OpenRouter abort + trailing QStash publish when draining the queue. */
-export const REVIEW_WORKER_DRAIN_RESERVE_MS = 120_000;
+export const REVIEW_WORKER_DRAIN_RESERVE_MS = 90_000;
 
-/** Default OpenRouter timeout: budget minus publish reserve and typical pre-AI setup (~90s). */
-export const DEFAULT_OPENROUTER_TIMEOUT_MS = 360_000;
+/** Default OpenRouter timeout: budget minus publish reserve and typical pre-AI setup (~60s). */
+export const DEFAULT_OPENROUTER_TIMEOUT_MS = 240_000;
 
-/** Upper bound for OPENROUTER_TIMEOUT_MS env override. */
-export const MAX_OPENROUTER_TIMEOUT_MS = 420_000;
+/** Upper bound for OPENROUTER_TIMEOUT_MS env override (still capped by remaining invocation budget). */
+export const MAX_OPENROUTER_TIMEOUT_MS = 240_000;
+
+/** Pro-plan target once maxDuration can exceed 300s (Hobby deploy will reject higher values). */
+export const PRO_REVIEW_WORKER_MAX_DURATION_SECONDS = 480;
