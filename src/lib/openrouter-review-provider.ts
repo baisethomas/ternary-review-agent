@@ -1,6 +1,19 @@
 import type { ReviewFinding, ReviewResult, SandboxResult } from "./types";
 import { isRetryableHttpStatus, NonRetryableReviewError } from "./review-errors";
 import type { ResolvedReviewPolicy } from "./review-policy";
+import {
+  DEFAULT_OPENROUTER_TIMEOUT_MS,
+  MAX_OPENROUTER_TIMEOUT_MS,
+  REVIEW_PUBLISH_RESERVE_MS,
+  WORKER_INVOCATION_BUDGET_MS,
+} from "./review-invocation-limits";
+
+export {
+  DEFAULT_OPENROUTER_TIMEOUT_MS,
+  MAX_OPENROUTER_TIMEOUT_MS,
+  REVIEW_PUBLISH_RESERVE_MS,
+  WORKER_INVOCATION_BUDGET_MS,
+} from "./review-invocation-limits";
 
 /** Stable label for Eval Runs; bump when the system prompt text changes materially. */
 export const REVIEW_PROMPT_VERSION = "v1";
@@ -117,13 +130,7 @@ function isAbortError(error: unknown) {
   return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }
 
-export const DEFAULT_OPENROUTER_TIMEOUT_MS = 240_000;
-export const MAX_OPENROUTER_TIMEOUT_MS = 240_000;
 export const MIN_OPENROUTER_TIMEOUT_MS = 1_000;
-/** Matches the worker route `maxDuration` so provider aborts beat platform kills. */
-export const WORKER_INVOCATION_BUDGET_MS = 300_000;
-/** Leave headroom after the model call for GitHub publish / check-run finish. */
-export const REVIEW_PUBLISH_RESERVE_MS = 30_000;
 
 export type OpenRouterTimeoutOptions = {
   /** Milliseconds remaining before the worker invocation deadline. */

@@ -74,5 +74,6 @@ describe("shouldSlimSandbox", () => {
     const lowPrep = prepareReviewRoute("diff --git a/a.ts b/a.ts\n+++ b/a.ts\n+change", sandbox, baseConfig);
     expect(shouldSlimSandbox(lowPrep, { ...baseConfig, executionMode: "risk", slimSandboxOnLowRisk: true })).toBe(true);
     expect(shouldSlimSandbox(lowPrep, baseConfig)).toBe(false);
+    expect(shouldSlimSandbox(lowPrep, { ...baseConfig, executionMode: "single", slimSandboxOnLowRisk: true })).toBe(false);
   });
 });

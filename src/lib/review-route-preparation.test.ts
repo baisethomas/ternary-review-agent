@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { prepareReviewRoute } from "./review-route-preparation";
+import { prepareReviewRoute, prepareReviewRouteFromDiff } from "./review-route-preparation";
 import type { SandboxResult } from "./types";
 
 const okSandbox: SandboxResult = {
@@ -81,5 +81,12 @@ describe("prepareReviewRoute", () => {
     });
     expect(preparation.riskSignals).toContain("large-diff-lines");
     expect(preparation.riskFloor).toBe("standard");
+  });
+
+  it("prepares diff-only signals without treating sandbox as failed", () => {
+    const diff = "diff --git a/a.ts b/a.ts\n+++ b/a.ts\n+change";
+    const preparation = prepareReviewRouteFromDiff(diff, config);
+    expect(preparation.sandboxFailed).toBe(false);
+    expect(preparation.riskFloor).toBe("low");
   });
 });

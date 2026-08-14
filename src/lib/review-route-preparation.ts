@@ -98,6 +98,20 @@ function resolveRiskFloor(signals: string[], sandboxFailed: boolean): ReviewRisk
   return "low";
 }
 
+/** Diff-only signals for pre-sandbox decisions such as slim sandbox (no sandbox evidence yet). */
+export function prepareReviewRouteFromDiff(
+  diff: string,
+  config: ReviewRouteConfig,
+): ReviewRoutePreparation {
+  const preSandbox: SandboxResult = {
+    ok: true,
+    commands: [],
+    durationMs: 0,
+    sandboxId: "pre-sandbox",
+  };
+  return prepareReviewRoute(diff, preSandbox, config);
+}
+
 export function prepareReviewRoute(
   diff: string,
   sandbox: SandboxResult,

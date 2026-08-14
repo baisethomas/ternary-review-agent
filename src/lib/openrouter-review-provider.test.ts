@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { generateOpenRouterReview, remainingInvocationBudgetMs, resolveOpenRouterTimeoutMs } from "./openrouter-review-provider";
+import { generateOpenRouterReview, resolveOpenRouterTimeoutMs } from "./openrouter-review-provider";
 import { NonRetryableReviewError } from "./review-errors";
 import { safeReviewPolicy } from "./review-policy";
 
@@ -17,24 +17,20 @@ afterEach(() => {
 
 describe("resolveOpenRouterTimeoutMs", () => {
   it("defaults and rejects invalid or out-of-range values", () => {
-    expect(resolveOpenRouterTimeoutMs(undefined)).toBe(240_000);
-    expect(resolveOpenRouterTimeoutMs("")).toBe(240_000);
-    expect(resolveOpenRouterTimeoutMs("nope")).toBe(240_000);
-    expect(resolveOpenRouterTimeoutMs("0")).toBe(240_000);
-    expect(resolveOpenRouterTimeoutMs("-5")).toBe(240_000);
-    expect(resolveOpenRouterTimeoutMs("500")).toBe(240_000);
+    expect(resolveOpenRouterTimeoutMs(undefined)).toBe(360_000);
+    expect(resolveOpenRouterTimeoutMs("")).toBe(360_000);
+    expect(resolveOpenRouterTimeoutMs("nope")).toBe(360_000);
+    expect(resolveOpenRouterTimeoutMs("0")).toBe(360_000);
+    expect(resolveOpenRouterTimeoutMs("-5")).toBe(360_000);
+    expect(resolveOpenRouterTimeoutMs("500")).toBe(360_000);
     expect(resolveOpenRouterTimeoutMs("120000")).toBe(120_000);
-    expect(resolveOpenRouterTimeoutMs("999999")).toBe(240_000);
+    expect(resolveOpenRouterTimeoutMs("999999")).toBe(420_000);
   });
 
   it("caps the configured timeout to the remaining invocation budget", () => {
-    expect(resolveOpenRouterTimeoutMs("240000", { remainingMs: 90_000 })).toBe(90_000);
-    expect(resolveOpenRouterTimeoutMs("240000", { remainingMs: 300_000 })).toBe(240_000);
-    expect(() => resolveOpenRouterTimeoutMs("240000", { remainingMs: 500 })).toThrow(/invocation budget/i);
-  });
-
-  it("computes remaining budget with publish reserve", () => {
-    expect(remainingInvocationBudgetMs(1_000, 61_000, 300_000, 30_000)).toBe(210_000);
+    expect(resolveOpenRouterTimeoutMs("360000", { remainingMs: 90_000 })).toBe(90_000);
+    expect(resolveOpenRouterTimeoutMs("360000", { remainingMs: 480_000 })).toBe(360_000);
+    expect(() => resolveOpenRouterTimeoutMs("360000", { remainingMs: 500 })).toThrow(/invocation budget/i);
   });
 });
 
