@@ -342,6 +342,13 @@ function FindingsPanel({ pull, findings, running, onRun }: { pull: DashboardPull
     );
   }
   if (findings.length === 0) {
+    if (pull.check.status === "failed") {
+      return (
+        <div className="rounded-[10px] border border-[var(--danger-line)] bg-[var(--danger-bg)] px-4 py-3 text-xs leading-6 text-[var(--red)]">
+          {pull.check.summary || "Review failed for this commit."}
+        </div>
+      );
+    }
     return (
       <div className="rounded-[10px] border border-[var(--success-line)] bg-[var(--success-bg)] px-4 py-3 text-xs leading-6 text-[var(--green)]">
         No material findings were reported for this commit.
@@ -364,6 +371,7 @@ function FindingsPanel({ pull, findings, running, onRun }: { pull: DashboardPull
               ) : (
                 <span className="text-[12px] font-semibold">{finding.title}</span>
               )}
+              <span className="text-[9px] font-bold uppercase tracking-[.08em] text-[var(--faint)]">{finding.severity}</span>
               {finding.state ? (
                 <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[.08em] ${findingStatePresentation[finding.state].badgeClass}`}>
                   <span className="text-[8px]" aria-hidden>●</span>
@@ -375,6 +383,16 @@ function FindingsPanel({ pull, findings, running, onRun }: { pull: DashboardPull
               {location ? <span className="mr-1.5 font-medium text-[var(--ink)]">{finding.title}</span> : null}
               {finding.explanation}
             </p>
+            {finding.suggestedFix ? (
+              <p className="mt-1 truncate text-[11px] text-[var(--faint)]" title={finding.suggestedFix}>
+                <span className="font-semibold text-[var(--muted)]">Fix:</span> {finding.suggestedFix}
+              </p>
+            ) : null}
+            {finding.feedbackReason ? (
+              <p className="mt-1 truncate text-[11px] text-[var(--faint)]" title={finding.feedbackReason}>
+                <span className="font-semibold text-[var(--muted)]">Feedback:</span> {finding.feedbackReason}
+              </p>
+            ) : null}
           </article>
         );
       })}
@@ -385,7 +403,7 @@ function FindingsPanel({ pull, findings, running, onRun }: { pull: DashboardPull
 function HistoryPanel({
   entries,
 }: {
-  entries: Array<{ findingTitle: string; findingId?: string; state: string; occurredAt: string; headSha: string; reason?: string; actor?: string }>;
+  entries: Array<{ findingTitle: string; findingId?: string; state: string; occurredAt: string; headSha?: string; reason?: string; actor?: string }>;
 }) {
   if (!entries.length) {
     return <p className="px-1 py-6 text-center text-xs text-[var(--muted)]">No finding lifecycle history for this commit yet.</p>;
@@ -399,7 +417,7 @@ function HistoryPanel({
             <span className="text-[var(--muted)]">{entry.findingTitle}</span>
             <time className="font-mono text-[10px] text-[var(--faint)]" dateTime={entry.occurredAt}>{relativeTime(entry.occurredAt)}</time>
             {entry.actor ? <span className="text-[10px] text-[var(--faint)]">by {entry.actor}</span> : null}
-            <span className="font-mono text-[10px] text-[var(--faint)]">{entry.headSha.slice(0, 7)}</span>
+            {entry.headSha ? <span className="font-mono text-[10px] text-[var(--faint)]">{entry.headSha.slice(0, 7)}</span> : null}
           </div>
           {entry.reason ? <p className="mt-1 text-[11px] leading-5 text-[var(--muted)]">{entry.reason}</p> : null}
         </div>
