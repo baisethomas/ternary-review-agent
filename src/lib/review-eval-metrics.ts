@@ -44,8 +44,9 @@ export type EvalThresholds = {
   locationAccuracyMin: number;
 };
 
-function ratio(numerator: number, denominator: number) {
-  if (denominator <= 0) return 1;
+/** Ratio helper. `empty` is used when the denominator is zero (vacuous case). */
+function ratio(numerator: number, denominator: number, empty = 1) {
+  if (denominator <= 0) return empty;
   return numerator / denominator;
 }
 
@@ -66,11 +67,13 @@ export function scoreEvalCase(match: EvalMatchResult, result?: Pick<ReviewResult
     falseNegatives,
     blockingTruePositives,
     blockingFalseNegatives,
-    precision: ratio(truePositives, truePositives + falsePositives),
+    // Empty predictions must not inflate precision; empty TP sets must not inflate agreement metrics.
+    precision: ratio(truePositives, truePositives + falsePositives, 0),
+    // Vacuous recall when nothing was expected remains 1.
     recall: ratio(truePositives, truePositives + falseNegatives),
     blockingRecall: ratio(blockingTruePositives, blockingTruePositives + blockingFalseNegatives),
-    severityAgreement: ratio(severityAgreed, truePositives),
-    locationAccuracy: ratio(locationAccurate, locationPairs.length),
+    severityAgreement: ratio(severityAgreed, truePositives, 0),
+    locationAccuracy: ratio(locationAccurate, locationPairs.length, 0),
     locationPairs: locationPairs.length,
     severityAgreed,
   };
@@ -102,11 +105,11 @@ export function aggregateEvalMetrics(cases: EvalCaseMetrics[]): EvalSuiteMetrics
     truePositives,
     falsePositives,
     falseNegatives,
-    precision: ratio(truePositives, truePositives + falsePositives),
+    precision: ratio(truePositives, truePositives + falsePositives, 0),
     recall: ratio(truePositives, truePositives + falseNegatives),
     blockingRecall: ratio(blockingTruePositives, blockingTruePositives + blockingFalseNegatives),
-    severityAgreement: ratio(severityAgreed, truePositives),
-    locationAccuracy: ratio(locationAccurate, locationPairs),
+    severityAgreement: ratio(severityAgreed, truePositives, 0),
+    locationAccuracy: ratio(locationAccurate, locationPairs, 0),
     totalLatencyMs: cases.reduce((sum, entry) => sum + (entry.latencyMs ?? 0), 0),
     totalInputTokens: cases.reduce((sum, entry) => sum + (entry.inputTokens ?? 0), 0),
     totalOutputTokens: cases.reduce((sum, entry) => sum + (entry.outputTokens ?? 0), 0),

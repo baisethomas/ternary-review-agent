@@ -50,6 +50,44 @@ describe("review-eval-metrics", () => {
     });
   });
 
+  it("scores zero predictions against expected findings as precision 0, not vacuous 1", () => {
+    const scored = scoreEvalCase(match({
+      falseNegatives: [
+        { ruleId: "r1", severity: "blocking", file: "a.ts", required: true },
+        { ruleId: "r2", severity: "warning", file: "b.ts", line: 3, required: true },
+      ],
+    }));
+
+    expect(scored).toMatchObject({
+      truePositives: 0,
+      falsePositives: 0,
+      falseNegatives: 2,
+      precision: 0,
+      recall: 0,
+      blockingRecall: 0,
+      severityAgreement: 0,
+      locationAccuracy: 0,
+    });
+
+    const suite = aggregateEvalMetrics([scored]);
+    expect(suite).toMatchObject({
+      precision: 0,
+      recall: 0,
+      blockingRecall: 0,
+      severityAgreement: 0,
+      locationAccuracy: 0,
+    });
+    expect(evaluateThresholds(suite, {
+      blockingRecallMin: 0.5,
+      precisionMin: 0.5,
+      severityAgreementMin: 0.5,
+      locationAccuracyMin: 0.5,
+    })).toEqual(expect.arrayContaining([
+      expect.stringContaining("precision"),
+      expect.stringContaining("blockingRecall"),
+    ]));
+  });
+
   it("aggregates suite metrics and evaluates thresholds", () => {
     const suite = aggregateEvalMetrics([
       scoreEvalCase(match({
