@@ -1,31 +1,113 @@
 @import "tailwindcss";
 
 :root {
+  color-scheme: dark;
+  --bg: #0e1013;
+  --bg-raised: #14171a;
+  --panel-2: #1b1f24;
+  --line: #262b31;
+  --ink: #e7eaec;
+  --muted: #8b929a;
+  --faint: #5c636b;
+  --acid: #dfff37;
+  --green: #4cc38a;
+  --amber: #e2a53f;
+  --red: #f0655e;
+  --violet: #8b7cf7;
+  --primary: #e7eaec;
+  --primary-fg: #0e1013;
+  --mark: #14171a;
+  --terminal: #0e1013;
+  --terminal-fg: #e7eaec;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.35);
+  --shadow-lg: 0 22px 80px rgb(0 0 0 / 0.45);
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --text-11: 11px;
+  --text-12: 12px;
+  --text-13: 13px;
+  --text-15: 15px;
+  --text-20: 20px;
+  --text-26: 26px;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f6f2;
+  --bg-raised: #ffffff;
+  --panel-2: #f1f2ee;
+  --line: #e4e6e2;
   --ink: #151917;
   --muted: #6f746f;
-  --line: #e4e6e2;
-  --paper: #f5f6f2;
-  --panel: #ffffff;
+  --faint: #9b9f99;
   --acid: #dfff37;
-  --violet: #705cf6;
-  --red: #ee6b64;
+  --green: #417d31;
   --amber: #e8aa42;
+  --red: #ee6b64;
+  --violet: #705cf6;
+  --primary: #171a18;
+  --primary-fg: #ffffff;
+  --mark: #171a18;
+  --terminal: #171a18;
+  --terminal-fg: #d9ddd6;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.025);
+  --shadow-lg: 0 22px 80px rgb(29 36 31 / 0.08);
+}
+
+:root, html[data-theme="light"] {
+  --on-acid: #151917;
+  --paper: var(--bg);
+  --panel: var(--bg-raised);
+  --terminal-line: rgb(255 255 255 / 0.1);
+  --fill: color-mix(in srgb, var(--muted) 16%, var(--bg-raised));
+  --fill-2: color-mix(in srgb, var(--muted) 12%, var(--bg));
+  --hover: color-mix(in srgb, var(--muted) 10%, var(--bg-raised));
+  --fill-violet: color-mix(in srgb, var(--violet) 18%, var(--bg-raised));
+  --fill-amber: color-mix(in srgb, var(--amber) 18%, var(--bg-raised));
+  --fill-red: color-mix(in srgb, var(--red) 16%, var(--bg-raised));
+  --fill-green: color-mix(in srgb, var(--green) 16%, var(--bg-raised));
+  --danger-bg: color-mix(in srgb, var(--red) 14%, var(--bg-raised));
+  --danger-line: color-mix(in srgb, var(--red) 40%, var(--line));
+  --warning-bg: color-mix(in srgb, var(--amber) 16%, var(--bg-raised));
+  --warning-line: color-mix(in srgb, var(--amber) 42%, var(--line));
+  --success-bg: color-mix(in srgb, var(--green) 16%, var(--bg-raised));
+  --success-line: color-mix(in srgb, var(--green) 40%, var(--line));
+  --accent-bg: color-mix(in srgb, var(--acid) 22%, var(--bg-raised));
+  --accent-line: color-mix(in srgb, var(--acid) 42%, var(--line));
+  --accent-ink: color-mix(in srgb, var(--acid) 28%, var(--ink));
+  --terminal-muted: color-mix(in srgb, var(--terminal-fg) 42%, var(--terminal));
 }
 
 * { box-sizing: border-box; }
-html { background: var(--paper); }
+html { background: var(--bg); }
 body {
   margin: 0;
   background:
-    radial-gradient(circle at 78% 0%, rgba(223, 255, 55, .11), transparent 24rem),
-    var(--paper);
+    radial-gradient(circle at 78% 0%, color-mix(in srgb, var(--acid) 11%, transparent), transparent 24rem),
+    var(--bg);
   color: var(--ink);
-  font-family: "Avenir Next", Avenir, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-family: var(--font-ui);
+  font-size: var(--text-13);
 }
 button, a { font: inherit; }
 button { cursor: pointer; }
-code, .font-mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
-::selection { background: var(--acid); color: var(--ink); }
+code, .font-mono { font-family: var(--font-mono); }
+::selection { background: var(--acid); color: var(--on-acid); }
+
+.type-11 {
+  font-family: var(--font-mono);
+  font-size: var(--text-11);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.type-12 { font-size: var(--text-12); }
+.type-13 { font-size: var(--text-13); }
+.type-15 { font-size: var(--text-15); }
+.type-20 { font-size: var(--text-20); }
+.type-26 { font-size: var(--text-26); font-variant-numeric: tabular-nums; }
+
+html[data-theme="light"] .theme-dark-only { display: none; }
+html:not([data-theme="light"]) .theme-light-only { display: none; }
 
 @keyframes pulse-dot { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
 @keyframes draw { from { width: 0 } }

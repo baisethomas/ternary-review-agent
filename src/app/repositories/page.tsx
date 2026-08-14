@@ -13,7 +13,7 @@ export default async function RepositoriesPage() {
     data = await getRepositoryDashboardData();
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to load GitHub repositories";
-    return <main className="grid min-h-screen place-items-center p-6"><section className="max-w-lg rounded-2xl border border-[#f0c7c2] bg-white p-6"><h1 className="text-lg font-semibold">Repositories could not be loaded</h1><p className="mt-2 font-mono text-xs leading-6 text-[#9a4842]">{message}</p><form className="mt-5" action="/repositories"><button className="rounded-lg bg-[#171a18] px-4 py-2.5 text-xs font-semibold text-white">Try again</button></form></section></main>;
+    return <main className="grid min-h-screen place-items-center p-6"><section className="max-w-lg rounded-2xl border border-[var(--danger-line)] bg-[var(--panel)] p-6"><h1 className="text-lg font-semibold">Repositories could not be loaded</h1><p className="mt-2 font-mono text-xs leading-6 text-[var(--red)]">{message}</p><form className="mt-5" action="/repositories"><button className="rounded-lg bg-[var(--primary)] px-4 py-2.5 text-xs font-semibold text-[var(--primary-fg)]">Try again</button></form></section></main>;
   }
   return <RepositoryDashboard data={data} initialChangeCursor={initialChangeCursor}/>;
 }
