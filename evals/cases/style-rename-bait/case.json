@@ -1,0 +1,21 @@
+{
+  "id": "style-rename-bait",
+  "title": "Pure identifier rename with no behavioral change",
+  "tags": ["false-positive-bait", "style"],
+  "scoreUnmatchedAsFp": true,
+  "expectedFindings": [],
+  "expectedNonFindings": [
+    {
+      "file": "src/lib/format.ts",
+      "topicContains": "rename"
+    },
+    {
+      "file": "src/lib/format.ts",
+      "topicContains": "style"
+    },
+    {
+      "file": "src/lib/format.ts",
+      "topicContains": "naming"
+    }
+  ]
+}

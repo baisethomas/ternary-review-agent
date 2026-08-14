@@ -1,0 +1,13 @@
+diff --git a/src/lib/sum.ts b/src/lib/sum.ts
+new file mode 100644
+index 0000000..7777777
+--- /dev/null
++++ b/src/lib/sum.ts
+@@ -0,0 +1,7 @@
++export function sum(values: number[]) {
++  let total = 0;
++  for (let index = 0; index <= values.length; index += 1) {
++    total += values[index];
++  }
++  return total;
++}

@@ -2,7 +2,15 @@ import type { ReviewFinding, ReviewResult, SandboxResult } from "./types";
 import { isRetryableHttpStatus, NonRetryableReviewError } from "./review-errors";
 import type { ResolvedReviewPolicy } from "./review-policy";
 
+/** Stable label for Eval Runs; bump when the system prompt text changes materially. */
+export const REVIEW_PROMPT_VERSION = "v1";
+
 const systemPrompt = `You are Ternary, a senior code review agent. Review only material problems introduced by this pull request. Prioritize correctness, security, concurrency, data loss, and missing tests. Do not report style preferences. Return strict JSON with: verdict (approve|request_changes|comment), summary, and findings. Each finding has a ruleId for its stable review-rule family (for example security-authorization or correctness-concurrency), plus a unique findingKey that combines that rule with the affected symbol and remains stable when line numbers or wording change. Set supersedesFindingKey only when this finding explicitly replaces a semantically equivalent finding key from an earlier review; otherwise set it to null. Each finding also has severity (blocking|warning|suggestion), file, optional line, title, explanation, and optional suggestedFix.`;
+
+/** System prompt text used by OpenRouter reviews (for Eval Run variant labeling). */
+export function getReviewSystemPrompt() {
+  return systemPrompt;
+}
 
 type JsonSchema =
   | { type: "string"; enum?: readonly string[] }

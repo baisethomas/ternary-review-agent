@@ -1,0 +1,17 @@
+{
+  "id": "off-by-one-bounds",
+  "title": "Loop upper bound uses <= length and reads past the array",
+  "tags": ["correctness"],
+  "expectedFindings": [
+    {
+      "ruleId": "correctness-bounds",
+      "severity": "blocking",
+      "file": "src/lib/sum.ts",
+      "line": 3,
+      "lineTolerance": 3,
+      "titleContains": "bound",
+      "required": true
+    }
+  ],
+  "expectedNonFindings": []
+}

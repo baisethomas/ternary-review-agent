@@ -1,0 +1,14 @@
+diff --git a/hooks/guard-destructive.sh b/hooks/guard-destructive.sh
+new file mode 100755
+index 0000000..3333333
+--- /dev/null
++++ b/hooks/guard-destructive.sh
+@@ -0,0 +1,10 @@
++#!/usr/bin/env bash
++set -euo pipefail
++payload="$(cat)"
++if echo "$payload" | grep -Eq 'git push --force|git push -f'; then
++  echo "blocked" >&2
++  exit 2
++fi
++exit 0

@@ -1,0 +1,10 @@
+diff --git a/src/lib/format.ts b/src/lib/format.ts
+index 5555555..6666666 100644
+--- a/src/lib/format.ts
++++ b/src/lib/format.ts
+@@ -1,5 +1,5 @@
+-export function formatUserName(first: string, last: string) {
+-  return `${first} ${last}`.trim();
++export function formatPersonName(first: string, last: string) {
++  return `${first} ${last}`.trim();
+ }

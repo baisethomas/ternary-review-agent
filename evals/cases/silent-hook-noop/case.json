@@ -1,0 +1,22 @@
+{
+  "id": "silent-hook-noop",
+  "title": "Safety hook reads missing env var instead of stdin JSON",
+  "tags": ["security", "correctness", "hooks"],
+  "expectedFindings": [
+    {
+      "ruleId": "correctness-hooks",
+      "severity": "blocking",
+      "file": "hooks/guard-destructive.sh",
+      "line": 5,
+      "lineTolerance": 4,
+      "titleContains": "env",
+      "required": true
+    }
+  ],
+  "expectedNonFindings": [
+    {
+      "file": "hooks/guard-destructive.sh",
+      "topicContains": "shebang"
+    }
+  ]
+}

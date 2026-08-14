@@ -71,3 +71,11 @@ _Avoid_: rate limit, dispatch budget, invocation budget, quota
 **Ops Alert**:
 A cooldown-gated notification for sustained review failures, queue growth, or unusual spend relative to a Usage Budget.
 _Avoid_: page, pager, monitor check
+
+**Eval Case**:
+A labeled synthetic pull-request fixture with expected findings and expected non-findings used to score review quality offline.
+_Avoid_: golden set, benchmark sample
+
+**Eval Run**:
+One reproducible execution of the evaluation suite against a prompt, model, policy, and retrieval variant, including quality metrics and cost/latency telemetry.
+_Avoid_: benchmark run, experiment trial

@@ -1,0 +1,17 @@
+{
+  "id": "pipeline-tail-swallow",
+  "title": "Stop gate pipes checks to tail so failures become success",
+  "tags": ["correctness", "hooks"],
+  "expectedFindings": [
+    {
+      "ruleId": "correctness-exit-status",
+      "severity": "blocking",
+      "file": "hooks/stop-gate.sh",
+      "line": 4,
+      "lineTolerance": 4,
+      "titleContains": "exit",
+      "required": true
+    }
+  ],
+  "expectedNonFindings": []
+}
