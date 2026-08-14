@@ -20,7 +20,7 @@ export default async function PoliciesPage({ searchParams }: { searchParams: Pro
     data = await getPolicyDashboardData(installationId, first(params.repository));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Policies could not be loaded";
-    return <main className="grid min-h-screen place-items-center p-6"><section className="max-w-lg rounded-2xl border border-[var(--danger-line)] bg-[var(--panel)] p-6"><h1 className="text-lg font-semibold">Policies could not be loaded</h1><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Ternary could not load policy storage or verify GitHub access. Run the database migration, then try again.</p><p className="mt-3 font-mono text-xs text-[var(--red)]">{message}</p><Link href="/policies" className="mt-5 inline-block rounded-lg bg-[var(--primary)] px-4 py-2.5 text-xs font-semibold text-[var(--primary-fg)]">Try again</Link></section></main>;
+    return <main className="grid min-h-screen place-items-center p-6"><section className="max-w-lg rounded-[10px] border border-[var(--danger-line)] bg-[var(--panel)] p-6"><h1 className="text-lg font-semibold">Policies could not be loaded</h1><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Ternary could not load policy storage or verify GitHub access. Run the database migration, then try again.</p><p className="mt-3 font-mono text-xs text-[var(--red)]">{message}</p><Link href="/policies" className="mt-5 inline-block rounded-lg bg-[var(--primary)] px-4 py-2.5 text-xs font-semibold text-[var(--primary-fg)]">Try again</Link></section></main>;
   }
   return <PolicyDashboard data={data} initialChangeCursor={initialChangeCursor}/>;
 }
