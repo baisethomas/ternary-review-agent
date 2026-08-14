@@ -6,9 +6,14 @@ export const metadata: Metadata = {
   description: "An internal code review agent with isolated test sandboxes.",
 };
 
+const themeBoot = `try{if(localStorage.getItem("ternary-theme")==="light")document.documentElement.setAttribute("data-theme","light")}catch(e){}`;
+
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeBoot }} />
+      </head>
       <body>{children}</body>
     </html>
   );

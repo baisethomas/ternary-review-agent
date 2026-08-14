@@ -35,14 +35,14 @@ export function UsageBudgetForm({ kind, installationId, owner, repo, label, curr
           step="0.01"
           required
           defaultValue={currentCeilingUsd ?? ""}
-          className="mt-1.5 block w-40 rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-xs text-[var(--ink)]"
+          className="mt-1.5 block w-40 rounded-lg border border-[var(--line)] bg-[var(--panel)] px-3 py-2 text-xs text-[var(--ink)]"
         />
       </label>
-      <button disabled={pending} className="rounded-lg bg-[#171a18] px-3 py-2 text-[11px] font-semibold text-white disabled:opacity-50">
+      <button disabled={pending} className="rounded-lg bg-[var(--primary)] px-3 py-2 text-[11px] font-semibold text-[var(--primary-fg)] disabled:opacity-50">
         {pending ? "Saving…" : "Save ceiling"}
       </button>
-      {state.saved ? <p className="text-[11px] text-[#476a40]">Saved. Visibility only — reviews are not blocked yet.</p> : null}
-      {state.error ? <p role="alert" className="text-[11px] text-[#b94740]">{state.error}</p> : null}
+      {state.saved ? <p className="text-[11px] text-[var(--green)]">Saved. Visibility only — reviews are not blocked yet.</p> : null}
+      {state.error ? <p role="alert" className="text-[11px] text-[var(--red)]">{state.error}</p> : null}
     </form>
   );
 }

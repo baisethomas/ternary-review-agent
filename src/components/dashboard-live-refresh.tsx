@@ -45,5 +45,5 @@ export function DashboardLiveRefresh({ initialCursor }: { initialCursor: number 
   }, [refreshState]);
 
   const label = status === "live" ? "Live updates" : "Reconnecting…";
-  return <span role="status" aria-live="polite" aria-label={label} title={label} className="flex items-center gap-2 text-xs text-[var(--muted)]"><span className={`size-1.5 rounded-full ${status === "live" ? "bg-[#65a953]" : "bg-[var(--amber)]"}`} /><span className="desktop-only">{label}</span></span>;
+  return <span role="status" aria-live="polite" aria-label={label} title={label} className="flex items-center gap-2 text-xs text-[var(--muted)]"><span className={`size-1.5 rounded-full ${status === "live" ? "bg-[var(--green)]" : "bg-[var(--amber)]"}`} /><span className="desktop-only">{label}</span></span>;
 }
