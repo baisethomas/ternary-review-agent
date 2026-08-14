@@ -21,7 +21,7 @@ export type ReviewRoute = {
 };
 
 function defaultReviewModel(policy: ResolvedReviewPolicy) {
-  return policy.model || process.env.OPENROUTER_MODEL || "~deepseek/deepseek-v4-flash-latest";
+  return policy.model || process.env.OPENROUTER_MODEL || "qwen/qwen3.7-flash";
 }
 
 function roleForRisk(risk: ReviewRiskLevel): ReviewRouteRole {

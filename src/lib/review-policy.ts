@@ -91,7 +91,7 @@ export const safeReviewPolicy: ResolvedReviewPolicy = {
     readyForReview: true,
   },
   minimumSeverity: "suggestion",
-  model: "~deepseek/deepseek-v4-flash-latest",
+  model: "qwen/qwen3.7-flash",
   reviewCommands: [],
   excludedPaths: [],
 };
