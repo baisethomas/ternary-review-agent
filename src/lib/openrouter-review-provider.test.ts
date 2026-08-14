@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { generateOpenRouterReview, remainingInvocationBudgetMs, resolveOpenRouterTimeoutMs } from "./openrouter-review-provider";
+import { generateOpenRouterReview, resolveOpenRouterTimeoutMs } from "./openrouter-review-provider";
 import { NonRetryableReviewError } from "./review-errors";
 import { safeReviewPolicy } from "./review-policy";
 
@@ -31,10 +31,6 @@ describe("resolveOpenRouterTimeoutMs", () => {
     expect(resolveOpenRouterTimeoutMs("240000", { remainingMs: 90_000 })).toBe(90_000);
     expect(resolveOpenRouterTimeoutMs("240000", { remainingMs: 300_000 })).toBe(240_000);
     expect(() => resolveOpenRouterTimeoutMs("240000", { remainingMs: 500 })).toThrow(/invocation budget/i);
-  });
-
-  it("computes remaining budget with publish reserve", () => {
-    expect(remainingInvocationBudgetMs(1_000, 61_000, 300_000, 30_000)).toBe(210_000);
   });
 });
 

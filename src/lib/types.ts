@@ -55,4 +55,5 @@ export type ReviewResult = {
     outputTokens?: number;
     estimatedCostUsd?: number;
   };
+  route?: import("./review-route-selector").ReviewRoute;
 };

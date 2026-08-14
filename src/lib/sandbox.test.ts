@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { NonRetryableReviewError } from "./review-errors";
-import { sandboxCommandPlan, sandboxCredentials } from "./sandbox";
+import { sandboxCommandPlan, sandboxCredentials, compactSandboxForModel } from "./sandbox";
 
 describe("sandbox credentials", () => {
   it("uses Vercel's built-in identity when only the automatic project ID is present", () => {
@@ -27,5 +27,26 @@ describe("sandbox review policy", () => {
       { label: "npm run test:unit", shell: "npm run test:unit" },
       { label: "npm run lint:strict", shell: "npm run lint:strict" },
     ]);
+  });
+
+  it("can omit build when skipBuild is enabled", () => {
+    expect(sandboxCommandPlan([], { skipBuild: true }).map((step) => step.label)).toEqual([
+      "install dependencies",
+      "lint",
+      "typecheck",
+      "test",
+    ]);
+  });
+
+  it("compacts sandbox command output for model prompts", () => {
+    const sandbox = {
+      ok: true,
+      sandboxId: "sandbox-1",
+      durationMs: 1000,
+      commands: [{ command: "test", exitCode: 0, output: "x".repeat(5000) }],
+    };
+    const compact = compactSandboxForModel(sandbox);
+    expect(compact.commands[0]?.output.length).toBeLessThan(2000);
+    expect(compact.commands[0]?.output).toContain("truncated for model input");
   });
 });

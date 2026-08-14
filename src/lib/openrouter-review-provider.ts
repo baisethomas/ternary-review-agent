@@ -1,6 +1,20 @@
 import type { ReviewFinding, ReviewResult, SandboxResult } from "./types";
 import { isRetryableHttpStatus, NonRetryableReviewError } from "./review-errors";
 import type { ResolvedReviewPolicy } from "./review-policy";
+import {
+  DEFAULT_OPENROUTER_TIMEOUT_MS,
+  MAX_OPENROUTER_TIMEOUT_MS,
+  REVIEW_PUBLISH_RESERVE_MS,
+  WORKER_INVOCATION_BUDGET_MS,
+} from "./review-invocation-limits";
+import { compactSandboxForModel } from "./sandbox";
+
+export {
+  DEFAULT_OPENROUTER_TIMEOUT_MS,
+  MAX_OPENROUTER_TIMEOUT_MS,
+  REVIEW_PUBLISH_RESERVE_MS,
+  WORKER_INVOCATION_BUDGET_MS,
+} from "./review-invocation-limits";
 
 /** Stable label for Eval Runs; bump when the system prompt text changes materially. */
 export const REVIEW_PROMPT_VERSION = "v1";
@@ -117,13 +131,7 @@ function isAbortError(error: unknown) {
   return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }
 
-export const DEFAULT_OPENROUTER_TIMEOUT_MS = 240_000;
-export const MAX_OPENROUTER_TIMEOUT_MS = 240_000;
 export const MIN_OPENROUTER_TIMEOUT_MS = 1_000;
-/** Matches the worker route `maxDuration` so provider aborts beat platform kills. */
-export const WORKER_INVOCATION_BUDGET_MS = 300_000;
-/** Leave headroom after the model call for GitHub publish / check-run finish. */
-export const REVIEW_PUBLISH_RESERVE_MS = 30_000;
 
 export type OpenRouterTimeoutOptions = {
   /** Milliseconds remaining before the worker invocation deadline. */
@@ -194,7 +202,7 @@ export async function generateOpenRouterReview(
 ): Promise<ReviewResult> {
   if (!process.env.OPENROUTER_API_KEY) return fallbackReview(sandbox);
   const maxDiffChars = Number(process.env.MAX_DIFF_CHARS ?? 160_000);
-  const input = `PR DIFF:\n${diff.slice(0, maxDiffChars)}\n\nREPOSITORY CONTEXT:\n${repositoryContext || "No matching repository context was available."}\n\nSANDBOX RESULT:\n${JSON.stringify(sandbox)}`;
+  const input = `PR DIFF:\n${diff.slice(0, maxDiffChars)}\n\nREPOSITORY CONTEXT:\n${repositoryContext || "No matching repository context was available."}\n\nSANDBOX RESULT:\n${JSON.stringify(compactSandboxForModel(sandbox))}`;
   const model = policy?.model ?? process.env.OPENROUTER_MODEL ?? "~deepseek/deepseek-v4-flash-latest";
   const startedAt = Date.now();
   const timeoutMs = resolveOpenRouterTimeoutMs(process.env.OPENROUTER_TIMEOUT_MS, timeoutOptions);

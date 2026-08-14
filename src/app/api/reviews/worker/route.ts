@@ -5,12 +5,14 @@ import { runReviewWorkerCycle } from "@/lib/review-worker-cycle";
 import { redisEmptyCycleBackoff } from "@/lib/review-worker-empty-backoff";
 import { guardedWorkerDispatch } from "@/lib/review-worker-dispatch-guard";
 import { getInvocationStartedAt, withInvocationStartedAt } from "@/lib/review-invocation-budget";
+import { REVIEW_WORKER_DRAIN_RESERVE_MS } from "@/lib/review-invocation-limits";
 import { runOpsAlertCheck } from "@/lib/ops-alert-service";
 
+/** Must match REVIEW_WORKER_MAX_DURATION_SECONDS in review-invocation-limits.ts (Next.js requires a literal; Hobby max 300). */
 export const maxDuration = 300;
 
 /** Keep enough time for OpenRouter abort + trailing QStash publish. */
-const DRAIN_RESERVE_MS = 90_000;
+const DRAIN_RESERVE_MS = REVIEW_WORKER_DRAIN_RESERVE_MS;
 
 function isAuthorized(request: Request) {
   return hasBearerToken(request, "CRON_SECRET") || hasBearerToken(request, "INTERNAL_API_TOKEN");

@@ -8,7 +8,11 @@ import type { ReviewFinding, ReviewRequest, ReviewResult } from "./types";
 import { findingIdentity } from "./review-event-ledger";
 import { formatFindingComment } from "./finding-comment";
 import { getInvocationStartedAt } from "./review-invocation-budget";
-import { generateOpenRouterReview, remainingInvocationBudgetMs } from "./openrouter-review-provider";
+import { remainingInvocationBudgetMs } from "./openrouter-review-provider";
+import { generateRoutedReview } from "./review-route-service";
+import { resolveReviewRouteConfig } from "./review-route-config";
+import { prepareReviewRouteFromDiff } from "./review-route-preparation";
+import { shouldSkipSandboxBuild } from "./review-route-selector";
 import { safeReviewPolicy } from "./review-policy";
 import { applyReviewPolicyToResult, filterReviewDiff } from "./review-policy-execution";
 
@@ -24,21 +28,25 @@ function formatReview(result: ReviewResult) {
 }
 
 export async function runReview(request: ReviewRequest & { id?: string }, lease?: ReviewLease) {
-  // Prefer the worker-request start time so queue/setup elapsed time counts against the budget.
   const invocationStartedAt = getInvocationStartedAt() ?? ("startedAt" in request && typeof request.startedAt === "number" ? request.startedAt : Date.now());
   const policy = request.policy ?? { ...safeReviewPolicy, model: process.env.OPENROUTER_MODEL ?? safeReviewPolicy.model };
   const token = await createInstallationToken(request.installationId);
   await lease?.assertActive();
-  const check = await getOrCreateCheckRun(request.owner, request.repo, request.headSha, token, request.id);
+  const checkPromise = getOrCreateCheckRun(request.owner, request.repo, request.headSha, token, request.id);
+  const diffPromise = getPullRequestDiff(request.owner, request.repo, request.pullNumber, token);
+  const check = await checkPromise;
   await announceDashboardChange();
   try {
-    const [diff, sandbox] = await Promise.all([
-      getPullRequestDiff(request.owner, request.repo, request.pullNumber, token),
-      runInSandbox(request, token),
-    ]);
+    const diff = await diffPromise;
     const reviewDiff = filterReviewDiff(diff, policy.excludedPaths);
-    const repositoryContext = await getRepositoryReviewContext(request, token, reviewDiff);
-    const generated = await generateOpenRouterReview(
+    const routeConfig = resolveReviewRouteConfig();
+    const diffPrep = prepareReviewRouteFromDiff(reviewDiff, routeConfig);
+    const skipBuild = shouldSkipSandboxBuild(diffPrep, routeConfig);
+    const [sandbox, repositoryContext] = await Promise.all([
+      runInSandbox(request, token, { skipBuild }),
+      getRepositoryReviewContext(request, token, reviewDiff),
+    ]);
+    const generated = await generateRoutedReview(
       reviewDiff,
       sandbox,
       repositoryContext.text,
@@ -52,8 +60,6 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
     await upsertPullRequestComment(request.owner, request.repo, request.pullNumber, token, markdown, request.id);
     await lease?.assertActive();
     if (result.authoritativeFindings !== false) {
-      // Finding-thread sync already soft-fails GraphQL FORBIDDEN on list/resolve/unresolve.
-      // Non-permission errors still propagate and fail the Check.
       await syncFindingReviewComments(request.owner, request.repo, request.pullNumber, request.headSha, token, result.findings.filter((finding) => finding.file).map((finding) => {
         const findingId = findingIdentity(request, finding);
         return { findingId, body: formatFindingComment(finding, findingId), path: finding.file, line: finding.line };
