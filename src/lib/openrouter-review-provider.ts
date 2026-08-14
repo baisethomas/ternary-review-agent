@@ -100,8 +100,41 @@ function assertMatchesSchema<S extends JsonSchema>(value: unknown, schema: S, pa
   }
 }
 
+export function extractReviewJsonPayload(text: string): string {
+  const trimmed = text.trim();
+  const withoutFence = trimmed
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/u, "")
+    .trim();
+  const start = withoutFence.indexOf("{");
+  if (start === -1) throw new SyntaxError("No JSON object found");
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < withoutFence.length; index += 1) {
+    const character = withoutFence[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === "\"") inString = false;
+      continue;
+    }
+    if (character === "\"") {
+      inString = true;
+      continue;
+    }
+    if (character === "{") depth += 1;
+    else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) return withoutFence.slice(start, index + 1);
+    }
+  }
+  throw new SyntaxError("Unterminated JSON object");
+}
+
 function parseReviewOutput(text: string): Omit<ReviewResult, "sandbox" | "ai" | "authoritativeFindings"> {
-  const value: unknown = JSON.parse(text);
+  const value: unknown = JSON.parse(extractReviewJsonPayload(text));
   assertMatchesSchema(value, reviewSchema);
   const findings: ReviewFinding[] = value.findings.map((finding) => ({
     ruleId: finding.ruleId,

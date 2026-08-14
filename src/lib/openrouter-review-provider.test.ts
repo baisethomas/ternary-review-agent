@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { generateOpenRouterReview, resolveOpenRouterTimeoutMs } from "./openrouter-review-provider";
+import { generateOpenRouterReview, extractReviewJsonPayload, resolveOpenRouterTimeoutMs } from "./openrouter-review-provider";
 import { NonRetryableReviewError } from "./review-errors";
 import { safeReviewPolicy } from "./review-policy";
 
@@ -179,5 +179,36 @@ describe("OpenRouter review provider", () => {
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(NonRetryableReviewError);
     expect(error.message).toMatch(/AI response was not valid review JSON:/);
+  });
+
+  it("accepts review JSON followed by trailing model prose", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "router-key");
+    const review = {
+      verdict: "approve",
+      summary: "Looks good",
+      findings: [],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: `${JSON.stringify(review)}\n\nLet me know if you need anything else.` } }],
+    }), { status: 200 })));
+
+    await expect(generateOpenRouterReview("diff", sandbox, "context")).resolves.toMatchObject({
+      verdict: "approve",
+      summary: "Looks good",
+      findings: [],
+      authoritativeFindings: true,
+    });
+  });
+});
+
+describe("extractReviewJsonPayload", () => {
+  it("extracts the first JSON object when trailing text follows", () => {
+    const payload = extractReviewJsonPayload('{"verdict":"approve","summary":"ok","findings":[]} extra prose');
+    expect(JSON.parse(payload)).toEqual({ verdict: "approve", summary: "ok", findings: [] });
+  });
+
+  it("unwraps fenced JSON blocks", () => {
+    const payload = extractReviewJsonPayload("```json\n{\"verdict\":\"comment\",\"summary\":\"ok\",\"findings\":[]}\n```");
+    expect(JSON.parse(payload).verdict).toBe("comment");
   });
 });
