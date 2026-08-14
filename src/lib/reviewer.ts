@@ -32,12 +32,12 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
   const policy = request.policy ?? { ...safeReviewPolicy, model: process.env.OPENROUTER_MODEL ?? safeReviewPolicy.model };
   const token = await createInstallationToken(request.installationId);
   await lease?.assertActive();
-  const [check, diff] = await Promise.all([
-    getOrCreateCheckRun(request.owner, request.repo, request.headSha, token, request.id),
-    getPullRequestDiff(request.owner, request.repo, request.pullNumber, token),
-  ]);
+  const checkPromise = getOrCreateCheckRun(request.owner, request.repo, request.headSha, token, request.id);
+  const diffPromise = getPullRequestDiff(request.owner, request.repo, request.pullNumber, token);
+  const check = await checkPromise;
   await announceDashboardChange();
   try {
+    const diff = await diffPromise;
     const reviewDiff = filterReviewDiff(diff, policy.excludedPaths);
     const routeConfig = resolveReviewRouteConfig();
     const diffPrep = prepareReviewRouteFromDiff(reviewDiff, routeConfig);
