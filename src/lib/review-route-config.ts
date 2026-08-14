@@ -6,7 +6,7 @@ export type ReviewRouteConfig = {
   largeDiffFileThreshold: number;
 };
 
-export function resolveReviewRouteConfig(env: NodeJS.ProcessEnv = process.env): ReviewRouteConfig {
+export function resolveReviewRouteConfig(env: Record<string, string | undefined> = process.env): ReviewRouteConfig {
   const shadowRaw = env.REVIEW_ROUTE_SHADOW?.trim().toLowerCase();
   return {
     shadowEnabled: shadowRaw === "1" || shadowRaw === "true" || shadowRaw === "yes",
