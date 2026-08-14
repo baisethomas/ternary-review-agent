@@ -230,7 +230,7 @@ export function buildReviewAnalyticsSeries(events: readonly ReviewEvent[], from:
       if (day) {
         const latency = series.timeToVerdict[dayIndex.get(day)!];
         const queueMs = queueMsByJob.get(event.payload.jobId) ?? 0;
-        const sandboxMs = event.payload.sandbox.durationMs;
+        const sandboxMs = event.payload.sandbox?.durationMs ?? 0;
         const modelMs = event.payload.ai?.latencyMs ?? 0;
         const nextSamples = latency.samples + 1;
         latency.queueMs = (latency.queueMs * latency.samples + queueMs) / nextSamples;

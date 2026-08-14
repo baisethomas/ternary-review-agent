@@ -125,6 +125,25 @@ describe("buildReviewAnalyticsSeries", () => {
     expect(series.averages.acceptShare).toBe(0.5);
   });
 
+  it("tolerates completed events that omit sandbox telemetry", () => {
+    const completed = event("review.completed", "2026-08-01T10:01:00.000Z", {
+      jobId: "legacy-job",
+      attempt: 1,
+      verdict: "approve",
+      summary: "ok",
+      findings: [],
+      sandbox: { sandboxId: "s", durationMs: 1, commands: [] },
+    });
+    const legacy = {
+      ...completed,
+      payload: { jobId: "legacy-job", attempt: 1, verdict: "approve" as const, summary: "ok", findings: [] },
+    } as ReviewEvent;
+
+    expect(() => buildReviewAnalyticsSeries([legacy], "2026-08-01", "2026-08-01")).not.toThrow();
+    const series = buildReviewAnalyticsSeries([legacy], "2026-08-01", "2026-08-01");
+    expect(series.timeToVerdict[0]).toMatchObject({ day: "2026-08-01", sandboxMs: 0, samples: 1 });
+  });
+
   it("computes weekly addressed rate for findings resolved within 7 days", () => {
     const events: ReviewEvent[] = [
       event("review.completed", "2026-08-03T00:00:00.000Z", {

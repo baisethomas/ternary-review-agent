@@ -119,8 +119,13 @@ function eventIsSelected(event: ReviewEvent, selection: EventSelection) {
 }
 
 export async function analyticsEventPages(filters: ReviewAnalyticsFilters = {}) {
-  const window = resolveAnalyticsWindow({ range: filters.range, from: filters.from, to: filters.to });
-  const dated = datedFilters(filters, window.from, window.to);
+  // Preserve lifetime export when no date/range is supplied; only the dashboard defaults to 30d.
+  const dated = filters.range || filters.from || filters.to
+    ? (() => {
+        const window = resolveAnalyticsWindow({ range: filters.range, from: filters.from, to: filters.to });
+        return datedFilters(filters, window.from, window.to);
+      })()
+    : filters;
   const repositoryData = await getRepositoryDashboardData();
   const repositories = selectRepositories(repositoryData.repositories, dated);
   return (async function* () {

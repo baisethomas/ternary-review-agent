@@ -59,19 +59,26 @@ describe("review analytics service", () => {
   });
 
   it("streams one repository at a time for exports", async () => {
-    mocks.pages.mockImplementation(() => (async function* () { yield [{
-      eventId: "requested", idempotencyKey: "requested", reviewId: "ternary/agent#8:head", type: "review.requested" as const,
-      occurredAt: "2026-08-10T00:00:00.000Z", scope: { installationId: 7, owner: "Ternary", repo: "Agent" }, pullNumber: 8, headSha: "head",
-      payload: { source: "github" as const },
-    }]; })());
-    const pages = await analyticsEventPages({ organization: "ternary", from: "2026-08-01", to: "2026-08-31" });
+    const pages = await analyticsEventPages({ organization: "ternary" });
     const iterator = pages[Symbol.asyncIterator]();
 
     await iterator.next();
-    expect(mocks.pages.mock.calls.length).toBeGreaterThanOrEqual(1);
-    expect(mocks.pages.mock.calls[0][0]).toEqual({ installationId: 7, owner: "Ternary", repo: "Agent" });
+    expect(mocks.pages).toHaveBeenCalledTimes(1);
     await iterator.next();
-    expect(mocks.pages.mock.calls.some((call) => call[0].repo === "History")).toBe(true);
+    expect(mocks.pages).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not default export pages to a 30-day window when no dates are supplied", async () => {
+    mocks.catalog.mockResolvedValue({ repositories: [repositories[0]] });
+    const old = {
+      eventId: "old-request", idempotencyKey: "old-request", reviewId: "ternary/agent#1:head", type: "review.requested" as const,
+      occurredAt: "2020-01-01T00:00:00.000Z", scope: { installationId: 7, owner: "Ternary", repo: "Agent" }, pullNumber: 1, headSha: "head",
+      payload: { source: "github" as const },
+    };
+    mocks.pages.mockImplementation(() => (async function* () { yield [old]; })());
+    const exported = [];
+    for await (const page of await analyticsEventPages({ organization: "ternary" })) exported.push(...page);
+    expect(exported).toEqual([old]);
   });
 
   it("exports matching unfinished reviews recorded before job identity was added", async () => {
