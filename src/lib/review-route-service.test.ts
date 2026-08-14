@@ -18,6 +18,7 @@ describe("generateRoutedReview", () => {
       model: "openai/gpt-5.6-sol",
     });
     expect(result.route?.mode).toBe("single");
+    expect(result.route?.selectedRole).toBe("scout");
     expect(result.route?.reviewModel).toBe("openai/gpt-5.6-sol");
     expect(result.route?.preparation.filesChanged).toBe(1);
     expect(result.authoritativeFindings).toBe(false);

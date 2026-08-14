@@ -28,4 +28,13 @@ describe("sandbox review policy", () => {
       { label: "npm run lint:strict", shell: "npm run lint:strict" },
     ]);
   });
+
+  it("can omit build when skipBuild is enabled", () => {
+    expect(sandboxCommandPlan([], { skipBuild: true }).map((step) => step.label)).toEqual([
+      "install dependencies",
+      "lint",
+      "typecheck",
+      "test",
+    ]);
+  });
 });

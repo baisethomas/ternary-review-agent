@@ -1,5 +1,5 @@
 import type { ResolvedReviewPolicy } from "./review-policy";
-import type { ReviewRouteConfig, ReviewRouteRole } from "./review-route-config";
+import type { ReviewRouteConfig, ReviewRouteExecutionMode, ReviewRouteRole } from "./review-route-config";
 import { resolveReviewRouteConfig } from "./review-route-config";
 import type { ReviewRoutePreparation, ReviewRiskLevel } from "./review-route-preparation";
 import { prepareReviewRoute } from "./review-route-preparation";
@@ -12,8 +12,9 @@ export type ReviewRouteShadow = {
 };
 
 export type ReviewRoute = {
-  mode: "single";
+  mode: ReviewRouteExecutionMode;
   reviewModel: string;
+  selectedRole: ReviewRouteRole;
   reason: string;
   preparation: ReviewRoutePreparation;
   shadow?: ReviewRouteShadow;
@@ -21,6 +22,17 @@ export type ReviewRoute = {
 
 function defaultReviewModel(policy: ResolvedReviewPolicy) {
   return policy.model || process.env.OPENROUTER_MODEL || "~deepseek/deepseek-v4-flash-latest";
+}
+
+function roleForRisk(risk: ReviewRiskLevel): ReviewRouteRole {
+  return risk === "high" ? "deep" : "scout";
+}
+
+function modelForRole(role: ReviewRouteRole, config: ReviewRouteConfig, policy: ResolvedReviewPolicy) {
+  const fallback = defaultReviewModel(policy);
+  if (role === "deep") return config.deepModel ?? fallback;
+  if (role === "scout") return config.scoutModel ?? fallback;
+  return fallback;
 }
 
 function recommendShadowStages(risk: ReviewRiskLevel): ReviewRouteRole[] {
@@ -33,7 +45,14 @@ function shadowReason(preparation: ReviewRoutePreparation, stages: ReviewRouteRo
   const signalSummary = preparation.riskSignals.length
     ? preparation.riskSignals.join(", ")
     : "no deterministic risk signals";
-  return `Shadow route for ${preparation.riskFloor} risk (${signalSummary}); staged selector would run ${stages.join(" → ")} but slice 1 keeps single-model execution.`;
+  return `Shadow route for ${preparation.riskFloor} risk (${signalSummary}); staged selector would run ${stages.join(" → ")} next.`;
+}
+
+function routeReason(mode: ReviewRouteExecutionMode, role: ReviewRouteRole, preparation: ReviewRoutePreparation) {
+  if (mode === "risk") {
+    return `Risk routing selected the ${role} model for ${preparation.riskFloor} risk based on stage-0 preparation.`;
+  }
+  return "Single-model routing preserves the configured review policy model.";
 }
 
 export function selectReviewRoute(
@@ -41,11 +60,15 @@ export function selectReviewRoute(
   policy: ResolvedReviewPolicy,
   config: ReviewRouteConfig = resolveReviewRouteConfig(),
 ): ReviewRoute {
-  const reviewModel = defaultReviewModel(policy);
+  const selectedRole = config.executionMode === "risk" ? roleForRisk(preparation.riskFloor) : "scout";
+  const reviewModel = config.executionMode === "risk"
+    ? modelForRole(selectedRole, config, policy)
+    : defaultReviewModel(policy);
   const route: ReviewRoute = {
-    mode: "single",
+    mode: config.executionMode,
     reviewModel,
-    reason: "TER-25 slice 1 preserves today's single-model review path.",
+    selectedRole,
+    reason: routeReason(config.executionMode, selectedRole, preparation),
     preparation,
   };
   if (!config.shadowEnabled) return route;
@@ -62,4 +85,8 @@ export function buildReviewRoute(diff: string, sandbox: SandboxResult, policy: R
   const resolvedConfig = config ?? resolveReviewRouteConfig();
   const preparation = prepareReviewRoute(diff, sandbox, resolvedConfig);
   return selectReviewRoute(preparation, policy, resolvedConfig);
+}
+
+export function shouldSlimSandbox(preparation: ReviewRoutePreparation, config: ReviewRouteConfig = resolveReviewRouteConfig()) {
+  return config.executionMode === "risk" && config.slimSandboxOnLowRisk && preparation.riskFloor === "low";
 }

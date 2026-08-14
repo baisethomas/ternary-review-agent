@@ -17,7 +17,9 @@ const failedSandbox: SandboxResult = {
 };
 
 const config = {
+  executionMode: "single" as const,
   shadowEnabled: false,
+  slimSandboxOnLowRisk: false,
   largeDiffLineThreshold: 100,
   largeDiffFileThreshold: 10,
 };
@@ -71,7 +73,9 @@ describe("prepareReviewRoute", () => {
       ...Array.from({ length: 12 }, (_, index) => `+line${index}`),
     ].join("\n");
     const preparation = prepareReviewRoute(diff, okSandbox, {
+      executionMode: "single",
       shadowEnabled: false,
+      slimSandboxOnLowRisk: false,
       largeDiffLineThreshold: 10,
       largeDiffFileThreshold: 40,
     });
