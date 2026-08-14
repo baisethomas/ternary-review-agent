@@ -7,7 +7,7 @@
       "ruleId": "correctness-bounds",
       "severity": "blocking",
       "file": "src/lib/sum.ts",
-      "line": 4,
+      "line": 3,
       "lineTolerance": 3,
       "titleContains": "bound",
       "required": true

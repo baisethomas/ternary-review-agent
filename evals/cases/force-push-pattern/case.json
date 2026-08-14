@@ -7,7 +7,7 @@
       "ruleId": "security-destructive-commands",
       "severity": "warning",
       "file": "hooks/guard-destructive.sh",
-      "line": 5,
+      "line": 4,
       "lineTolerance": 4,
       "titleContains": "force",
       "required": true

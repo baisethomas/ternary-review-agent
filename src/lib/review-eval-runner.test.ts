@@ -116,7 +116,7 @@ describe("review-eval-runner", () => {
       locationAccuracyMin: 0,
     }));
 
-    const generateReview = vi.fn(async (_diff: string, _sandbox: unknown, _context: string): Promise<ReviewResult> => {
+    const generateReview = vi.fn(async (): Promise<ReviewResult> => {
       if (generateReview.mock.calls.length === 1) throw new Error("AI review timed out after 240000ms");
       return {
         verdict: "request_changes",
@@ -140,11 +140,14 @@ describe("review-eval-runner", () => {
       thresholdsPath,
       resultsDir: join(root, "results"),
       generateReview,
+      gate: true,
       now: () => new Date("2026-08-13T00:00:00.000Z"),
     });
 
     expect(report.cases).toHaveLength(2);
     expect(report.cases.find((entry) => entry.id === "fail-case")?.error).toMatch(/timed out/);
     expect(report.cases.find((entry) => entry.id === "ok-case")?.metrics.truePositives).toBe(1);
+    expect(report.suite.caseCount).toBe(1);
+    expect(report.gateFailures.some((failure) => failure.includes("fail-case"))).toBe(true);
   });
 });

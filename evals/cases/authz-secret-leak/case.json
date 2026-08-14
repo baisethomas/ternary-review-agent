@@ -7,7 +7,7 @@
       "ruleId": "security-authorization",
       "severity": "blocking",
       "file": "src/app/api/notes/route.ts",
-      "line": 8,
+      "line": 7,
       "lineTolerance": 6,
       "titleContains": "own",
       "required": true
@@ -16,7 +16,7 @@
       "ruleId": "security-secrets",
       "severity": "warning",
       "file": "src/app/api/notes/route.ts",
-      "line": 6,
+      "line": 5,
       "lineTolerance": 5,
       "titleContains": "authorization",
       "required": false

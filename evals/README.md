@@ -39,7 +39,7 @@ Default `npm test` does **not** call OpenRouter; matcher/metrics stay unit-teste
 
 1. Create `evals/cases/<id>/` with a short synthetic `diff.patch`.
 2. Label required findings (`ruleId`, `severity`, `file`, `line`, remediation hints) and expected non-findings (false-positive baits).
-3. Prefer exact `ruleId` values the model is prompted to emit (families like `security-authorization`, `correctness-bounds`).
+3. Prefer exact `ruleId` values the model is prompted to emit (families like `security-authorization`, `correctness-bounds`). Unmatched predictions count as false positives by default; set `"scoreUnmatchedAsFp": false` only when the case is intentionally open-world.
 4. Run `npm run eval:reviews` and inspect `evals/results/*.json`.
 5. Get a second person to review labels before treating the case as a release gate.
 

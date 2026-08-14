@@ -129,26 +129,30 @@ export async function runReviewEvalSuite(options: ReviewEvalRunnerOptions): Prom
         falsePositiveTitles: match.falsePositives.map((entry) => entry.title),
       });
     } catch (error) {
-      // Keep the suite moving through provider timeouts/errors; score as all required FNs.
-      const match = matchEvalFindings(evalCase, []);
-      const metrics = scoreEvalCase(match);
+      // Keep the suite moving through provider timeouts/errors; do not score failed cases.
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Eval Case ${evalCase.id} failed: ${message}`);
       reports.push({
         id: evalCase.id,
         title: evalCase.title,
-        metrics,
+        metrics: scoreEvalCase({ truePositives: [], falseNegatives: [], falsePositives: [] }),
         predictedFindings: [],
         truePositiveKeys: [],
-        falseNegativeRuleIds: match.falseNegatives.map((entry) => entry.ruleId),
+        falseNegativeRuleIds: [],
         falsePositiveTitles: [],
         error: message,
       });
     }
   }
 
-  const suite = aggregateEvalMetrics(reports.map((entry) => entry.metrics));
+  const scored = reports.filter((entry) => !entry.error);
+  const suite = aggregateEvalMetrics(scored.map((entry) => entry.metrics));
   const gateFailures = options.gate ? evaluateThresholds(suite, thresholds) : [];
+  if (options.gate) {
+    for (const entry of reports) {
+      if (entry.error) gateFailures.push(`case ${entry.id} unscored: ${entry.error}`);
+    }
+  }
   const ranAt = (options.now ?? (() => new Date))().toISOString();
   const report: EvalRunReport = {
     ranAt,

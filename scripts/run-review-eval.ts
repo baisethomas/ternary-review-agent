@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseReviewEvalArgs, runReviewEvalSuite } from "../src/lib/review-eval-runner.ts";
-import { resolveReviewPolicy, safeReviewPolicy } from "../src/lib/review-policy.ts";
+import { parseReviewEvalArgs, runReviewEvalSuite } from "../src/lib/review-eval-runner";
+import { resolveReviewPolicy, safeReviewPolicy } from "../src/lib/review-policy";
 
 const root = join(import.meta.dirname, "..");
 const args = parseReviewEvalArgs(process.argv.slice(2));

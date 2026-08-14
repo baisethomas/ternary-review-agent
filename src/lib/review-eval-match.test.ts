@@ -27,7 +27,7 @@ function finding(partial: Partial<ReviewFinding> & Pick<ReviewFinding, "severity
 }
 
 describe("review-eval-match", () => {
-  it("matches by file, ruleId, and line tolerance", () => {
+  it("matches semantically and scores location separately", () => {
     const predicted = finding({
       severity: "blocking",
       file: "hooks/guard.sh",
@@ -41,6 +41,21 @@ describe("review-eval-match", () => {
     expect(match.falseNegatives).toHaveLength(0);
     expect(match.truePositives[0].severityAgreed).toBe(true);
     expect(match.truePositives[0].locationAccurate).toBe(true);
+  });
+
+  it("keeps a semantic match when the line is far off, and marks location inaccurate", () => {
+    const match = matchEvalFindings(baseCase, [
+      finding({
+        severity: "blocking",
+        file: "hooks/guard.sh",
+        line: 99,
+        title: "Hook ignores stdin payload",
+        explanation: "Reads env instead of stdin",
+      }),
+    ]);
+    expect(match.truePositives).toHaveLength(1);
+    expect(match.truePositives[0].locationAccurate).toBe(false);
+    expect(match.falseNegatives).toHaveLength(0);
   });
 
   it("allows titleContains to bridge mismatched ruleIds", () => {
@@ -71,7 +86,7 @@ describe("review-eval-match", () => {
     expect(match.falsePositives).toHaveLength(1);
   });
 
-  it("scores unmatched predictions as FP only when scoreUnmatchedAsFp is set", () => {
+  it("counts unmatched predictions as false positives by default", () => {
     const predicted = finding({
       severity: "warning",
       file: "other.ts",
@@ -80,8 +95,8 @@ describe("review-eval-match", () => {
       explanation: "noise",
       ruleId: "other",
     });
-    expect(matchEvalFindings(baseCase, [predicted]).falsePositives).toHaveLength(0);
-    expect(matchEvalFindings({ ...baseCase, scoreUnmatchedAsFp: true }, [predicted]).falsePositives).toHaveLength(1);
+    expect(matchEvalFindings(baseCase, [predicted]).falsePositives).toHaveLength(1);
+    expect(matchEvalFindings({ ...baseCase, scoreUnmatchedAsFp: false }, [predicted]).falsePositives).toHaveLength(0);
   });
 
   it("picks the closest line when multiple candidates match", () => {
@@ -90,6 +105,6 @@ describe("review-eval-match", () => {
       finding({ severity: "blocking", file: "hooks/guard.sh", line: 11, title: "Hook ignores stdin", explanation: "b", findingKey: "correctness-hooks:guard-b" }),
     ]);
     expect(match.truePositives[0].predicted.line).toBe(11);
-    expect(match.falsePositives).toHaveLength(0);
+    expect(match.falsePositives).toHaveLength(1);
   });
 });
