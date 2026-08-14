@@ -161,12 +161,27 @@ describe("OpenRouter review provider", () => {
     expect(error.message).toContain("provider_unavailable");
   });
 
-  it("rejects syntactically valid review output that violates the runtime schema", async () => {
+  it("retries syntactically valid review output that violates the runtime schema", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "router-key");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
       choices: [{ message: { content: JSON.stringify({ verdict: "ship_it", summary: "Looks good", findings: [] }) } }],
     }), { status: 200 })));
 
-    await expect(generateOpenRouterReview("diff", sandbox, "context")).rejects.toBeInstanceOf(NonRetryableReviewError);
+    const error = await generateOpenRouterReview("diff", sandbox, "context").catch((caught) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(NonRetryableReviewError);
+    expect(error.message).toMatch(/AI response was not valid review JSON: review\.verdict has invalid value/);
+  });
+
+  it("retries malformed review JSON with the parse cause in the error message", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "router-key");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: "{\"verdict\":\"approve\"" } }],
+    }), { status: 200 })));
+
+    const error = await generateOpenRouterReview("diff", sandbox, "context").catch((caught) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(NonRetryableReviewError);
+    expect(error.message).toMatch(/AI response was not valid review JSON:/);
   });
 });
