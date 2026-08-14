@@ -8,7 +8,8 @@ import type { ReviewFinding, ReviewRequest, ReviewResult } from "./types";
 import { findingIdentity } from "./review-event-ledger";
 import { formatFindingComment } from "./finding-comment";
 import { getInvocationStartedAt } from "./review-invocation-budget";
-import { generateOpenRouterReview, remainingInvocationBudgetMs } from "./openrouter-review-provider";
+import { remainingInvocationBudgetMs } from "./openrouter-review-provider";
+import { generateRoutedReview } from "./review-route-service";
 import { safeReviewPolicy } from "./review-policy";
 import { applyReviewPolicyToResult, filterReviewDiff } from "./review-policy-execution";
 
@@ -38,7 +39,7 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
     ]);
     const reviewDiff = filterReviewDiff(diff, policy.excludedPaths);
     const repositoryContext = await getRepositoryReviewContext(request, token, reviewDiff);
-    const generated = await generateOpenRouterReview(
+    const generated = await generateRoutedReview(
       reviewDiff,
       sandbox,
       repositoryContext.text,
