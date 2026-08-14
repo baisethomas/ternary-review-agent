@@ -175,6 +175,29 @@ describe("GitHub finding comments", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps a clean review publishable when resolveReviewThread is forbidden", async () => {
+    const marker = "<!-- ternary-finding:finding-fixed -->";
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(Response.json([{ id: 30, body: marker, user: { login: "ternary-review-agent[bot]", type: "Bot" } }]))
+      .mockResolvedValueOnce(Response.json({ data: { repository: { pullRequest: { reviewThreads: { nodes: [{ id: "thread-fixed", isResolved: false, comments: { nodes: [{ databaseId: 30 }] } }], pageInfo: { hasNextPage: false, endCursor: null } } } } } }))
+      .mockResolvedValueOnce(Response.json({
+        data: null,
+        errors: [{ type: "FORBIDDEN", message: "Resource not accessible by integration" }],
+      }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(syncFindingReviewComments(
+      "ternary",
+      "agent",
+      8,
+      "new-head",
+      "token",
+      [],
+      { botLogin: "ternary-review-agent[bot]", ...currentHead("new-head") },
+    )).resolves.toBeUndefined();
+    expect(fetch.mock.calls[2][1]?.body).toContain("TernaryResolveReviewThread");
+  });
+
   it.each([
     { errors: [{ type: "INTERNAL", message: "Something went wrong" }] },
     { errors: [
