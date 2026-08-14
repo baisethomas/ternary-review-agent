@@ -98,6 +98,11 @@ function parseReviewOutput(text: string): Omit<ReviewResult, "sandbox" | "ai" | 
   return { verdict: value.verdict, summary: value.summary, findings };
 }
 
+function reviewParseFailureMessage(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  return `AI response was not valid review JSON: ${detail}`;
+}
+
 type OpenRouterError = { code?: number; message?: string; metadata?: { error_type?: string } };
 
 function isAbortError(error: unknown) {
@@ -238,7 +243,8 @@ export async function generateOpenRouterReview(
       };
     } catch (error) {
       if (error instanceof NonRetryableReviewError) throw error;
-      throw new NonRetryableReviewError("AI response was not valid review JSON", { cause: error });
+      // Provider/schema parse misses are often transient; retry instead of failing the job immediately.
+      throw new Error(reviewParseFailureMessage(error), { cause: error });
     }
   } catch (error) {
     if (isAbortError(error) || controller.signal.aborted) throw new Error(`AI review timed out after ${timeoutMs}ms`);
