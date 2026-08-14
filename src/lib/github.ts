@@ -383,11 +383,21 @@ async function listPullRequestReviewThreads(owner: string, repo: string, pullNum
 }
 
 async function unresolvePullRequestReviewThread(threadId: string, token: string) {
-  return githubGraphql(`mutation TernaryUnresolveReviewThread($threadId: ID!) { unresolveReviewThread(input: { threadId: $threadId }) { thread { id isResolved } } }`, { threadId }, token);
+  try {
+    return await githubGraphql(`mutation TernaryUnresolveReviewThread($threadId: ID!) { unresolveReviewThread(input: { threadId: $threadId }) { thread { id isResolved } } }`, { threadId }, token);
+  } catch (error) {
+    if (isGitHubGraphqlForbidden(error)) return null;
+    throw error;
+  }
 }
 
 async function resolvePullRequestReviewThread(threadId: string, token: string) {
-  return githubGraphql(`mutation TernaryResolveReviewThread($threadId: ID!) { resolveReviewThread(input: { threadId: $threadId }) { thread { id isResolved } } }`, { threadId }, token);
+  try {
+    return await githubGraphql(`mutation TernaryResolveReviewThread($threadId: ID!) { resolveReviewThread(input: { threadId: $threadId }) { thread { id isResolved } } }`, { threadId }, token);
+  } catch (error) {
+    if (isGitHubGraphqlForbidden(error)) return null;
+    throw error;
+  }
 }
 
 function ownedReviewComment(comment: GitHubReviewComment, botLogin: string) {

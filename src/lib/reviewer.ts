@@ -52,6 +52,8 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
     await upsertPullRequestComment(request.owner, request.repo, request.pullNumber, token, markdown, request.id);
     await lease?.assertActive();
     if (result.authoritativeFindings !== false) {
+      // Finding-thread sync already soft-fails GraphQL FORBIDDEN on list/resolve/unresolve.
+      // Non-permission errors still propagate and fail the Check.
       await syncFindingReviewComments(request.owner, request.repo, request.pullNumber, request.headSha, token, result.findings.filter((finding) => finding.file).map((finding) => {
         const findingId = findingIdentity(request, finding);
         return { findingId, body: formatFindingComment(finding, findingId), path: finding.file, line: finding.line };
