@@ -10,7 +10,7 @@ export const REVIEW_WORKER_MAX_DURATION_MS = REVIEW_WORKER_MAX_DURATION_SECONDS 
 export const WORKER_INVOCATION_BUDGET_MS = REVIEW_WORKER_MAX_DURATION_MS;
 
 /** Leave headroom after the model call for GitHub publish / check-run finish. */
-export const REVIEW_PUBLISH_RESERVE_MS = 30_000;
+export const REVIEW_PUBLISH_RESERVE_MS = 20_000;
 
 /** Keep enough time for OpenRouter abort + trailing QStash publish when draining the queue. */
 export const REVIEW_WORKER_DRAIN_RESERVE_MS = 90_000;

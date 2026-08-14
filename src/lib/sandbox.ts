@@ -39,9 +39,26 @@ function classifySandboxError(error: unknown) {
   return error;
 }
 
-function trimOutput(output: string) {
+export function trimOutput(output: string) {
   if (output.length <= OUTPUT_LIMIT) return output;
   return `${output.slice(0, OUTPUT_LIMIT)}\n… output truncated by Ternary`;
+}
+
+export const SANDBOX_MODEL_OUTPUT_LIMIT = 1_500;
+
+export function compactSandboxForModel(sandbox: SandboxResult) {
+  return {
+    ok: sandbox.ok,
+    sandboxId: sandbox.sandboxId,
+    durationMs: sandbox.durationMs,
+    commands: sandbox.commands.map((command) => ({
+      command: command.command,
+      exitCode: command.exitCode,
+      output: command.output.length > SANDBOX_MODEL_OUTPUT_LIMIT
+        ? `${command.output.slice(0, SANDBOX_MODEL_OUTPUT_LIMIT)}\n… truncated for model input`
+        : command.output,
+    })),
+  };
 }
 
 export type SandboxCommandPlanOptions = {

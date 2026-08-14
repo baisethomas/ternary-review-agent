@@ -12,7 +12,7 @@ import { remainingInvocationBudgetMs } from "./openrouter-review-provider";
 import { generateRoutedReview } from "./review-route-service";
 import { resolveReviewRouteConfig } from "./review-route-config";
 import { prepareReviewRouteFromDiff } from "./review-route-preparation";
-import { shouldSlimSandbox } from "./review-route-selector";
+import { shouldSkipSandboxBuild } from "./review-route-selector";
 import { safeReviewPolicy } from "./review-policy";
 import { applyReviewPolicyToResult, filterReviewDiff } from "./review-policy-execution";
 
@@ -32,14 +32,16 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
   const policy = request.policy ?? { ...safeReviewPolicy, model: process.env.OPENROUTER_MODEL ?? safeReviewPolicy.model };
   const token = await createInstallationToken(request.installationId);
   await lease?.assertActive();
-  const check = await getOrCreateCheckRun(request.owner, request.repo, request.headSha, token, request.id);
+  const [check, diff] = await Promise.all([
+    getOrCreateCheckRun(request.owner, request.repo, request.headSha, token, request.id),
+    getPullRequestDiff(request.owner, request.repo, request.pullNumber, token),
+  ]);
   await announceDashboardChange();
   try {
-    const diff = await getPullRequestDiff(request.owner, request.repo, request.pullNumber, token);
     const reviewDiff = filterReviewDiff(diff, policy.excludedPaths);
     const routeConfig = resolveReviewRouteConfig();
     const diffPrep = prepareReviewRouteFromDiff(reviewDiff, routeConfig);
-    const skipBuild = shouldSlimSandbox(diffPrep, routeConfig);
+    const skipBuild = shouldSkipSandboxBuild(diffPrep, routeConfig);
     const [sandbox, repositoryContext] = await Promise.all([
       runInSandbox(request, token, { skipBuild }),
       getRepositoryReviewContext(request, token, reviewDiff),

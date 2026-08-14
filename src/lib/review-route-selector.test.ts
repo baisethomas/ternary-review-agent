@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { safeReviewPolicy } from "./review-policy";
 import { prepareReviewRoute } from "./review-route-preparation";
-import { selectReviewRoute, shouldSlimSandbox } from "./review-route-selector";
+import { selectReviewRoute, shouldSkipSandboxBuild } from "./review-route-selector";
 import type { SandboxResult } from "./types";
 
 const sandbox: SandboxResult = {
@@ -14,7 +14,7 @@ const sandbox: SandboxResult = {
 const baseConfig = {
   executionMode: "single" as const,
   shadowEnabled: false,
-  slimSandboxOnLowRisk: false,
+  fullSandboxBuild: false,
   largeDiffLineThreshold: 400,
   largeDiffFileThreshold: 40,
 };
@@ -69,11 +69,10 @@ describe("selectReviewRoute", () => {
   });
 });
 
-describe("shouldSlimSandbox", () => {
-  it("only skips build for low-risk reviews when slim sandbox is enabled in risk mode", () => {
-    const lowPrep = prepareReviewRoute("diff --git a/a.ts b/a.ts\n+++ b/a.ts\n+change", sandbox, baseConfig);
-    expect(shouldSlimSandbox(lowPrep, { ...baseConfig, executionMode: "risk", slimSandboxOnLowRisk: true })).toBe(true);
-    expect(shouldSlimSandbox(lowPrep, baseConfig)).toBe(false);
-    expect(shouldSlimSandbox(lowPrep, { ...baseConfig, executionMode: "single", slimSandboxOnLowRisk: true })).toBe(false);
+describe("shouldSkipSandboxBuild", () => {
+  it("skips build by default and runs it only when full sandbox is requested", () => {
+    const prep = prepareReviewRoute("diff --git a/a.ts b/a.ts\n+++ b/a.ts\n+change", sandbox, baseConfig);
+    expect(shouldSkipSandboxBuild(prep, baseConfig)).toBe(true);
+    expect(shouldSkipSandboxBuild(prep, { ...baseConfig, fullSandboxBuild: true })).toBe(false);
   });
 });

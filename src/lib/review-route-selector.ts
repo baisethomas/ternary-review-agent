@@ -87,6 +87,11 @@ export function buildReviewRoute(diff: string, sandbox: SandboxResult, policy: R
   return selectReviewRoute(preparation, policy, resolvedConfig);
 }
 
-export function shouldSlimSandbox(preparation: ReviewRoutePreparation, config: ReviewRouteConfig = resolveReviewRouteConfig()) {
-  return config.executionMode === "risk" && config.slimSandboxOnLowRisk && preparation.riskFloor === "low";
+export function shouldSkipSandboxBuild(_preparation: ReviewRoutePreparation, config: ReviewRouteConfig = resolveReviewRouteConfig()) {
+  return !config.fullSandboxBuild;
+}
+
+/** @deprecated Use shouldSkipSandboxBuild */
+export function shouldSlimSandbox(preparation: ReviewRoutePreparation, config?: ReviewRouteConfig) {
+  return shouldSkipSandboxBuild(preparation, config);
 }

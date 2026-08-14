@@ -30,6 +30,6 @@ describe("review invocation limits", () => {
   });
 
   it("computes remaining budget with publish reserve", () => {
-    expect(remainingInvocationBudgetMs(1_000, 61_000)).toBe(210_000);
+    expect(remainingInvocationBudgetMs(1_000, 61_000)).toBe(220_000);
   });
 });

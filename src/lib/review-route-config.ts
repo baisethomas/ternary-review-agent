@@ -5,7 +5,8 @@ export type ReviewRouteExecutionMode = "single" | "risk";
 export type ReviewRouteConfig = {
   executionMode: ReviewRouteExecutionMode;
   shadowEnabled: boolean;
-  slimSandboxOnLowRisk: boolean;
+  /** When true, run the full sandbox plan including build. Default skips build (Vercel CI already builds PRs). */
+  fullSandboxBuild: boolean;
   largeDiffLineThreshold: number;
   largeDiffFileThreshold: number;
   scoutModel?: string;
@@ -14,14 +15,17 @@ export type ReviewRouteConfig = {
 
 export function resolveReviewRouteConfig(env: Record<string, string | undefined> = process.env): ReviewRouteConfig {
   const shadowRaw = env.REVIEW_ROUTE_SHADOW?.trim().toLowerCase();
+  const fullRaw = env.REVIEW_ROUTE_FULL_SANDBOX?.trim().toLowerCase();
   const slimRaw = env.REVIEW_ROUTE_SLIM_SANDBOX?.trim().toLowerCase();
   const modeRaw = env.REVIEW_ROUTE_MODE?.trim().toLowerCase();
   const scoutModel = env.REVIEW_ROUTE_SCOUT_MODEL?.trim();
   const deepModel = env.REVIEW_ROUTE_DEEP_MODEL?.trim();
+  let fullSandboxBuild = fullRaw === "1" || fullRaw === "true" || fullRaw === "yes";
+  if (slimRaw === "0" || slimRaw === "false" || slimRaw === "no") fullSandboxBuild = true;
   return {
     executionMode: modeRaw === "risk" ? "risk" : "single",
     shadowEnabled: shadowRaw === "1" || shadowRaw === "true" || shadowRaw === "yes",
-    slimSandboxOnLowRisk: slimRaw === "1" || slimRaw === "true" || slimRaw === "yes",
+    fullSandboxBuild,
     largeDiffLineThreshold: parsePositiveInt(env.REVIEW_ROUTE_LARGE_DIFF_LINES, 400),
     largeDiffFileThreshold: parsePositiveInt(env.REVIEW_ROUTE_LARGE_DIFF_FILES, 40),
     ...(scoutModel ? { scoutModel } : {}),

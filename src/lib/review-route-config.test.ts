@@ -2,32 +2,36 @@ import { describe, expect, it } from "vitest";
 import { resolveReviewRouteConfig } from "./review-route-config";
 
 describe("resolveReviewRouteConfig", () => {
-  it("defaults to single-model routing with full sandbox checks", () => {
+  it("defaults to single-model routing and skips sandbox build", () => {
     expect(resolveReviewRouteConfig({})).toEqual({
       executionMode: "single",
       shadowEnabled: false,
-      slimSandboxOnLowRisk: false,
+      fullSandboxBuild: false,
       largeDiffLineThreshold: 400,
       largeDiffFileThreshold: 40,
     });
   });
 
-  it("enables shadow mode and risk routing from env", () => {
+  it("enables shadow mode, risk routing, and full sandbox build from env", () => {
     expect(resolveReviewRouteConfig({
       REVIEW_ROUTE_MODE: "risk",
       REVIEW_ROUTE_SHADOW: "true",
-      REVIEW_ROUTE_SLIM_SANDBOX: "1",
+      REVIEW_ROUTE_FULL_SANDBOX: "1",
       REVIEW_ROUTE_SCOUT_MODEL: "openai/gpt-5.6-sol",
       REVIEW_ROUTE_DEEP_MODEL: "anthropic/claude-opus-4.6",
     })).toEqual({
       executionMode: "risk",
       shadowEnabled: true,
-      slimSandboxOnLowRisk: true,
+      fullSandboxBuild: true,
       largeDiffLineThreshold: 400,
       largeDiffFileThreshold: 40,
       scoutModel: "openai/gpt-5.6-sol",
       deepModel: "anthropic/claude-opus-4.6",
     });
+  });
+
+  it("treats legacy REVIEW_ROUTE_SLIM_SANDBOX=0 as a request for full sandbox checks", () => {
+    expect(resolveReviewRouteConfig({ REVIEW_ROUTE_SLIM_SANDBOX: "0" }).fullSandboxBuild).toBe(true);
   });
 
   it("ignores invalid large-diff overrides", () => {
@@ -37,7 +41,7 @@ describe("resolveReviewRouteConfig", () => {
     })).toEqual({
       executionMode: "single",
       shadowEnabled: false,
-      slimSandboxOnLowRisk: false,
+      fullSandboxBuild: false,
       largeDiffLineThreshold: 400,
       largeDiffFileThreshold: 40,
     });

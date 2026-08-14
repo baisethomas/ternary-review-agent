@@ -7,6 +7,7 @@ import {
   REVIEW_PUBLISH_RESERVE_MS,
   WORKER_INVOCATION_BUDGET_MS,
 } from "./review-invocation-limits";
+import { compactSandboxForModel } from "./sandbox";
 
 export {
   DEFAULT_OPENROUTER_TIMEOUT_MS,
@@ -201,7 +202,7 @@ export async function generateOpenRouterReview(
 ): Promise<ReviewResult> {
   if (!process.env.OPENROUTER_API_KEY) return fallbackReview(sandbox);
   const maxDiffChars = Number(process.env.MAX_DIFF_CHARS ?? 160_000);
-  const input = `PR DIFF:\n${diff.slice(0, maxDiffChars)}\n\nREPOSITORY CONTEXT:\n${repositoryContext || "No matching repository context was available."}\n\nSANDBOX RESULT:\n${JSON.stringify(sandbox)}`;
+  const input = `PR DIFF:\n${diff.slice(0, maxDiffChars)}\n\nREPOSITORY CONTEXT:\n${repositoryContext || "No matching repository context was available."}\n\nSANDBOX RESULT:\n${JSON.stringify(compactSandboxForModel(sandbox))}`;
   const model = policy?.model ?? process.env.OPENROUTER_MODEL ?? "~deepseek/deepseek-v4-flash-latest";
   const startedAt = Date.now();
   const timeoutMs = resolveOpenRouterTimeoutMs(process.env.OPENROUTER_TIMEOUT_MS, timeoutOptions);
