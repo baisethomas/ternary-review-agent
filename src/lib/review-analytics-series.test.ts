@@ -137,7 +137,7 @@ describe("buildReviewAnalyticsSeries", () => {
     const legacy = {
       ...completed,
       payload: { jobId: "legacy-job", attempt: 1, verdict: "approve" as const, summary: "ok", findings: [] },
-    } as ReviewEvent;
+    } as unknown as ReviewEvent;
 
     expect(() => buildReviewAnalyticsSeries([legacy], "2026-08-01", "2026-08-01")).not.toThrow();
     const series = buildReviewAnalyticsSeries([legacy], "2026-08-01", "2026-08-01");
