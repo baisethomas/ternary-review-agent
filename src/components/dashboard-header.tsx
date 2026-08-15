@@ -1,10 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { logoutAction } from "@/app/actions";
+import { CommandPalette } from "@/components/command-palette";
 import { DashboardLiveRefresh } from "@/components/dashboard-live-refresh";
 import { ThemeToggle } from "@/components/theme-toggle";
+import type { CommandPaletteItem } from "@/lib/command-palette";
 
 type HeaderRepository = {
   id: number;
@@ -18,20 +21,43 @@ export function DashboardHeader({
   account,
   repositories,
   selectedRepository,
+  extraCommands = [],
 }: {
   active: "reviews" | "repositories" | "analytics" | "policies";
   initialChangeCursor: number;
   account?: string | null;
   repositories?: HeaderRepository[];
   selectedRepository?: string;
+  extraCommands?: CommandPaletteItem[];
 }) {
   const router = useRouter();
+  const [commandOpen, setCommandOpen] = useState(false);
   const navClass = (item: typeof active) =>
     `relative px-3 py-2 text-[13px] transition ${
       active === item
         ? "font-semibold text-[var(--ink)] after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:bg-[var(--acid)]"
         : "text-[var(--muted)] hover:text-[var(--ink)]"
     }`;
+
+  const commands = useMemo(() => {
+    const items: CommandPaletteItem[] = [
+      { id: "nav-reviews", label: "Go to Reviews", group: "Navigate", keywords: "home pull requests", run: () => router.push("/") },
+      { id: "nav-repositories", label: "Go to Repositories", group: "Navigate", keywords: "watch manage", run: () => router.push("/repositories") },
+      { id: "nav-analytics", label: "Go to Analytics", group: "Navigate", keywords: "charts metrics", run: () => router.push("/analytics") },
+      { id: "nav-policies", label: "Go to Policies", group: "Navigate", keywords: "rules", run: () => router.push("/policies") },
+      { id: "action-refresh", label: "Refresh page", group: "Actions", run: () => router.refresh() },
+    ];
+    for (const repository of repositories ?? []) {
+      items.push({
+        id: `repo-${repository.id}`,
+        label: `Switch to ${repository.fullName}`,
+        group: "Repositories",
+        keywords: repository.private ? "private" : "public",
+        run: () => router.push(`/?repo=${encodeURIComponent(repository.fullName)}`),
+      });
+    }
+    return [...items, ...extraCommands];
+  }, [extraCommands, repositories, router]);
 
   return (
     <header className="flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] bg-[var(--panel)]/85 px-5 py-3 backdrop-blur-xl lg:px-7">
@@ -71,9 +97,9 @@ export function DashboardHeader({
         <DashboardLiveRefresh initialCursor={initialChangeCursor} />
         <button
           type="button"
-          disabled
-          title="Command menu coming in a later phase"
-          className="desktop-only rounded-[10px] border border-[var(--line)] bg-[var(--panel)] px-2.5 py-1.5 font-mono text-[11px] font-semibold text-[var(--faint)]"
+          title="Open command menu"
+          onClick={() => setCommandOpen(true)}
+          className="desktop-only rounded-[10px] border border-[var(--line)] bg-[var(--panel)] px-2.5 py-1.5 font-mono text-[11px] font-semibold text-[var(--muted)] hover:text-[var(--ink)]"
         >
           ⌘K
         </button>
@@ -83,6 +109,7 @@ export function DashboardHeader({
           <button className="rounded-[10px] border border-[var(--line)] bg-[var(--panel)] px-3 py-2 text-xs font-semibold">Log out</button>
         </form>
       </div>
+      <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} commands={commands} />
     </header>
   );
 }

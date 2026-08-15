@@ -117,8 +117,40 @@ html:not([data-theme="light"]) .theme-light-only { display: none; }
 .pulse-dot { animation: pulse-dot 1.8s ease-in-out infinite; }
 .draw-bar { animation: draw .65s ease-out both; }
 .draw-bar-y { transform-origin: bottom; animation: draw-y .65s ease-out both; }
+
+:root {
+  --motion: 140ms;
+  --motion-ease: ease-out;
+}
+
+a, button, summary, [role="button"], select, input, textarea {
+  transition:
+    color var(--motion) var(--motion-ease),
+    background-color var(--motion) var(--motion-ease),
+    border-color var(--motion) var(--motion-ease),
+    box-shadow var(--motion) var(--motion-ease),
+    opacity var(--motion) var(--motion-ease);
+}
+
+a:focus-visible,
+button:focus-visible,
+summary:focus-visible,
+[role="button"]:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--acid);
+  outline-offset: 2px;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .draw-bar, .draw-bar-y { animation: none; }
+  :root { --motion: 0ms; }
+  .pulse-dot, .draw-bar, .draw-bar-y { animation: none !important; }
+  *, *::before, *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 
 @media (max-width: 900px) {

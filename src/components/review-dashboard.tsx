@@ -1,17 +1,18 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { DashboardHeader } from "@/components/dashboard-header";
 import { findingStatePresentation } from "@/components/finding-state-presentation";
 import { RepositoryWatchStatus } from "@/components/repository-watch-control";
+import type { CommandPaletteItem } from "@/lib/command-palette";
 import type { DashboardData, DashboardPullRequest } from "@/lib/dashboard-data";
-import type { ReviewFinding } from "@/lib/types";
 import { ReviewInvocationTracker } from "@/lib/review-invocation";
+import { detailTabFromDigit, isEditableKeyboardTarget, moveSelectionIndex, type DetailTab } from "@/lib/reviews-keyboard";
+import type { ReviewFinding } from "@/lib/types";
 
 type ReviewStatus = DashboardPullRequest["check"]["status"];
-type DetailTab = "findings" | "sandbox" | "history";
 
 const statusStyles: Record<ReviewStatus, [string, string, string]> = {
   not_reviewed: ["Not reviewed", "border-[var(--muted)] text-[var(--muted)]", "bg-[var(--muted)]"],
@@ -71,9 +72,9 @@ export function ReviewDashboard({ data, initialChangeCursor }: { data: Dashboard
   const [filter, setFilter] = useState<"all" | ReviewStatus>("all");
   const [submittingKey, setSubmittingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const invocationTrackerRef = useRef<ReviewInvocationTracker | null>(null);
-  invocationTrackerRef.current ??= new ReviewInvocationTracker();
-  const invocationTracker = invocationTrackerRef.current;
+  const [invocationTracker] = useState(() => new ReviewInvocationTracker());
+  const detailRef = useRef<HTMLElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   const visible = useMemo(
     () => (filter === "all" ? data.pullRequests : data.pullRequests.filter((pull) => pull.check.status === filter)),
@@ -121,6 +122,66 @@ export function ReviewDashboard({ data, initialChangeCursor }: { data: Dashboard
     }
   }
 
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (isEditableKeyboardTarget(event.target)) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (document.querySelector("[data-command-palette]")) return;
+      const key = event.key.toLowerCase();
+      if (key === "j" || key === "k") {
+        if (!visible.length) return;
+        event.preventDefault();
+        const current = visible.findIndex((pull) => pull.key === selected?.key);
+        const next = moveSelectionIndex(current, key === "j" ? 1 : -1, visible.length);
+        if (next < 0) return;
+        const nextKey = visible[next].key;
+        setSelectedKey(nextKey);
+        window.requestAnimationFrame(() => {
+          listRef.current?.querySelector<HTMLElement>(`[data-pull-key="${CSS.escape(nextKey)}"]`)?.scrollIntoView({ block: "nearest" });
+        });
+        return;
+      }
+      if (key === "enter") {
+        if (!selected) return;
+        event.preventDefault();
+        detailRef.current?.focus();
+        return;
+      }
+      const nextTab = detailTabFromDigit(event.key);
+      if (nextTab) {
+        event.preventDefault();
+        setTab(nextTab);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selected, visible]);
+
+  const extraCommands = useMemo(() => {
+    const items: CommandPaletteItem[] = visible.map((pull) => ({
+      id: `pr-${pull.key}`,
+      label: `#${pull.number} ${pull.title}`,
+      group: "Pull requests",
+      keywords: `${pull.author} ${pull.check.status}`,
+      run: () => setSelectedKey(pull.key),
+    }));
+    if (selected && !selected.draft) {
+      const pull = selected;
+      items.push({
+        id: `run-${pull.key}`,
+        label: `Run review on #${pull.number}`,
+        group: "Actions",
+        keywords: "sandbox ai",
+        run: () => {
+          void runReview(pull);
+        },
+      });
+    }
+    return items;
+  // runReview closes over stable invocationTracker + router; listing it would churn the palette every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: selected/visible only
+  }, [selected, visible]);
+
   const runLabel = selectedSubmitting ? "Submitting…" : selectedRunning ? "Running…" : selected?.draft ? "Draft PR" : "Run review";
 
   return (
@@ -131,6 +192,7 @@ export function ReviewDashboard({ data, initialChangeCursor }: { data: Dashboard
         account={data.account}
         repositories={data.repositories}
         selectedRepository={data.selectedRepository?.fullName}
+        extraCommands={extraCommands}
       />
 
       <main className="mx-auto max-w-[1500px] p-4 lg:p-6" id="reviews">
@@ -192,12 +254,14 @@ export function ReviewDashboard({ data, initialChangeCursor }: { data: Dashboard
                   ))}
                 </div>
               </div>
-              <div className="max-h-[720px] overflow-auto">
+              <div ref={listRef} className="max-h-[720px] overflow-auto">
                 {visible.map((pull) => {
                   const active = selected?.key === pull.key;
                   return (
                     <button
                       key={pull.key}
+                      type="button"
+                      data-pull-key={pull.key}
                       onClick={() => setSelectedKey(pull.key)}
                       className={`w-full border-b border-[var(--line)] px-3 py-2.5 text-left transition last:border-0 ${
                         active
@@ -221,7 +285,12 @@ export function ReviewDashboard({ data, initialChangeCursor }: { data: Dashboard
             </aside>
 
             {selected && (
-              <section className="min-w-0 overflow-hidden rounded-[10px] border border-[var(--line)] bg-[var(--panel)]">
+              <section
+                ref={detailRef}
+                tabIndex={-1}
+                aria-label={`Pull request #${selected.number} detail`}
+                className="min-w-0 overflow-hidden rounded-[10px] border border-[var(--line)] bg-[var(--panel)] outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--acid)]"
+              >
                 <div className="border-b border-[var(--line)] px-5 py-4 lg:px-6">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
@@ -276,6 +345,7 @@ export function ReviewDashboard({ data, initialChangeCursor }: { data: Dashboard
                     ).map(([id, label]) => (
                       <button
                         key={id}
+                        type="button"
                         onClick={() => setTab(id)}
                         className={`border-b-2 py-3 ${tab === id ? "border-[var(--acid)] text-[var(--ink)]" : "border-transparent text-[var(--muted)]"}`}
                       >
