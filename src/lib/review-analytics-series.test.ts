@@ -192,6 +192,23 @@ describe("buildReviewAnalyticsSeries", () => {
     expect(series.averages.addressedRate).toBe(0.5);
   });
 
+  it("excludes unaddressed findings whose 7-day deadline ends at the window boundary", () => {
+    const events: ReviewEvent[] = [
+      event("review.completed", "2026-08-07T23:59:59.999Z", {
+        jobId: "edge",
+        attempt: 1,
+        verdict: "request_changes",
+        summary: "x",
+        findings: [{ findingId: "edge", findingKey: "security-edge", severity: "warning", file: "e.ts", title: "E", explanation: "E" }],
+        sandbox: { sandboxId: "s", durationMs: 1, commands: [] },
+      }),
+    ];
+
+    const series = buildReviewAnalyticsSeries(events, "2026-08-01", "2026-08-14");
+    expect(series.averages.addressedRate).toBeNull();
+    expect(series.addressedRate.every((item) => item.eligible === 0)).toBe(true);
+  });
+
   it("fills zero days so charts keep a continuous x-axis", () => {
     const series = buildReviewAnalyticsSeries([], "2026-08-01", "2026-08-03");
     expect(series.reviewsOverTime.map((item) => item.day)).toEqual(["2026-08-01", "2026-08-02", "2026-08-03"]);

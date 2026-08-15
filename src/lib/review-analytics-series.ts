@@ -296,8 +296,8 @@ export function buildReviewAnalyticsSeries(events: readonly ReviewEvent[], from:
     const index = weekIndex.get(week);
     if (index === undefined) continue;
     const deadline = finding.firstSeenAt + ADDRESSED_WITHIN_MS;
-    // Only count findings whose 7-day window has elapsed, or that already addressed.
-    if (deadline > windowEndMs && finding.addressedAt === undefined) continue;
+    // Only count findings whose 7-day window has fully elapsed (strictly before window end), or that already addressed.
+    if (deadline >= windowEndMs && finding.addressedAt === undefined) continue;
     series.addressedRate[index].eligible += 1;
     if (finding.addressedAt !== undefined && finding.addressedAt <= deadline) series.addressedRate[index].addressed += 1;
   }
