@@ -60,6 +60,26 @@ describe("resolveAnalyticsWindow", () => {
       priorTo: "2026-07-31",
     });
   });
+
+  it("sizes the prior period from the actual span when only from is provided", () => {
+    expect(resolveAnalyticsWindow({ from: "2026-08-01", now: new Date("2026-08-14T12:00:00.000Z") })).toEqual({
+      rangeDays: 14,
+      from: "2026-08-01",
+      to: "2026-08-14",
+      priorFrom: "2026-07-18",
+      priorTo: "2026-07-31",
+    });
+  });
+
+  it("backs up from an explicit to using the selected range length", () => {
+    expect(resolveAnalyticsWindow({ to: "2026-08-14", range: "14", now: new Date("2026-12-01T00:00:00.000Z") })).toEqual({
+      rangeDays: 14,
+      from: "2026-08-01",
+      to: "2026-08-14",
+      priorFrom: "2026-07-18",
+      priorTo: "2026-07-31",
+    });
+  });
 });
 
 describe("calendar helpers", () => {

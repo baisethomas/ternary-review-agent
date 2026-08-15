@@ -92,21 +92,35 @@ export function resolveAnalyticsWindow(input: {
   now?: Date;
 } = {}): AnalyticsWindow {
   const now = input.now ?? new Date();
+  const today = utcDay(now.toISOString());
   const explicitFrom = input.from ? utcDay(input.from) : undefined;
   const explicitTo = input.to ? utcDay(input.to) : undefined;
   const parsedRange = typeof input.range === "number" ? input.range : parseAnalyticsRange(input.range);
+  const defaultRange = parsedRange ?? 30;
 
+  let from: string;
+  let to: string;
   if (explicitFrom && explicitTo) {
-    const days = eachUtcDay(explicitFrom, explicitTo);
-    const rangeDays = Math.max(1, days.length);
-    const priorTo = addUtcDays(explicitFrom, -1);
-    const priorFrom = addUtcDays(priorTo, -(rangeDays - 1));
-    return { rangeDays, from: explicitFrom, to: explicitTo, priorFrom, priorTo };
+    from = explicitFrom;
+    to = explicitTo;
+  } else if (explicitFrom) {
+    // One-sided from: span through today; prior period matches that actual length.
+    from = explicitFrom;
+    to = today;
+  } else if (explicitTo) {
+    to = explicitTo;
+    from = addUtcDays(to, -(defaultRange - 1));
+  } else {
+    to = today;
+    from = addUtcDays(to, -(defaultRange - 1));
+  }
+  if (from > to) {
+    const swap = from;
+    from = to;
+    to = swap;
   }
 
-  const rangeDays = parsedRange ?? 30;
-  const to = explicitTo ?? utcDay(now.toISOString());
-  const from = explicitFrom ?? addUtcDays(to, -(rangeDays - 1));
+  const rangeDays = Math.max(1, eachUtcDay(from, to).length);
   const priorTo = addUtcDays(from, -1);
   const priorFrom = addUtcDays(priorTo, -(rangeDays - 1));
   return { rangeDays, from, to, priorFrom, priorTo };
