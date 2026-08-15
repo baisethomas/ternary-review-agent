@@ -48,10 +48,14 @@ describe("review analytics service", () => {
   it("keeps paused repository history in organization analytics", async () => {
     const data = await loadReviewAnalytics({ organization: "ternary" });
 
-    expect(mocks.pages).toHaveBeenCalledTimes(2);
+    // Each repository is scanned twice per window (selection + aggregation) for current and prior periods.
+    expect(mocks.pages).toHaveBeenCalledTimes(8);
     expect(mocks.pages).toHaveBeenCalledWith({ installationId: 7, owner: "Ternary", repo: "History" });
     expect(data.repositories).toEqual(["Ternary/Agent", "Ternary/History", "Other/Tool"]);
     expect(data.organizations).toEqual(["Other", "Ternary"]);
+    expect(data.window.rangeDays).toBe(30);
+    expect(data.series.reviewsOverTime).toHaveLength(30);
+    expect(data.stats.reviews).toMatchObject({ value: 0, prior: 0, delta: 0 });
   });
 
   it("streams one repository at a time for exports", async () => {
@@ -62,6 +66,19 @@ describe("review analytics service", () => {
     expect(mocks.pages).toHaveBeenCalledTimes(1);
     await iterator.next();
     expect(mocks.pages).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not default export pages to a 30-day window when no dates are supplied", async () => {
+    mocks.catalog.mockResolvedValue({ repositories: [repositories[0]] });
+    const old = {
+      eventId: "old-request", idempotencyKey: "old-request", reviewId: "ternary/agent#1:head", type: "review.requested" as const,
+      occurredAt: "2020-01-01T00:00:00.000Z", scope: { installationId: 7, owner: "Ternary", repo: "Agent" }, pullNumber: 1, headSha: "head",
+      payload: { source: "github" as const },
+    };
+    mocks.pages.mockImplementation(() => (async function* () { yield [old]; })());
+    const exported = [];
+    for await (const page of await analyticsEventPages({ organization: "ternary" })) exported.push(...page);
+    expect(exported).toEqual([old]);
   });
 
   it("exports matching unfinished reviews recorded before job identity was added", async () => {
@@ -139,11 +156,12 @@ describe("review analytics service", () => {
       }
     })());
 
-    const data = await loadReviewAnalytics();
+    const data = await loadReviewAnalytics({ from: "2026-08-01", to: "2026-08-31" });
 
     expect(data.analytics.latency.queueSamples).toBe(5_000);
     expect(data.analytics.latency.averageQueueMs).toBe(1_000);
-    expect(mocks.pages).toHaveBeenCalledTimes(1);
+    // selection + aggregation for current and prior windows
+    expect(mocks.pages).toHaveBeenCalledTimes(4);
   });
 
   it("bounds dashboard ledger loading to one repository at a time", async () => {
@@ -154,12 +172,12 @@ describe("review analytics service", () => {
       yield [];
     })());
 
-    const loading = loadReviewAnalytics();
+    const loading = loadReviewAnalytics({ from: "2026-08-01", to: "2026-08-31" });
     await vi.waitFor(() => expect(mocks.pages).toHaveBeenCalledTimes(1));
     releaseFirst?.();
     await loading;
 
-    expect(mocks.pages).toHaveBeenCalledTimes(repositories.length);
+    expect(mocks.pages).toHaveBeenCalledTimes(repositories.length * 4);
   });
 
   it("attaches spend-ceiling visibility for a single repository filter", async () => {

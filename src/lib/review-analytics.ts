@@ -13,6 +13,8 @@ export type ReviewAnalyticsFilters = {
   author?: string;
   from?: string;
   to?: string;
+  /** Chart range picker; resolved to from/to by the analytics service when dates are omitted. */
+  range?: "14" | "30" | "60";
   rule?: string;
   model?: string;
   outcome?: "approve" | "request_changes" | "comment" | "failed";
