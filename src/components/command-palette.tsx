@@ -43,6 +43,16 @@ export function CommandPalette({
   }, [open]);
 
   useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      dialogRef.current
+        ?.querySelector<HTMLElement>(`[data-command-index="${clampedIndex}"]`)
+        ?.scrollIntoView({ block: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [clampedIndex, open]);
+
+  useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (!isCommandPaletteHotkey(event)) return;
       // Always handle ⌘/Ctrl+K, including from inputs, so the browser default (e.g. address bar) does not win.
@@ -121,6 +131,8 @@ export function CommandPalette({
             return;
           }
           if (event.key === "Enter") {
+            const option = (event.target as HTMLElement | null)?.closest?.('[role="option"]');
+            if (option) return;
             event.preventDefault();
             runActive();
           }
@@ -137,6 +149,7 @@ export function CommandPalette({
             placeholder="Jump to page, repository, or pull request…"
             aria-controls={listId}
             aria-autocomplete="list"
+            aria-activedescendant={filtered[clampedIndex] ? `command-${filtered[clampedIndex].id}` : undefined}
             className="w-full bg-transparent px-1 py-1.5 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--faint)]"
           />
         </div>
@@ -154,12 +167,16 @@ export function CommandPalette({
                       <li key={item.id}>
                         <button
                           type="button"
+                          id={`command-${item.id}`}
                           role="option"
+                          tabIndex={-1}
+                          data-command-index={item.index}
                           aria-selected={active}
                           className={`flex w-full items-center rounded-[8px] px-2.5 py-2 text-left text-[13px] ${
                             active ? "bg-[var(--accent-bg)] text-[var(--ink)]" : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
                           }`}
                           onMouseEnter={() => setActiveIndex(item.index)}
+                          onFocus={() => setActiveIndex(item.index)}
                           onClick={() => {
                             close();
                             item.run();
