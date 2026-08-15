@@ -27,17 +27,23 @@ function deltaLabel(delta: number | null) {
   const sign = delta > 0 ? "+" : "−";
   return `${sign}${Math.abs(Math.round(delta * 100))}% vs prior`;
 }
-function deltaClass(delta: number | null) {
+function deltaClass(delta: number | null, invert = false) {
   if (delta === null || delta === 0) return "text-[var(--faint)]";
-  return delta > 0 ? "text-[var(--green)]" : "text-[var(--red)]";
+  const improved = invert ? delta < 0 : delta > 0;
+  return improved ? "text-[var(--green)]" : "text-[var(--red)]";
 }
 
-function StatCell({ label, value, stat }: { label: string; value: string; stat: StatDelta }) {
+function utcDaysInMonth(day: string) {
+  const [year, month] = day.split("-").map(Number);
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function StatCell({ label, value, stat, invertDelta = false }: { label: string; value: string; stat: StatDelta; invertDelta?: boolean }) {
   return (
     <article className="min-w-0 border-l border-[var(--line)] px-4 first:border-l-0 first:pl-0">
       <p className="text-[10px] font-semibold uppercase tracking-[.08em] text-[var(--muted)]">{label}</p>
       <p className="mt-2 text-[28px] font-semibold tracking-[-.05em]">{value}</p>
-      <p className={`mt-1 text-[11px] ${deltaClass(stat.delta)}`}>{deltaLabel(stat.delta)}</p>
+      <p className={`mt-1 text-[11px] ${deltaClass(stat.delta, invertDelta)}`}>{deltaLabel(stat.delta)}</p>
     </article>
   );
 }
@@ -207,7 +213,7 @@ function SeriesCharts({
       <ChartCard
         title="Spend vs ceiling"
         average={money(series.averages.spendPerDay)}
-        insight={dailyPace === null ? "No usage ceiling configured" : `Dashed line = daily pace for $${dailyPace.toFixed(2)} monthly ceiling`}
+        insight={dailyPace === null ? "No usage ceiling configured" : `Dashed line = $${dailyPace.toFixed(2)}/day (UTC-month pace)`}
         coverage={coverage.estimatedCost}
       >
         <DayBars values={spendValues} max={spendMax} className="bg-[var(--violet)]" />
@@ -231,8 +237,8 @@ function StatStrip({ stats }: { stats: ReviewAnalyticsStatStrip }) {
     <section className="mb-5 grid grid-cols-2 gap-y-4 rounded-[10px] border border-[var(--line)] bg-[var(--panel)] px-4 py-4 sm:grid-cols-4">
       <StatCell label="Reviews" value={String(stats.reviews.value)} stat={stats.reviews} />
       <StatCell label="Pass rate" value={percent(stats.passRate.value)} stat={stats.passRate} />
-      <StatCell label="Changes requested" value={percent(stats.changeRate.value)} stat={stats.changeRate} />
-      <StatCell label="Failure rate" value={percent(stats.failureRate.value)} stat={stats.failureRate} />
+      <StatCell label="Changes requested" value={percent(stats.changeRate.value)} stat={stats.changeRate} invertDelta />
+      <StatCell label="Failure rate" value={percent(stats.failureRate.value)} stat={stats.failureRate} invertDelta />
     </section>
   );
 }
@@ -251,7 +257,9 @@ export function AnalyticsDashboard({ data, filters, initialChangeCursor }: { dat
       : { range: undefined }),
   });
   const rangeValue = filters.range ?? (window.rangeDays === 14 || window.rangeDays === 60 ? String(window.rangeDays) : "30");
-  const dailyCeiling = data.spendCeiling ? data.spendCeiling.monthlyCeilingUsd / window.rangeDays : null;
+  const dailyCeiling = data.spendCeiling
+    ? data.spendCeiling.monthlyCeilingUsd / utcDaysInMonth(window.to)
+    : null;
 
   return (
     <div className="min-h-screen">
