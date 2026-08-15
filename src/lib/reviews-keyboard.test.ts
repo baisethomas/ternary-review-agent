@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { detailTabFromDigit, isEditableKeyboardTarget, moveSelectionIndex } from "./reviews-keyboard";
+import {
+  detailTabFromDigit,
+  isEditableKeyboardTarget,
+  isInteractiveKeyboardTarget,
+  moveSelectionIndex,
+} from "./reviews-keyboard";
 
 describe("reviews keyboard helpers", () => {
   it("moves selection within bounds", () => {
@@ -20,8 +25,21 @@ describe("reviews keyboard helpers", () => {
 
   it("detects editable keyboard targets", () => {
     expect(isEditableKeyboardTarget(null)).toBe(false);
-    expect(isEditableKeyboardTarget({ tagName: "INPUT", isContentEditable: false } as EventTarget)).toBe(true);
-    expect(isEditableKeyboardTarget({ tagName: "DIV", isContentEditable: false } as EventTarget)).toBe(false);
-    expect(isEditableKeyboardTarget({ tagName: "DIV", isContentEditable: true } as EventTarget)).toBe(true);
+    expect(isEditableKeyboardTarget({ tagName: "INPUT", isContentEditable: false } as unknown as EventTarget)).toBe(true);
+    expect(isEditableKeyboardTarget({ tagName: "DIV", isContentEditable: false } as unknown as EventTarget)).toBe(false);
+    expect(isEditableKeyboardTarget({ tagName: "DIV", isContentEditable: true } as unknown as EventTarget)).toBe(true);
+  });
+
+  it("detects interactive keyboard targets", () => {
+    expect(isInteractiveKeyboardTarget(null)).toBe(false);
+    expect(isInteractiveKeyboardTarget({ tagName: "BUTTON" } as unknown as EventTarget)).toBe(true);
+    expect(isInteractiveKeyboardTarget({ tagName: "A" } as unknown as EventTarget)).toBe(true);
+    expect(isInteractiveKeyboardTarget({ tagName: "DIV" } as unknown as EventTarget)).toBe(false);
+    expect(
+      isInteractiveKeyboardTarget({
+        tagName: "SPAN",
+        closest: (selectors: string) => (selectors.includes("button") ? {} : null),
+      } as unknown as EventTarget),
+    ).toBe(true);
   });
 });

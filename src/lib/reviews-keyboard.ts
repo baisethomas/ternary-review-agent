@@ -10,6 +10,19 @@ export function isEditableKeyboardTarget(target: EventTarget | null) {
   return Boolean(element.isContentEditable);
 }
 
+/** Buttons/links/etc. that should keep native Enter/Space activation. */
+export function isInteractiveKeyboardTarget(target: EventTarget | null) {
+  if (!target || typeof target !== "object") return false;
+  const element = target as {
+    tagName?: string;
+    closest?: (selectors: string) => unknown;
+  };
+  const tag = element.tagName;
+  if (tag === "BUTTON" || tag === "A" || tag === "SUMMARY") return true;
+  if (typeof element.closest !== "function") return false;
+  return Boolean(element.closest('button, a, summary, [role="button"]'));
+}
+
 export function moveSelectionIndex(current: number, delta: number, length: number) {
   if (length <= 0) return -1;
   if (current < 0) return delta > 0 ? 0 : length - 1;

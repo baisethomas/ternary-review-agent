@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterCommandItems, isCommandPaletteHotkey } from "./command-palette";
+import { filterCommandItems, groupCommandItems, isCommandPaletteHotkey } from "./command-palette";
 
 describe("command palette helpers", () => {
   const items = [
@@ -13,6 +13,27 @@ describe("command palette helpers", () => {
     expect(filterCommandItems(items, "repositories").map((item) => item.id)).toEqual(["3"]);
     expect(filterCommandItems(items, "densify").map((item) => item.id)).toEqual(["2"]);
     expect(filterCommandItems(items, "  ").map((item) => item.id)).toEqual(["1", "2", "3"]);
+  });
+
+  it("merges noncontiguous groups while preserving item indices", () => {
+    const mixed = [
+      { id: "a", label: "Refresh", group: "Actions" },
+      { id: "b", label: "PR", group: "Pull requests" },
+      { id: "c", label: "Run review", group: "Actions" },
+    ];
+    expect(groupCommandItems(mixed)).toEqual([
+      {
+        group: "Actions",
+        items: [
+          { id: "a", label: "Refresh", group: "Actions", index: 0 },
+          { id: "c", label: "Run review", group: "Actions", index: 2 },
+        ],
+      },
+      {
+        group: "Pull requests",
+        items: [{ id: "b", label: "PR", group: "Pull requests", index: 1 }],
+      },
+    ]);
   });
 
   it("detects the command palette hotkey", () => {

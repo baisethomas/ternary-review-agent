@@ -2,8 +2,9 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { filterCommandItems, isCommandPaletteHotkey, type CommandPaletteItem } from "@/lib/command-palette";
-import { isEditableKeyboardTarget } from "@/lib/reviews-keyboard";
+import { filterCommandItems, groupCommandItems, isCommandPaletteHotkey, type CommandPaletteItem } from "@/lib/command-palette";
+
+const FOCUSABLE_SELECTOR = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export function CommandPalette({
   open,
@@ -17,8 +18,11 @@ export function CommandPalette({
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
   const listId = useId();
   const filtered = useMemo(() => filterCommandItems(commands, query), [commands, query]);
+  const groups = useMemo(() => groupCommandItems(filtered), [filtered]);
   const clampedIndex = filtered.length === 0 ? 0 : Math.min(activeIndex, filtered.length - 1);
 
   function close() {
@@ -29,14 +33,19 @@ export function CommandPalette({
 
   useEffect(() => {
     if (!open) return;
+    previouslyFocusedRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const frame = window.requestAnimationFrame(() => inputRef.current?.focus());
-    return () => window.cancelAnimationFrame(frame);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      previouslyFocusedRef.current?.focus?.();
+      previouslyFocusedRef.current = null;
+    };
   }, [open]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (!isCommandPaletteHotkey(event)) return;
-      if (isEditableKeyboardTarget(event.target) && !open) return;
+      // Always handle ⌘/Ctrl+K, including from inputs, so the browser default (e.g. address bar) does not win.
       event.preventDefault();
       if (open) {
         setQuery("");
@@ -61,16 +70,16 @@ export function CommandPalette({
     item.run();
   }
 
-  const groups = filtered.reduce<Array<{ group: string; items: Array<CommandPaletteItem & { index: number }> }>>((acc, item, index) => {
-    const last = acc[acc.length - 1];
-    if (last && last.group === item.group) last.items.push({ ...item, index });
-    else acc.push({ group: item.group, items: [{ ...item, index }] });
-    return acc;
-  }, []);
+  function focusables() {
+    return Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ?? []).filter(
+      (element) => !element.hasAttribute("disabled") && element.tabIndex !== -1,
+    );
+  }
 
   return createPortal(
     <div className="fixed inset-0 z-[80] flex items-start justify-center bg-[rgb(0_0_0_/0.55)] px-4 pt-[12vh]" role="presentation" onMouseDown={close}>
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Command menu"
@@ -81,6 +90,24 @@ export function CommandPalette({
           if (event.key === "Escape") {
             event.preventDefault();
             close();
+            return;
+          }
+          if (event.key === "Tab") {
+            const nodes = focusables();
+            if (nodes.length === 0) return;
+            const first = nodes[0];
+            const last = nodes[nodes.length - 1];
+            const active = document.activeElement;
+            if (event.shiftKey && active === first) {
+              event.preventDefault();
+              last.focus();
+              return;
+            }
+            if (!event.shiftKey && active === last) {
+              event.preventDefault();
+              first.focus();
+              return;
+            }
             return;
           }
           if (event.key === "ArrowDown") {

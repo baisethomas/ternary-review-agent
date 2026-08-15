@@ -9,7 +9,13 @@ import { RepositoryWatchStatus } from "@/components/repository-watch-control";
 import type { CommandPaletteItem } from "@/lib/command-palette";
 import type { DashboardData, DashboardPullRequest } from "@/lib/dashboard-data";
 import { ReviewInvocationTracker } from "@/lib/review-invocation";
-import { detailTabFromDigit, isEditableKeyboardTarget, moveSelectionIndex, type DetailTab } from "@/lib/reviews-keyboard";
+import {
+  detailTabFromDigit,
+  isEditableKeyboardTarget,
+  isInteractiveKeyboardTarget,
+  moveSelectionIndex,
+  type DetailTab,
+} from "@/lib/reviews-keyboard";
 import type { ReviewFinding } from "@/lib/types";
 
 type ReviewStatus = DashboardPullRequest["check"]["status"];
@@ -142,6 +148,7 @@ export function ReviewDashboard({ data, initialChangeCursor }: { data: Dashboard
         return;
       }
       if (key === "enter") {
+        if (isInteractiveKeyboardTarget(event.target)) return;
         if (!selected) return;
         event.preventDefault();
         detailRef.current?.focus();
