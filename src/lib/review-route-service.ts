@@ -4,6 +4,7 @@ import {
   resolveConfiguredOpenRouterTimeoutMs,
   type OpenRouterTimeoutOptions,
 } from "./openrouter-review-provider";
+import { isRetryableReviewError, NonRetryableReviewError } from "./review-errors";
 import { timeoutForModelAttempt } from "./review-invocation-limits";
 import { resolveReviewRouteConfig } from "./review-route-config";
 import { buildReviewModelChain, buildReviewRoute, type ReviewModelAttempt } from "./review-route-selector";
@@ -16,6 +17,24 @@ export type RoutedReviewDeps = {
 
 function attemptErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function throwCascadeFailure(errors: unknown[]): never {
+  if (errors.length === 0) {
+    throw new Error("AI review failed after exhausting the model cascade");
+  }
+  const message = `AI review failed after exhausting the model cascade: ${errors.map(attemptErrorMessage).join(" → ")}`;
+  const cause = errors[errors.length - 1];
+  if (errors.every((error) => !isRetryableReviewError(error))) {
+    throw new NonRetryableReviewError(message, cause instanceof Error ? { cause } : undefined);
+  }
+  throw new Error(message, cause instanceof Error ? { cause } : undefined);
+}
+
+function throwIfBudgetExhausted(remainingMs: number, errors: unknown[]) {
+  if (remainingMs >= MIN_OPENROUTER_TIMEOUT_MS) return;
+  if (errors.length) throwCascadeFailure(errors);
+  throw new Error(`AI review skipped: only ${remainingMs}ms left in the invocation budget`);
 }
 
 export async function generateRoutedReview(
@@ -34,19 +53,15 @@ export async function generateRoutedReview(
   const initialRemaining = timeoutOptions?.remainingMs ?? resolveConfiguredOpenRouterTimeoutMs();
   const deadline = startedAt + initialRemaining;
   const attempts: ReviewModelAttempt[] = [];
-  let lastError: unknown;
+  const errors: unknown[] = [];
 
   for (let index = 0; index < chain.length; index += 1) {
     const model = chain[index]!;
     const remaining = deadline - Date.now();
-    if (remaining < MIN_OPENROUTER_TIMEOUT_MS) {
-      throw lastError ?? new Error(`AI review skipped: only ${remaining}ms left in the invocation budget`);
-    }
+    throwIfBudgetExhausted(remaining, errors);
     const remainingAttempts = chain.length - index;
     const attemptBudget = timeoutForModelAttempt(remaining, remainingAttempts);
-    if (attemptBudget < MIN_OPENROUTER_TIMEOUT_MS) {
-      throw lastError ?? new Error(`AI review skipped: only ${attemptBudget}ms left in the invocation budget`);
-    }
+    throwIfBudgetExhausted(attemptBudget, errors);
     try {
       const result = await generateReview(
         diff,
@@ -62,10 +77,10 @@ export async function generateRoutedReview(
         : route.reason;
       return { ...result, route: { ...route, reason, usedModel: model, modelAttempts: attempts } };
     } catch (error) {
-      lastError = error;
+      errors.push(error);
       attempts.push({ model, outcome: "failed", error: attemptErrorMessage(error) });
     }
   }
 
-  throw lastError ?? new Error("AI review failed after exhausting the model cascade");
+  throwCascadeFailure(errors);
 }

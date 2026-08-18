@@ -130,12 +130,45 @@ describe("generateRoutedReview", () => {
       { ...safeReviewPolicy, model: "openai/gpt-5.6-sol" },
       { remainingMs: 180_000 },
       { generateReview },
-    )).rejects.toMatchObject({ message: "timeout-3" });
+    )).rejects.toMatchObject({ message: expect.stringContaining("timeout-3") });
     expect(generateReview.mock.calls.map((call) => call[3].model)).toEqual([
       "openai/gpt-5.6-sol",
       DEFAULT_FALLBACK_MODEL,
       DEFAULT_CATCHALL_MODEL,
     ]);
+  });
+
+  it("keeps the cascade retryable when an earlier model timed out and Terra failed permanently", async () => {
+    const generateReview = vi.fn()
+      .mockRejectedValueOnce(new Error("AI review timed out after 150000ms"))
+      .mockRejectedValueOnce(new Error("AI review timed out after 45000ms"))
+      .mockRejectedValueOnce(new NonRetryableReviewError("AI review failed (404): no endpoints"));
+    const error = await generateRoutedReview(
+      "diff --git a/src/auth/login.ts b/src/auth/login.ts\n+++ b/src/auth/login.ts\n+change",
+      sandbox,
+      "context",
+      { ...safeReviewPolicy, model: "openai/gpt-5.6-sol" },
+      { remainingMs: 180_000 },
+      { generateReview },
+    ).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(NonRetryableReviewError);
+    expect(error).toMatchObject({
+      message: expect.stringMatching(/timed out after 150000ms.*no endpoints/),
+    });
+  });
+
+  it("stays non-retryable when every model in the cascade failed permanently", async () => {
+    const generateReview = vi.fn()
+      .mockRejectedValue(new NonRetryableReviewError("AI review failed (404): no endpoints"));
+    await expect(generateRoutedReview(
+      "diff --git a/src/auth/login.ts b/src/auth/login.ts\n+++ b/src/auth/login.ts\n+change",
+      sandbox,
+      "context",
+      { ...safeReviewPolicy, model: "openai/gpt-5.6-sol" },
+      { remainingMs: 180_000 },
+      { generateReview },
+    )).rejects.toBeInstanceOf(NonRetryableReviewError);
   });
 
   it("reserves later-model time so the primary cannot consume the whole budget", async () => {
