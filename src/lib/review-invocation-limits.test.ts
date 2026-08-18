@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_OPENROUTER_TIMEOUT_MS,
   PRO_REVIEW_WORKER_MAX_DURATION_SECONDS,
+  REVIEW_MODEL_FALLBACK_SLICE_MS,
   REVIEW_PUBLISH_RESERVE_MS,
   REVIEW_WORKER_DRAIN_RESERVE_MS,
   REVIEW_WORKER_MAX_DURATION_MS,
   REVIEW_WORKER_MAX_DURATION_SECONDS,
   WORKER_INVOCATION_BUDGET_MS,
+  timeoutForModelAttempt,
 } from "./review-invocation-limits";
 import { remainingInvocationBudgetMs, resolveOpenRouterTimeoutMs } from "./openrouter-review-provider";
 
@@ -31,5 +33,13 @@ describe("review invocation limits", () => {
 
   it("computes remaining budget with publish reserve", () => {
     expect(remainingInvocationBudgetMs(1_000, 61_000)).toBe(220_000);
+  });
+
+  it("reserves fallback slices so a hung primary cannot consume the whole budget", () => {
+    expect(REVIEW_MODEL_FALLBACK_SLICE_MS).toBe(45_000);
+    expect(timeoutForModelAttempt(180_000, 3)).toBe(90_000);
+    expect(timeoutForModelAttempt(120_000, 2)).toBe(75_000);
+    expect(timeoutForModelAttempt(40_000, 1)).toBe(40_000);
+    expect(timeoutForModelAttempt(90_000, 3)).toBe(30_000);
   });
 });

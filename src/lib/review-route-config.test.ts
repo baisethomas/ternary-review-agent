@@ -19,6 +19,8 @@ describe("resolveReviewRouteConfig", () => {
       REVIEW_ROUTE_FULL_SANDBOX: "1",
       REVIEW_ROUTE_SCOUT_MODEL: "openai/gpt-5.6-sol",
       REVIEW_ROUTE_DEEP_MODEL: "anthropic/claude-opus-4.6",
+      REVIEW_ROUTE_FALLBACK_MODEL: "~deepseek/deepseek-v4-flash-latest",
+      REVIEW_ROUTE_CATCHALL_MODEL: "openai/gpt-5.6-terra",
     })).toEqual({
       executionMode: "risk",
       shadowEnabled: true,
@@ -27,6 +29,8 @@ describe("resolveReviewRouteConfig", () => {
       largeDiffFileThreshold: 40,
       scoutModel: "openai/gpt-5.6-sol",
       deepModel: "anthropic/claude-opus-4.6",
+      fallbackModel: "~deepseek/deepseek-v4-flash-latest",
+      catchallModel: "openai/gpt-5.6-terra",
     });
   });
 
