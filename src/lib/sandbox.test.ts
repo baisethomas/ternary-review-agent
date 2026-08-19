@@ -1,6 +1,24 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { NonRetryableReviewError } from "./review-errors";
-import { sandboxCommandPlan, sandboxCredentials, compactSandboxForModel } from "./sandbox";
+import { runInSandbox, sandboxCommandPlan, sandboxCredentials, compactSandboxForModel, unavailableSandboxResult } from "./sandbox";
+
+vi.mock("@vercel/sandbox", () => {
+  class APIError extends Error {}
+  return {
+    APIError,
+    Sandbox: {
+      create: vi.fn(async () => ({
+        name: "sandbox-under-test",
+        updateNetworkPolicy: vi.fn(async () => undefined),
+        runCommand: vi.fn(async () => ({
+          exitCode: 0,
+          output: async () => "ok",
+        })),
+        stop: vi.fn(async () => undefined),
+      })),
+    },
+  };
+});
 
 describe("sandbox credentials", () => {
   it("uses Vercel's built-in identity when only the automatic project ID is present", () => {
@@ -36,6 +54,45 @@ describe("sandbox review policy", () => {
       "typecheck",
       "test",
     ]);
+  });
+
+  it("marks a sandbox result unavailable without claiming any check failed", () => {
+    const result = unavailableSandboxResult("quota exhausted");
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe("unavailable");
+    expect(result.unavailableReason).toBe("quota exhausted");
+    expect(result.commands).toEqual([]);
+  });
+
+  it("skips remaining checks once the deadline budget is exhausted and reports a partial result", async () => {
+    let clock = 0;
+    const request = {
+      owner: "ternary",
+      repo: "agent",
+      pullNumber: 1,
+      installationId: 1,
+      headSha: "abc1234",
+      cloneUrl: "https://github.com/ternary/agent.git",
+    };
+    const { Sandbox } = await import("@vercel/sandbox");
+    const runCommand = vi.fn(async () => {
+      clock += 40_000;
+      return { exitCode: 0, output: async () => "ok" };
+    });
+    vi.mocked(Sandbox.create).mockResolvedValueOnce({
+      name: "sandbox-partial",
+      updateNetworkPolicy: vi.fn(async () => undefined),
+      runCommand,
+      stop: vi.fn(async () => undefined),
+    } as never);
+
+    const result = await runInSandbox(request, "token", { skipBuild: true, deadlineAt: 80_000, now: () => clock });
+
+    // install (40s) + lint (40s) exhaust the 80s budget; typecheck and test are skipped.
+    expect(result.commands.map((command) => command.command)).toEqual(["install dependencies", "lint"]);
+    expect(result.status).toBe("partial");
+    expect(result.skippedCommands).toEqual(["typecheck", "test"]);
+    expect(result.ok).toBe(true);
   });
 
   it("compacts sandbox command output for model prompts", () => {
