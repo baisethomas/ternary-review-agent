@@ -257,6 +257,22 @@ describe("GitHub finding comments", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
+  it("stops syncing further findings once the publish deadline has passed", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(Response.json([]))
+      .mockResolvedValue(Response.json({ id: 21 }));
+    vi.stubGlobal("fetch", fetch);
+
+    await syncFindingReviewComments("ternary", "agent", 8, "head", "token", [
+      { findingId: "finding-a", body: "A\n\n<!-- ternary-finding:finding-a -->", path: "src/a.ts", line: 1 },
+      { findingId: "finding-b", body: "B\n\n<!-- ternary-finding:finding-b -->", path: "src/b.ts", line: 2 },
+    ], { botLogin: "ternary-review-agent[bot]", ...currentHead("head"), deadlineAt: Date.now() - 1 });
+
+    // Only the initial comment listing ran; no finding comments were created past the deadline.
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0][0]).toContain("/pulls/8/comments");
+  });
+
   it("stops before mutation when the head changes during comment discovery", async () => {
     const getCurrentHead = vi.fn().mockResolvedValueOnce("head-old").mockResolvedValue("head-current");
     const fetch = vi.fn().mockResolvedValueOnce(Response.json([]));

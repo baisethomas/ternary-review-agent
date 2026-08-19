@@ -215,9 +215,11 @@ function throwProviderError(error: OpenRouterError | undefined, finishReason?: s
 function fallbackReview(sandbox: SandboxResult): ReviewResult {
   return {
     verdict: sandbox.ok ? "comment" : "request_changes",
-    summary: sandbox.ok
-      ? "Sandbox checks passed. AI review is disabled until OPENROUTER_API_KEY is configured."
-      : "One or more sandbox checks failed.",
+    summary: !sandbox.ok
+      ? "One or more sandbox checks failed."
+      : sandbox.status === "unavailable"
+        ? "Sandbox checks were unavailable. AI review is disabled until OPENROUTER_API_KEY is configured."
+        : "Sandbox checks passed. AI review is disabled until OPENROUTER_API_KEY is configured.",
     findings: sandbox.ok
       ? []
       : [{ findingKey: "sandbox-checks-failed", severity: "blocking", file: "", title: "Sandbox checks failed", explanation: "Inspect the sandbox command output before merging." }],
