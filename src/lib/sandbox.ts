@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { APIError, Sandbox, type NetworkPolicy } from "@vercel/sandbox";
 import { isRetryableHttpStatus, NonRetryableReviewError } from "./review-errors";
+import { SANDBOX_MIN_COMMAND_BUDGET_MS } from "./review-invocation-limits";
 import type { ReviewRequest, SandboxResult } from "./types";
 
 const INSTALL_NETWORK: NetworkPolicy = {
@@ -46,11 +47,25 @@ export function trimOutput(output: string) {
 
 export const SANDBOX_MODEL_OUTPUT_LIMIT = 1_500;
 
+export function unavailableSandboxResult(reason: string): SandboxResult {
+  return {
+    ok: true,
+    commands: [],
+    durationMs: 0,
+    sandboxId: "unavailable",
+    status: "unavailable",
+    unavailableReason: reason,
+  };
+}
+
 export function compactSandboxForModel(sandbox: SandboxResult) {
   return {
     ok: sandbox.ok,
     sandboxId: sandbox.sandboxId,
     durationMs: sandbox.durationMs,
+    ...(sandbox.status ? { status: sandbox.status } : {}),
+    ...(sandbox.skippedCommands?.length ? { skippedCommands: sandbox.skippedCommands } : {}),
+    ...(sandbox.unavailableReason ? { unavailableReason: sandbox.unavailableReason } : {}),
     commands: sandbox.commands.map((command) => ({
       command: command.command,
       exitCode: command.exitCode,
@@ -83,17 +98,39 @@ export function sandboxCommandPlan(reviewCommands: string[] = [], options: Sandb
   return [install, ...selectedChecks];
 }
 
-export type SandboxRunOptions = SandboxCommandPlanOptions;
+export type SandboxRunOptions = SandboxCommandPlanOptions & {
+  /** Epoch ms; checks that would start after this point are skipped and reported as skipped. */
+  deadlineAt?: number;
+  now?: () => number;
+};
+
+async function raceDeadline<T>(operation: Promise<T>, remainingMs: number, label: string) {
+  if (!Number.isFinite(remainingMs)) return operation;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} exceeded the sandbox time budget (${remainingMs}ms)`)), remainingMs);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export async function runInSandbox(request: ReviewRequest, githubToken: string, options: SandboxRunOptions = {}): Promise<SandboxResult> {
-  const startedAt = Date.now();
+  const now = options.now ?? Date.now;
+  const startedAt = now();
+  const remainingBudgetMs = () => (options.deadlineAt === undefined ? Number.POSITIVE_INFINITY : options.deadlineAt - now());
   const sandboxBaseName = `ternary-${request.owner}-${request.repo}-${request.pullNumber}-${request.headSha.slice(0, 7)}`
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, "-");
   const sandboxName = `${sandboxBaseName.slice(0, 54)}-${randomUUID().slice(0, 8)}`;
   let sandbox: Awaited<ReturnType<typeof Sandbox.create>>;
   try {
-    sandbox = await Sandbox.create({
+    sandbox = await raceDeadline(Sandbox.create({
       ...sandboxCredentials(),
       name: sandboxName,
       source: {
@@ -110,21 +147,28 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
       persistent: false,
       networkPolicy: INSTALL_NETWORK,
       tags: { service: "ternary", repository: `${request.owner}-${request.repo}`.slice(0, 63), pr: String(request.pullNumber) },
-    });
+    }), remainingBudgetMs(), "Sandbox creation");
   } catch (error) {
     throw classifySandboxError(error);
   }
 
   const commands: SandboxResult["commands"] = [];
+  const skippedCommands: string[] = [];
   try {
     const repoDirectory = request.repo;
-    for (const step of sandboxCommandPlan(request.policy?.reviewCommands, options)) {
+    const plan = sandboxCommandPlan(request.policy?.reviewCommands, options);
+    for (const [index, step] of plan.entries()) {
+      const remaining = remainingBudgetMs();
+      if (remaining < SANDBOX_MIN_COMMAND_BUDGET_MS) {
+        skippedCommands.push(...plan.slice(index).map((skipped) => skipped.label));
+        break;
+      }
       if (!step.network) await sandbox.updateNetworkPolicy("deny-all");
       const command = await sandbox.runCommand({
         cmd: "bash",
         args: ["-lc", step.shell],
         cwd: repoDirectory,
-        timeoutMs: COMMAND_TIMEOUT,
+        timeoutMs: Math.min(COMMAND_TIMEOUT, Math.floor(remaining)),
         env: { CI: "true", NEXT_TELEMETRY_DISABLED: "1" },
       });
       const output = trimOutput(await command.output("both"));
@@ -135,8 +179,9 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
     return {
       ok: commands.every((command) => command.exitCode === 0),
       sandboxId: sandbox.name,
-      durationMs: Date.now() - startedAt,
+      durationMs: now() - startedAt,
       commands,
+      ...(skippedCommands.length ? { status: "partial" as const, skippedCommands } : {}),
     };
   } catch (error) {
     throw classifySandboxError(error);

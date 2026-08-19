@@ -28,6 +28,14 @@ vi.mock("./dashboard-change-service", () => ({
 
 vi.mock("./sandbox", () => ({
   runInSandbox: (...args: unknown[]) => mocks.runInSandbox(...args),
+  unavailableSandboxResult: (reason: string) => ({
+    ok: true,
+    commands: [],
+    durationMs: 0,
+    sandboxId: "unavailable",
+    status: "unavailable",
+    unavailableReason: reason,
+  }),
 }));
 
 vi.mock("./repository-context-service", () => ({
@@ -98,7 +106,44 @@ describe("runReview", () => {
     expect(mocks.runInSandbox).toHaveBeenCalledWith(
       request,
       "token",
-      expect.objectContaining({ skipBuild: true }),
+      expect.objectContaining({ skipBuild: true, deadlineAt: expect.any(Number) }),
+    );
+  });
+
+  it("degrades to an AI-only review when the sandbox is unavailable instead of failing the job", async () => {
+    mocks.getPullRequestDiff.mockResolvedValue("diff --git a/a.ts b/a.ts\n+++ b/a.ts\n+change");
+    mocks.runInSandbox.mockRejectedValue(new Error("Sandbox creation is paused: monthly quota exhausted"));
+    mocks.getRepositoryReviewContext.mockResolvedValue({ text: "", status: "ok", chunks: [], indexedCommitSha: null, latencyMs: 1 });
+    mocks.upsertPullRequestComment.mockResolvedValue(undefined);
+    mocks.syncFindingReviewComments.mockResolvedValue(undefined);
+    mocks.generateRoutedReview.mockImplementation(async (_diff: unknown, sandbox: { status?: string }) => ({
+      verdict: "comment",
+      summary: "ok",
+      findings: [],
+      sandbox,
+      authoritativeFindings: true,
+    }));
+
+    const result = await runReview(request);
+
+    expect(result.sandbox.status).toBe("unavailable");
+    expect(mocks.generateRoutedReview).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ status: "unavailable", ok: true }),
+      expect.any(String),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(mocks.upsertPullRequestComment).toHaveBeenCalled();
+    expect(mocks.finishCheckRun).toHaveBeenCalledWith(
+      "ternary",
+      "agent",
+      99,
+      "token",
+      "success",
+      "Review complete",
+      expect.stringContaining("Sandbox checks did not run"),
+      expect.any(String),
     );
   });
 });

@@ -7,6 +7,7 @@ import { guardedWorkerDispatch } from "@/lib/review-worker-dispatch-guard";
 import { getInvocationStartedAt, withInvocationStartedAt } from "@/lib/review-invocation-budget";
 import { REVIEW_WORKER_DRAIN_RESERVE_MS } from "@/lib/review-invocation-limits";
 import { runOpsAlertCheck } from "@/lib/ops-alert-service";
+import { ensureReviewWorkerWakeSchedule } from "@/lib/review-worker-wake-schedule";
 
 /** Must match REVIEW_WORKER_MAX_DURATION_SECONDS in review-invocation-limits.ts (Next.js requires a literal; Hobby max 300). */
 export const maxDuration = 300;
@@ -44,7 +45,11 @@ async function maybeRunOpsAlerts(includeSpend: boolean) {
 async function runWorker(request: Request, pruneHistory = false) {
   return withInvocationStartedAt(Date.now(), async () => {
     if (!isAuthorized(request)) return Response.json({ error: "Unauthorized" }, { status: 401 });
-    if (pruneHistory) await pruneReviewEventHistory();
+    if (pruneHistory) {
+      await pruneReviewEventHistory();
+      // Daily upsert of the QStash wake schedule (Hobby Vercel crons max out at once/day).
+      await ensureReviewWorkerWakeSchedule().catch((error) => console.error("Unable to ensure review worker wake schedule", error));
+    }
     const { jobs, dispatchError } = await runReviewWorkerCycle({
       processAvailableJobs,
       nextWakeAt: getNextReviewWakeAt,

@@ -14,10 +14,15 @@ export type ReviewRequest = {
 export type WebhookReviewRequest = ReviewRequest & { webhookDeliveryId: string };
 
 export type SandboxResult = {
+  /** True when no executed check failed; unavailable/partial sandboxes report unrun checks via status, not ok. */
   ok: boolean;
   commands: Array<{ command: string; exitCode: number; output: string }>;
   durationMs: number;
   sandboxId: string;
+  /** Absent means "complete". "partial": time budget cut checks short. "unavailable": sandbox could not run at all. */
+  status?: "complete" | "partial" | "unavailable";
+  skippedCommands?: string[];
+  unavailableReason?: string;
 };
 
 export type FindingState = "open" | "fixed" | "dismissed" | "superseded" | "stale";

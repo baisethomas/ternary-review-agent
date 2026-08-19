@@ -4,6 +4,23 @@ import { findingIdFromComment } from "./finding-comment";
 
 const githubApi = "https://api.github.com";
 
+/** Bound every GitHub call so a hung request cannot consume the worker invocation. */
+export const GITHUB_FETCH_TIMEOUT_MS = 15_000;
+/** Diff downloads can be large; give them a longer bound. */
+export const GITHUB_DIFF_TIMEOUT_MS = 30_000;
+
+async function fetchWithTimeout(url: string, init: RequestInit, label: string, timeoutMs = GITHUB_FETCH_TIMEOUT_MS) {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (error) {
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      // Plain Error: timeouts are retryable.
+      throw new Error(`${label} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
+}
+
 function base64url(value: string | Buffer) {
   return Buffer.from(value).toString("base64url");
 }
@@ -52,7 +69,7 @@ function createAppJwt() {
 }
 
 async function githubFetch<T>(path: string, token: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${githubApi}${path}`, {
+  const response = await fetchWithTimeout(`${githubApi}${path}`, {
     ...init,
     cache: "no-store",
     headers: {
@@ -62,7 +79,7 @@ async function githubFetch<T>(path: string, token: string, init: RequestInit = {
       "User-Agent": "ternary-review-agent",
       ...init.headers,
     },
-  });
+  }, `GitHub API ${path}`);
   if (!response.ok) {
     throw await githubResponseError(response);
   }
@@ -70,7 +87,7 @@ async function githubFetch<T>(path: string, token: string, init: RequestInit = {
 }
 
 async function githubGraphql<T>(query: string, variables: Record<string, unknown>, token: string): Promise<T> {
-  const response = await fetch(`${githubApi}/graphql`, {
+  const response = await fetchWithTimeout(`${githubApi}/graphql`, {
     method: "POST",
     cache: "no-store",
     headers: {
@@ -80,7 +97,7 @@ async function githubGraphql<T>(query: string, variables: Record<string, unknown
       "User-Agent": "ternary-review-agent",
     },
     body: JSON.stringify({ query, variables }),
-  });
+  }, "GitHub GraphQL API");
   if (!response.ok) throw await githubResponseError(response, "GitHub GraphQL API");
   const result = await response.json() as { data?: T; errors?: Array<{ message: string; type?: string }> };
   if (result.errors?.length || !result.data) throw new GitHubGraphqlError(result.errors ?? []);
@@ -224,14 +241,14 @@ export async function createInstallationToken(installationId: number) {
 }
 
 export async function getPullRequestDiff(owner: string, repo: string, pullNumber: number, token: string) {
-  const response = await fetch(`${githubApi}/repos/${owner}/${repo}/pulls/${pullNumber}`, {
+  const response = await fetchWithTimeout(`${githubApi}/repos/${owner}/${repo}/pulls/${pullNumber}`, {
     headers: {
       Accept: "application/vnd.github.diff",
       Authorization: `Bearer ${token}`,
       "X-GitHub-Api-Version": "2022-11-28",
       "User-Agent": "ternary-review-agent",
     },
-  });
+  }, "PR diff fetch", GITHUB_DIFF_TIMEOUT_MS);
   if (!response.ok) throw await githubResponseError(response, "Unable to fetch PR diff");
   return response.text();
 }
@@ -511,8 +528,9 @@ export async function syncFindingReviewComments(
   headSha: string,
   token: string,
   findings: Array<{ findingId: string; body: string; path: string; line?: number }>,
-  options: { botLogin?: string; getCurrentHead?: () => Promise<string> } = {},
+  options: { botLogin?: string; getCurrentHead?: () => Promise<string>; deadlineAt?: number } = {},
 ) {
+  const pastDeadline = () => options.deadlineAt !== undefined && Date.now() > options.deadlineAt;
   const getCurrentHead = options.getCurrentHead ?? (async () => (await getPullRequest(owner, repo, pullNumber, token)).head.sha);
   const currentHeadIsExpected = async () => await getCurrentHead() === headSha;
   if (!await currentHeadIsExpected()) return;
@@ -537,6 +555,10 @@ export async function syncFindingReviewComments(
     }
   }
   for (const finding of findings) {
+    if (pastDeadline()) {
+      console.warn(`Finding comment sync for ${owner}/${repo}#${pullNumber} stopped at the publish deadline; remaining findings stay in the review summary comment.`);
+      return;
+    }
     if (!await currentHeadIsExpected()) return;
     await upsertFindingReviewComment(owner, repo, pullNumber, headSha, token, finding, existing, reviewThreads, botLogin, currentHeadIsExpected);
   }
