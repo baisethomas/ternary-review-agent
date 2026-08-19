@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { safeReviewPolicy } from "./review-policy";
 import { prepareReviewRoute } from "./review-route-preparation";
-import { selectReviewRoute, shouldSkipSandboxBuild } from "./review-route-selector";
+import { selectReviewRoute, shouldSkipSandboxBuild, buildReviewModelChain } from "./review-route-selector";
 import type { SandboxResult } from "./types";
 
 const sandbox: SandboxResult = {
@@ -66,6 +66,24 @@ describe("selectReviewRoute", () => {
     expect(route.mode).toBe("single");
     expect(route.shadow?.recommendedRisk).toBe("high");
     expect(route.shadow?.recommendedStages).toEqual(["router", "scout", "deep"]);
+  });
+});
+
+describe("buildReviewModelChain", () => {
+  it("deduplicates Flash when it is already the primary model", () => {
+    expect(buildReviewModelChain("~deepseek/deepseek-v4-flash-latest", {
+      ...baseConfig,
+      fallbackModel: "~deepseek/deepseek-v4-flash-latest",
+      catchallModel: "openai/gpt-5.6-terra",
+    })).toEqual(["~deepseek/deepseek-v4-flash-latest", "openai/gpt-5.6-terra"]);
+  });
+
+  it("keeps deep → Flash → Terra when the primary is a different model", () => {
+    expect(buildReviewModelChain("moonshotai/kimi-k2.6", baseConfig)).toEqual([
+      "moonshotai/kimi-k2.6",
+      "~deepseek/deepseek-v4-flash-latest",
+      "openai/gpt-5.6-terra",
+    ]);
   });
 });
 

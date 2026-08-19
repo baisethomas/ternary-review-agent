@@ -1,6 +1,6 @@
 import type { ResolvedReviewPolicy } from "./review-policy";
 import type { ReviewRouteConfig, ReviewRouteExecutionMode, ReviewRouteRole } from "./review-route-config";
-import { resolveReviewRouteConfig } from "./review-route-config";
+import { DEFAULT_CATCHALL_MODEL, DEFAULT_FALLBACK_MODEL, resolveReviewRouteConfig } from "./review-route-config";
 import type { ReviewRoutePreparation, ReviewRiskLevel } from "./review-route-preparation";
 import { prepareReviewRoute } from "./review-route-preparation";
 import type { SandboxResult } from "./types";
@@ -11,6 +11,12 @@ export type ReviewRouteShadow = {
   reason: string;
 };
 
+export type ReviewModelAttempt = {
+  model: string;
+  outcome: "success" | "failed";
+  error?: string;
+};
+
 export type ReviewRoute = {
   mode: ReviewRouteExecutionMode;
   reviewModel: string;
@@ -18,10 +24,12 @@ export type ReviewRoute = {
   reason: string;
   preparation: ReviewRoutePreparation;
   shadow?: ReviewRouteShadow;
+  usedModel?: string;
+  modelAttempts?: ReviewModelAttempt[];
 };
 
 function defaultReviewModel(policy: ResolvedReviewPolicy) {
-  return policy.model || process.env.OPENROUTER_MODEL || "~deepseek/deepseek-v4-flash-latest";
+  return policy.model || process.env.OPENROUTER_MODEL || DEFAULT_FALLBACK_MODEL;
 }
 
 function roleForRisk(risk: ReviewRiskLevel): ReviewRouteRole {
@@ -79,6 +87,17 @@ export function selectReviewRoute(
     reason: shadowReason(preparation, recommendedStages),
   };
   return route;
+}
+
+export function buildReviewModelChain(primary: string, config: ReviewRouteConfig = resolveReviewRouteConfig()) {
+  const fallback = config.fallbackModel ?? DEFAULT_FALLBACK_MODEL;
+  const catchall = config.catchallModel ?? DEFAULT_CATCHALL_MODEL;
+  const chain: string[] = [];
+  for (const model of [primary, fallback, catchall]) {
+    if (!model || chain.includes(model)) continue;
+    chain.push(model);
+  }
+  return chain;
 }
 
 export function buildReviewRoute(diff: string, sandbox: SandboxResult, policy: ResolvedReviewPolicy, config?: ReviewRouteConfig) {
