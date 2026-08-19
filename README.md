@@ -18,6 +18,16 @@ This repository is Ternary's initial dogfood target for end-to-end review verifi
 - A Postgres-backed immutable Review Event Ledger for lifecycle history, structured findings, sandbox evidence, merge outcomes, exports, retention, and deletion
 - Versioned organization and repository review policies with deterministic inheritance and an audit trail
 
+## Reliability on Vercel Hobby
+
+Ternary is tuned to complete reviews inside Vercel Hobby's limits (300s functions, daily-only crons, a monthly Sandbox CPU quota):
+
+- Sandbox evidence is best-effort: when sandbox creation fails (for example, the monthly quota is exhausted) or the time budget runs thin, the review proceeds AI-only and the PR comment notes that sandbox checks did not run.
+- Every GitHub API call is bounded (15s; 30s for diff downloads), and the worker only claims a job when enough invocation time remains to finish it.
+- A QStash recurring schedule (default every 10 minutes, `REVIEW_WORKER_WAKE_CRON` to tune) wakes the review worker, upserted daily by the Vercel cron, so retrying jobs are never stranded until midnight.
+
+Time budgets live in `src/lib/review-invocation-limits.ts`.
+
 ## Run locally
 
 ```bash
