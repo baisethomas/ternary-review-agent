@@ -42,4 +42,12 @@ describe("review invocation limits", () => {
     expect(timeoutForModelAttempt(40_000, 1)).toBe(40_000);
     expect(timeoutForModelAttempt(90_000, 3)).toBe(30_000);
   });
+
+  it("keeps the README's documented time budgets in sync with the enforced constants", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { GITHUB_DIFF_TIMEOUT_MS, GITHUB_FETCH_TIMEOUT_MS } = await import("./github");
+    const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+    expect(readme).toContain(`${REVIEW_WORKER_MAX_DURATION_SECONDS}s functions`);
+    expect(readme).toContain(`(${GITHUB_FETCH_TIMEOUT_MS / 1_000}s; ${GITHUB_DIFF_TIMEOUT_MS / 1_000}s for diff downloads)`);
+  });
 });
