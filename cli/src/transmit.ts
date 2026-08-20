@@ -8,7 +8,7 @@
 // The bearer token comes from TERNARY_CLI_TOKEN only (never a flag, never
 // persisted). It must never appear in any thrown error's message — every
 // error path below constructs its message from fixed text or from fields the
-// server explicitly names (e.g. invalid_payload's field/file), never from an
+// server explicitly names (e.g. invalid_payload's `field`), never from an
 // unfiltered echo of request state.
 
 export const DEFAULT_TIMEOUT_MS = 130_000;
@@ -76,6 +76,7 @@ export type TransmitErrorCode =
   | "model_failure"
   | "gate_unavailable"
   | "client_timeout"
+  | "aborted"
   | "network_error"
   | "malformed_response"
   | "unexpected_status";
@@ -127,14 +128,25 @@ export function resolveTransmitConfig(
 /**
  * Submit already-finalized canonical bytes. Sends the EXACT bytes given —
  * never re-serializes — with the digest already computed by payload.ts.
+ *
+ * `externalSignal` is an optional caller-supplied signal (e.g. the CLI's
+ * SIGINT handler) that ends the request the same way the deadline timer
+ * does, but is reported as `TransmitError` code "aborted" — a deliberate
+ * user interrupt, never a "client_timeout".
  */
 export async function transmitCanonicalPayload(
   bytes: Buffer,
   digest: string,
   config: TransmitConfig,
+  externalSignal?: AbortSignal,
 ): Promise<WorkspaceReviewResult> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+  const timer = setTimeout(() => controller.abort("timeout"), config.timeoutMs);
+  const onExternalAbort = () => controller.abort("interrupted");
+  if (externalSignal) {
+    if (externalSignal.aborted) onExternalAbort();
+    else externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+  }
   let response: Response;
   try {
     response = await fetch(config.endpoint, {
@@ -154,6 +166,13 @@ export async function transmitCanonicalPayload(
     });
   } catch (err) {
     if (controller.signal.aborted) {
+      // Distinguish OUR deadline timer from an external (user-interrupt)
+      // abort: the latter must never be reported as a timeout, and must
+      // never carry config/usage-style text (main.ts maps "aborted" to a
+      // silent exit, not a Ternary-branded error line).
+      if (controller.signal.reason === "interrupted") {
+        throw new TransmitError("aborted", "Workspace Review submission aborted by interrupt");
+      }
       throw new TransmitError(
         "client_timeout",
         `Workspace Review submission timed out after ${config.timeoutMs} ms (client-side timeout; the server may still be working)`,
@@ -165,6 +184,7 @@ export async function transmitCanonicalPayload(
     );
   } finally {
     clearTimeout(timer);
+    if (externalSignal) externalSignal.removeEventListener("abort", onExternalAbort);
   }
 
   const text = await response.text().catch(() => undefined);
@@ -209,7 +229,13 @@ function networkErrorReason(err: unknown): string {
 interface StructuredErrorBody {
   error: string;
   deadlineMs?: number;
-  detail?: { field?: string; file?: string; message?: string };
+  // The server's invalid_payload body carries `field` (a JSON-path-like
+  // string, e.g. "payload.kind") and `message` directly on the body — never
+  // nested under a `detail` object, and never a separate `file` key (see
+  // src/lib/workspace-review-route.ts step 4 and docs/workspace-review-
+  // endpoint.md §5).
+  field?: string;
+  message?: string;
   retryAfter?: number;
 }
 
@@ -249,12 +275,11 @@ function mapErrorResponse(status: number, body: unknown): TransmitError {
         status,
       );
     case "invalid_payload": {
-      const detail = isStructuredErrorBody(body) ? body.detail : undefined;
-      const where = detail?.file ?? detail?.field;
+      const field = isStructuredErrorBody(body) ? body.field : undefined;
       return new TransmitError(
         "invalid_payload",
-        where !== undefined
-          ? `the server rejected the payload as invalid (${where})`
+        field !== undefined
+          ? `the server rejected the payload as invalid (${field})`
           : "the server rejected the payload as invalid",
         status,
       );

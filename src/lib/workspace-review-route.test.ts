@@ -198,6 +198,24 @@ describe("abuse gate (contract §3)", () => {
     expect(response.status).toBe(500);
     expect(released).toHaveLength(1);
   });
+
+  it("gates CURRENT and NEXT tokens under the same logical identity (single-Principal alpha)", async () => {
+    // The alpha has exactly one Principal; CURRENT and NEXT are two
+    // credentials for it during a rotation overlap, not two Principals. If
+    // the gate keyed off the presented token, each token would get its own
+    // rate-limit window and concurrency slot — double the allowance. Assert
+    // the two authentications enter the gate with the identical identity.
+    const enterGate = vi.fn(async () => ({ status: "allowed" as const, release: async () => {} }));
+    const { deps } = makeDeps({
+      authEnv: () => ({ TERNARY_CLI_TOKEN: TOKEN, TERNARY_CLI_TOKEN_NEXT: "next-token" }),
+      enterGate,
+    });
+    await createWorkspaceReviewHandler(deps)(buildRequest({ token: TOKEN }));
+    await createWorkspaceReviewHandler(deps)(buildRequest({ token: "next-token" }));
+    expect(enterGate).toHaveBeenCalledTimes(2);
+    const [[currentArg], [nextArg]] = enterGate.mock.calls;
+    expect(currentArg).toBe(nextArg);
+  });
 });
 
 describe("transport guards (contract §4 steps 2–3)", () => {
@@ -264,6 +282,36 @@ describe("transport guards (contract §4 steps 2–3)", () => {
       }),
       body: stream,
       // Node requires half duplex for a streaming request body.
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    const response = await createWorkspaceReviewHandler(deps)(request);
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({ error: "payload_too_large", reason: "stream_overrun" });
+    expect(validatePayload).not.toHaveBeenCalled();
+  });
+
+  it("returns 413 when the declared Content-Length under-reports but the cap is not reached", async () => {
+    // The header claims 10 bytes (well under the cap) but the client streams
+    // far more. The body reader must not trust the declared length as the
+    // enforcement bound — it must reject the moment consumed bytes exceed
+    // what was declared, even though the total never reaches the hard cap.
+    const validatePayload = vi.fn();
+    const { deps } = makeDeps({ validatePayload, maxRequestBytes: 2_000_000 });
+    const oversized = Buffer.from("y".repeat(5_000), "utf8");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(oversized);
+        controller.close();
+      },
+    });
+    const request = new Request("https://ternary.test/api/workspace-reviews", {
+      method: "POST",
+      headers: new Headers({
+        authorization: `Bearer ${TOKEN}`,
+        "content-type": "application/json",
+        "content-length": "10",
+      }),
+      body: stream,
       duplex: "half",
     } as RequestInit & { duplex: "half" });
     const response = await createWorkspaceReviewHandler(deps)(request);

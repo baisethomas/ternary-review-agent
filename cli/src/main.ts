@@ -28,6 +28,9 @@ export interface CliIo {
   // when omitted so existing dry-run/manifest callers need not supply them.
   env?: NodeJS.ProcessEnv;
   stdin?: NodeJS.ReadableStream & { isTTY?: boolean };
+  // Optional external abort signal (the CLI entry's SIGINT handler); see
+  // SubmitIo.signal in submit.ts for how it reaches the transmit boundary.
+  signal?: AbortSignal;
 }
 
 interface ParsedArgs {
@@ -84,6 +87,10 @@ function handleError(error: unknown, io: CliIo): number {
     return error.code === "usage" ? 2 : 1;
   }
   if (error instanceof TransmitError) {
+    // A deliberate user interrupt (SIGINT during an in-flight submission)
+    // is not an error: no Ternary-branded text, conventional signal exit
+    // code, and never routed through the config/usage message below.
+    if (error.code === "aborted") return 130;
     io.stderr(`ternary: ${neutralizeControlSequences(error.message)}`);
     // Absent/misconfigured token or endpoint is a usage/config error (exit
     // 2, existing convention); every other transmit failure — rejection,
@@ -106,6 +113,9 @@ function handleError(error: unknown, io: CliIo): number {
 //      refusal without --yes) — existing convention, extended to transmit
 //   3  transport/server error from the submit path (rejected by the server,
 //      malformed response, or client-side timeout)
+//   130 SIGINT during an in-flight submission (conventional 128+SIGINT exit
+//      code; no Ternary-branded error text — this is a deliberate abort,
+//      not a failure)
 export function runCli(argv: string[], io: CliIo): number | Promise<number> {
   try {
     const args = parseArgs(argv);
@@ -132,6 +142,7 @@ export function runCli(argv: string[], io: CliIo): number | Promise<number> {
       stderr: io.stderr,
       env: io.env ?? process.env,
       stdin: io.stdin ?? process.stdin,
+      signal: io.signal,
     };
     return runSubmit(rootAbs, args.mode, args.yes, submitIo).catch((error: unknown) =>
       handleError(error, io),

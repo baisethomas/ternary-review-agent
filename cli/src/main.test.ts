@@ -57,7 +57,7 @@ function run(argv: string[], cwd: string): RunResult {
 async function runAsync(
   argv: string[],
   cwd: string,
-  ioOverrides: Partial<Pick<Parameters<typeof runCli>[1], "env" | "stdin">> = {},
+  ioOverrides: Partial<Pick<Parameters<typeof runCli>[1], "env" | "stdin" | "signal">> = {},
 ): Promise<RunResult> {
   const out: string[] = [];
   const err: string[] = [];
@@ -316,6 +316,43 @@ describe("ternary review . --yes (end to end submit, fake server)", () => {
       expect(text).not.toContain("\x1b");
       expect(text).toContain("\\x1b[31mtitle\\x1b[0m");
       expect(receivedBody.length).toBeGreaterThan(0);
+    } finally {
+      await new Promise<void>((resolvePromise) => server.close(() => resolvePromise()));
+    }
+  });
+});
+
+describe("ternary review . --yes (SIGINT during an in-flight submission)", () => {
+  it("aborts quietly with exit 130 and no Ternary-branded error text — never a config/usage message", async () => {
+    const dir = makeDir();
+    g(dir, "init", "-q", "-b", "main");
+    writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
+    g(dir, "add", "-A");
+    g(dir, "commit", "-q", "-m", "base");
+
+    // A server that never responds: only the (simulated) interrupt ends
+    // the request — proving the abort path, not a slow-server timeout.
+    const server = http.createServer(() => {
+      /* never call res.end() */
+    });
+    await new Promise<void>((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("no server address");
+    const endpoint = `http://127.0.0.1:${address.port}/api/workspace-reviews`;
+
+    const controller = new AbortController();
+    // Simulates the CLI entry's SIGINT handler firing once the request is
+    // already in flight.
+    setTimeout(() => controller.abort(), 20);
+
+    try {
+      const r = await runAsync(["review", ".", "--yes"], dir, {
+        env: { TERNARY_ENDPOINT: endpoint, TERNARY_CLI_TOKEN: "test-token-canary" },
+        signal: controller.signal,
+      });
+      expect(r.code).toBe(130);
+      expect(r.err).toEqual([]);
+      expect(r.out.join("\n")).not.toContain("ternary:");
     } finally {
       await new Promise<void>((resolvePromise) => server.close(() => resolvePromise()));
     }

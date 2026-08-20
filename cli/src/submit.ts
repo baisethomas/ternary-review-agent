@@ -23,6 +23,13 @@ export interface SubmitIo {
   stderr: (line: string) => void;
   env: NodeJS.ProcessEnv;
   stdin: NodeJS.ReadableStream & { isTTY?: boolean };
+  /**
+   * Optional external abort signal (wired from the CLI entry's SIGINT
+   * handler; see cli/bin/ternary.mjs). When set, an in-flight transmit ends
+   * the same way a client timeout does, but is reported as `TransmitError`
+   * code "aborted" — a deliberate user interrupt, never a config/usage error.
+   */
+  signal?: AbortSignal;
 }
 
 export async function runSubmit(
@@ -47,7 +54,7 @@ export async function runSubmit(
   for (const line of summaryLines) io.stdout(line);
 
   if (!yes) {
-    await confirmOrThrow(io);
+    await confirmOrThrow(io, CONFIRM_TIMEOUT_MS);
   }
 
   // Config is resolved (and TERNARY_CLI_TOKEN/TERNARY_ENDPOINT validated)
@@ -58,12 +65,21 @@ export async function runSubmit(
     collected.finalized.bytes,
     collected.finalized.digest,
     config,
+    io.signal,
   );
   renderResult(result, io);
   return result.verdict === "pass" ? 0 : 1;
 }
 
-async function confirmOrThrow(io: SubmitIo): Promise<void> {
+// The confirmation prompt must never hang: (1) a stdin that ends/closes
+// without ever emitting a line must resolve as an abort, not wait forever on
+// the readline async iterator, and (2) an operator who walks away must not
+// leave the process running indefinitely, so a timeout race aborts on their
+// behalf too. Both races are decided by Promise.race against the same
+// readline read, so whichever settles first wins and the others are moot.
+export const CONFIRM_TIMEOUT_MS = 60_000;
+
+export async function confirmOrThrow(io: SubmitIo, timeoutMs: number = CONFIRM_TIMEOUT_MS): Promise<void> {
   const isTTY = io.stdin.isTTY === true;
   if (!isTTY) {
     throw new CollectorError(
@@ -73,15 +89,37 @@ async function confirmOrThrow(io: SubmitIo): Promise<void> {
   }
   io.stdout('Submit this Workspace Review for analysis? Type "yes" to continue; anything else aborts.');
   const rl = createInterface({ input: io.stdin });
+  let timer: NodeJS.Timeout | undefined;
   let answer: string | undefined;
   try {
-    const next = await rl[Symbol.asyncIterator]().next();
-    answer = next.done ? undefined : next.value;
+    const outcome = await Promise.race<"answered" | "closed" | "timeout">([
+      (async () => {
+        const next = await rl[Symbol.asyncIterator]().next();
+        answer = next.done ? undefined : next.value;
+        return "answered" as const;
+      })(),
+      // Listen on the raw input stream's own 'close', not readline's: when
+      // stdin is destroyed (as opposed to ended gracefully) readline's
+      // 'close' event never fires and the async iterator's `.next()` never
+      // settles on its own — exactly the hang this guards against.
+      new Promise<"closed">((resolve) => io.stdin.once("close", () => resolve("closed"))),
+      new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), timeoutMs);
+      }),
+    ]);
+
+    if (outcome === "timeout") {
+      throw new CollectorError(
+        "usage",
+        `confirmation timed out after ${timeoutMs} ms waiting for an answer; pass --yes to submit non-interactively`,
+      );
+    }
+    if (outcome === "closed" || (answer ?? "").trim().toLowerCase() !== "yes") {
+      throw new CollectorError("usage", 'submission aborted: confirmation was not explicit "yes"');
+    }
   } finally {
+    if (timer) clearTimeout(timer);
     rl.close();
-  }
-  if ((answer ?? "").trim().toLowerCase() !== "yes") {
-    throw new CollectorError("usage", 'submission aborted: confirmation was not explicit "yes"');
   }
 }
 

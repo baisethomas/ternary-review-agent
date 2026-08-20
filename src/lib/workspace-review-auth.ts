@@ -74,6 +74,22 @@ export function principalIdFor(token: string): string {
 }
 
 /**
+ * Fixed logical gate identity (docs/workspace-review-endpoint.md §2–§3).
+ *
+ * The alpha's contract has exactly one Principal: CURRENT and NEXT are two
+ * credentials for that single Principal during a rotation overlap, not two
+ * Principals. `principalIdFor` above is per-token by design (it is what the
+ * route logs, keyed off whichever credential was actually presented), but
+ * the abuse gate must NOT use it as the rate-limit/concurrency key — doing
+ * so would give CURRENT and NEXT their own independent rate-limit window and
+ * concurrency slot, doubling both allowances for the one Principal during
+ * every rotation overlap. The gate is therefore keyed off this single fixed
+ * identity instead, so both tokens always share one rate window and one
+ * concurrency slot.
+ */
+export const WORKSPACE_REVIEW_GATE_PRINCIPAL_ID = "workspace-review-principal";
+
+/**
  * Authenticate one Workspace Review request.
  *
  * Both configured tokens are always evaluated (no early return on the first

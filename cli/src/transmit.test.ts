@@ -192,13 +192,15 @@ describe("transmitCanonicalPayload: error status mappings", () => {
   });
 
   it("400 invalid_payload -> invalid_payload, names the field in the message", async () => {
+    // The server's actual shape (src/lib/workspace-review-route.ts step 4):
+    // `field` and `message` flat on the body, never nested under `detail`.
     server = await startServer((_req, res) => {
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "invalid_payload", detail: { field: "manifest" } }));
+      res.end(JSON.stringify({ error: "invalid_payload", field: "manifest", message: "manifest must be an array" }));
     });
     await expect(
       transmitCanonicalPayload(Buffer.from("{}"), "sha256:" + "22".repeat(32), config(server.url)),
-    ).rejects.toMatchObject({ code: "invalid_payload" });
+    ).rejects.toMatchObject({ code: "invalid_payload", message: expect.stringContaining("manifest") });
   });
 
   it("422 -> digest_mismatch", async () => {
@@ -248,6 +250,71 @@ describe("transmitCanonicalPayload: timeout", () => {
     // The injected 80ms timeout must actually be the one that fired, not the
     // 130s default.
     expect(Date.now() - start).toBeLessThan(5_000);
+  });
+});
+
+describe("transmitCanonicalPayload: external abort (e.g. CLI SIGINT)", () => {
+  let server: RunningServer | undefined;
+  afterEach(async () => {
+    await server?.close();
+    server = undefined;
+  });
+
+  it("maps an externally-aborted request to code \"aborted\", never client_timeout", async () => {
+    server = await startServer(() => {
+      // Never respond: only the external signal ends this request.
+    });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 20);
+    const start = Date.now();
+    await expect(
+      transmitCanonicalPayload(
+        Buffer.from("{}"),
+        "sha256:" + "99".repeat(32),
+        config(server.url, 5_000), // a long client timeout that must NOT be the one that fires
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({ code: "aborted" });
+    expect(Date.now() - start).toBeLessThan(2_000);
+  });
+
+  it("aborts immediately when the signal is already aborted before the call", async () => {
+    server = await startServer(() => {
+      /* never respond */
+    });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      transmitCanonicalPayload(
+        Buffer.from("{}"),
+        "sha256:" + "aa".repeat(32),
+        config(server.url),
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({ code: "aborted" });
+  });
+
+  it("carries no config/usage-style text in the aborted error's message", async () => {
+    server = await startServer(() => {
+      /* never respond */
+    });
+    const controller = new AbortController();
+    controller.abort();
+    try {
+      await transmitCanonicalPayload(
+        Buffer.from("{}"),
+        "sha256:" + "bb".repeat(32),
+        config(server.url),
+        controller.signal,
+      );
+      throw new Error("expected transmitCanonicalPayload to reject");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TransmitError);
+      const message = (err as TransmitError).message.toLowerCase();
+      expect(message).not.toContain("timed out");
+      expect(message).not.toContain("token");
+      expect(message).not.toContain("endpoint");
+    }
   });
 });
 

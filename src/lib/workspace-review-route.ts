@@ -25,7 +25,11 @@ import {
   type PayloadCheckEvidence,
   type PayloadValidationResult,
 } from "./workspace-payload-validation";
-import { authenticateWorkspaceReview, type WorkspaceAuthEnv } from "./workspace-review-auth";
+import {
+  WORKSPACE_REVIEW_GATE_PRINCIPAL_ID,
+  authenticateWorkspaceReview,
+  type WorkspaceAuthEnv,
+} from "./workspace-review-auth";
 import type { WorkspaceGateDecision } from "./workspace-review-gate";
 import type {
   CheckEvidence,
@@ -241,7 +245,8 @@ export class RequestTooLargeError extends Error {
 export async function readBoundedBody(request: Request, limit: number): Promise<Uint8Array> {
   const header = request.headers.get("content-length");
   if (header === null || !/^\d+$/.test(header.trim())) throw new RequestTooLargeError("content_length_required");
-  if (Number(header.trim()) > limit) throw new RequestTooLargeError("content_length_exceeded");
+  const declaredLength = Number(header.trim());
+  if (declaredLength > limit) throw new RequestTooLargeError("content_length_exceeded");
 
   const body = request.body;
   if (!body) return new Uint8Array(0);
@@ -255,7 +260,12 @@ export async function readBoundedBody(request: Request, limit: number): Promise<
       if (done) break;
       if (!value) continue;
       total += value.byteLength;
-      if (total > limit) throw new RequestTooLargeError("stream_overrun");
+      // Enforce the cap on bytes actually CONSUMED, not the declared header:
+      // reject the instant the running total exceeds the hard cap OR the
+      // length the client itself declared — whichever is smaller — so a
+      // Content-Length that under-reports what's actually streamed can never
+      // ride under the enforcement bound just because the true cap is large.
+      if (total > limit || total > declaredLength) throw new RequestTooLargeError("stream_overrun");
       chunks.push(value);
     }
   } finally {
@@ -310,7 +320,10 @@ export function createWorkspaceReviewHandler(deps: WorkspaceReviewRouteDeps) {
     // Abuse gate. Placed immediately after authentication — ahead of the body
     // read — so a hot-loop client is refused before we buffer 2 MiB or spend a
     // model call (spec §12 T9). Fail closed on store trouble.
-    const gate = await deps.enterGate(auth.principalId);
+    // Gate keying is per-Principal, not per-token: see the doc comment on
+    // WORKSPACE_REVIEW_GATE_PRINCIPAL_ID (workspace-review-auth.ts).
+    // `auth.principalId` (per-token) remains what's logged below.
+    const gate = await deps.enterGate(WORKSPACE_REVIEW_GATE_PRINCIPAL_ID);
     if (gate.status === "gate_unavailable") {
       return finish(503, "gate_unavailable", { error: "gate_unavailable" }, {
         principalId: auth.principalId,
