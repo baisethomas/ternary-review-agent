@@ -92,12 +92,21 @@ CheckEvidence = {
   origin: "local" | "sandbox";
   trust: "unverified_client" | "isolated";
   status: "complete" | "partial" | "unavailable";
-  label: string;                     // e.g. "npm test"
+  label: string;                     // one evidence SOURCE, e.g. "npm test" or "sandbox sbx_123"
+  commands: CommandEvidence[];       // each executed command within that source
+  truncation?: { skippedCommands: string[] };
+  redaction?: { redactedSpans: number };
+  unavailableReason?: string;
+}
+
+CommandEvidence = {
+  command: string;                   // redacted, bounded
   exitCode?: number;
   output?: string;                   // redacted, bounded (section 4.4)
-  durationMs?: number;
 }
 ```
+
+(Amended 2026-08-20 with the Phase 4 endpoint contract: the grouped shape above is what `src/lib/workspace-review-types.ts` implements and the `SandboxResult` adapter produces — one entry per evidence source, one `CommandEvidence` per executed command. It replaces this section's earlier flat per-check shape.)
 
 Invariants (each testable):
 
@@ -413,3 +422,4 @@ B5. Local evidence → review reasoning (`unverified_client` labeling).
 - Local evidence is honest-user-only; nothing prevents a user from fabricating it (mitigated by labeling, not prevention).
 - No idempotency means retries cost money (T9); acceptable at single-user scale.
 - Content-based secret detection (deny class 4) is pattern-bound and will miss novel token formats; the primary control is the file-class deny list, not content scanning.
+- Race-safe capture (7.3) detects persistent ancestor replacement via FD/lstat identity agreement; a flip-flop between the `lstat` of a path component and the by-path `open` of the next remains theoretically possible (Node lacks `openat`). It requires a concurrently running local attacker process, which the alpha assumptions place outside the threat model; exclusion remains the only failure mode when identity cannot be verified.
