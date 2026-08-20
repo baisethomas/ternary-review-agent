@@ -1,0 +1,101 @@
+{
+  "schemaVersion": "workspace-review/1",
+  "kind": "changeset",
+  "captureMode": "default",
+  "tool": {
+    "name": "ternary-cli",
+    "version": "0.1.0"
+  },
+  "workspace": {
+    "label": "fixture-workspace",
+    "vcs": "git",
+    "baseState": {
+      "headSha": "8a6e5c78bbdc0b0ea55c4cf7de1c60285dc575c1"
+    },
+    "branch": "main"
+  },
+  "manifest": [
+    {
+      "path": ".env",
+      "status": "added",
+      "size": 0,
+      "mode": "regular",
+      "contentIncluded": false
+    },
+    {
+      "path": "src/index.ts",
+      "status": "modified",
+      "size": 25,
+      "mode": "regular",
+      "contentIncluded": true
+    },
+    {
+      "path": "src/new-module.ts",
+      "status": "added",
+      "size": 27,
+      "mode": "regular",
+      "contentIncluded": true
+    },
+    {
+      "path": "src/old-name.ts",
+      "status": "deleted",
+      "size": 0,
+      "mode": "regular",
+      "contentIncluded": false
+    }
+  ],
+  "changeset": [
+    {
+      "path": "src/index.ts",
+      "status": "modified",
+      "patch": "--- a/src/index.ts\n+++ b/src/index.ts\n@@ -1,2 +1,2 @@\n export const one = 1;\n-export const two = 2;\n+export const two = 22;\n"
+    },
+    {
+      "path": "src/new-module.ts",
+      "status": "added",
+      "content": "export const fresh = true;\n"
+    }
+  ],
+  "context": [],
+  "localPolicy": {
+    "captureMode": "default",
+    "include": [
+      "**"
+    ],
+    "exclude": [
+      "*.log"
+    ],
+    "denyRulesVersion": "ternary-deny/2",
+    "caps": {
+      "payloadBytes": 2000000,
+      "changesetChars": 160000,
+      "contextExcerpts": 8,
+      "contextChars": 20000,
+      "snapshotBytes": 400000,
+      "snapshotFiles": 500,
+      "snapshotChunks": 500,
+      "fileBytes": 200000,
+      "evidenceCapturedChars": 24000,
+      "evidenceModelChars": 1500,
+      "manifestEntries": 5000
+    }
+  },
+  "redaction": {
+    "rulesVersion": "ternary-redaction/2",
+    "withheldFiles": [
+      {
+        "path": ".env",
+        "class": "env_file"
+      }
+    ],
+    "redactedSpans": [
+      {
+        "path": "src/index.ts",
+        "rule": "token.known-prefix",
+        "count": 1
+      }
+    ],
+    "truncated": [],
+    "omittedManifestEntries": 0
+  }
+}
