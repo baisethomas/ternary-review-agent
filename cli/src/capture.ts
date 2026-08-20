@@ -6,6 +6,10 @@
 // `-c core.fsmonitor=false`, GIT_OPTIONAL_LOCKS=0) and only with read-side
 // commands (rev-parse, symbolic-ref, status --porcelain=v2, diff-index,
 // ls-files, cat-file) — no checkout, no smudge filters, no LFS downloads.
+// Every diff-index invocation additionally passes `--no-textconv
+// --no-ext-diff`, and GIT_CONFIG_NOSYSTEM=1 / GIT_EXTERNAL_DIFF="" are set in
+// the child env, so a repository- or user-config-defined textconv/external
+// diff driver can never run during capture either.
 //
 // Race-safe reads (spec 7.3): every ancestor from the Workspace Root down is
 // opened O_NOFOLLOW|O_DIRECTORY and fstat-matched against its own lstat, all
@@ -75,6 +79,19 @@ function gitChildEnv(): NodeJS.ProcessEnv {
     LC_ALL: "C",
     GIT_OPTIONAL_LOCKS: "0",
     GIT_TERMINAL_PROMPT: "0",
+    // GIT_CONFIG_NOSYSTEM=1: the system-wide gitconfig (/etc/gitconfig) is
+    // never consulted, so an operator-machine-level diff/textconv driver
+    // cannot influence capture. This does not (and cannot) reach a
+    // repository's own .git/config, which is why the --no-textconv
+    // /--no-ext-diff flags on every diff-family invocation below are the
+    // actual boundary against a repo-defined driver (spec: the collector
+    // never executes repository code).
+    GIT_CONFIG_NOSYSTEM: "1",
+    // Explicitly pinned empty rather than merely "not inherited": belt and
+    // suspenders alongside --no-ext-diff, and it documents the intent even
+    // though the allowlist below never forwards an inherited GIT_* variable
+    // in the first place.
+    GIT_EXTERNAL_DIFF: "",
   };
   if (process.env.PATH !== undefined) env.PATH = process.env.PATH;
   if (process.env.TMPDIR !== undefined) env.TMPDIR = process.env.TMPDIR;
@@ -455,7 +472,12 @@ function parseDiffIndexRenames(
   const renames = new Map<string, { from: string; similarity: number; baseSha: string }>();
   const base = tryGitText(toplevel, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
   if (base === null || base === "") return renames;
-  const out = git(toplevel, ["diff-index", "--cached", "-M", "-z", base]);
+  // --no-textconv/--no-ext-diff: this is raw (`-z`, no `-p`) plumbing output,
+  // so no repository/user-config-defined driver would run anyway — but the
+  // flags make that a guarantee instead of an artifact of the current output
+  // mode, and cost nothing since only rename metadata is read here (spec:
+  // the collector never executes repository code).
+  const out = git(toplevel, ["diff-index", "--cached", "-M", "-z", "--no-textconv", "--no-ext-diff", base]);
   for (const record of parseDiffIndexZ(out)) {
     if (record.status.startsWith("R")) {
       renames.set(record.path, {
@@ -513,7 +535,10 @@ function enumerateStaged(
   const toplevel = gitToplevel(rootAbs);
   const prefix = relative(toplevel, rootAbs).split(sep).join("/");
   const base = workspace.unborn ? EMPTY_TREE_SHA : (workspace.headSha as string);
-  const out = git(toplevel, ["diff-index", "--cached", "-M", "-z", base]);
+  // --no-textconv/--no-ext-diff: same rationale as parseDiffIndexRenames
+  // above — raw plumbing output only, but the flags make zero-driver
+  // execution unconditional rather than incidental.
+  const out = git(toplevel, ["diff-index", "--cached", "-M", "-z", "--no-textconv", "--no-ext-diff", base]);
   const candidates: Candidate[] = [];
   for (const record of parseDiffIndexZ(out)) {
     const rel = toWorkspaceRelative(record.path, prefix);

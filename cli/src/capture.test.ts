@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
+  existsSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
@@ -32,6 +34,30 @@ vi.mock("node:fs", async (importOriginal) => {
     },
   };
 });
+
+// Records every `git` invocation's argv, same passthrough-mock shape as the
+// lstatSync hook above. Used to assert capture.ts's own diff-index calls
+// carry --no-textconv/--no-ext-diff (TER-35) — a behavioral marker-file test
+// alone cannot prove this, since diff-index's raw (-z, no -p) plumbing output
+// never runs a driver even without those flags (verified separately); this
+// spy ties the test to the actual argv instead, so it fails if the flags are
+// ever removed.
+const gitArgvLog = vi.hoisted(() => ({ calls: [] as string[][] }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execFileSync: (
+      file: Parameters<typeof actual.execFileSync>[0],
+      args: Parameters<typeof actual.execFileSync>[1],
+      ...rest: unknown[]
+    ) => {
+      if (file === "git" && Array.isArray(args)) gitArgvLog.calls.push([...(args as string[])]);
+      // @ts-expect-error -- passthrough with the original call's arity
+      return actual.execFileSync(file, args, ...rest);
+    },
+  };
+});
 import { captureWorkspace, isWorktreeAbsent, loadLocalPolicy, makeContentReaders } from "./capture.js";
 import type { StatusRecord } from "./capture.js";
 import { runExclusionPipeline } from "./deny.js";
@@ -57,6 +83,7 @@ afterAll(() => {
 });
 afterEach(() => {
   lstatHook.fn = null;
+  gitArgvLog.calls = [];
 });
 
 function makeDir(): string {
@@ -1053,5 +1080,124 @@ describe("adversarial: sanitized Git subprocess environment (spec 4.2 item 10)",
         expect(def.outcome.manifest).toEqual(baselineDefault.outcome.manifest);
       },
     );
+  });
+});
+
+describe("adversarial: repo-defined textconv/external-diff drivers never execute during capture (TER-35 finding)", () => {
+  // A malicious repository can define a `diff.<name>.textconv` command and
+  // map a file to it via `.gitattributes`, or set `diff.external` outright —
+  // both are ordinary, non-privileged repo-local Git config. If the
+  // collector's `git diff-index` invocations ever ran either driver, that
+  // would be arbitrary command execution sourced from files inside the
+  // Workspace Root, which spec 4.2/collector-never-executes-repository-code
+  // forbids outright.
+  const CANARY = "TER35_DRIVER_CANARY_9c2e";
+
+  // Marker files the drivers write on execution, plus a stdout string so a
+  // driver that only prints (rather than touching disk) is still caught.
+  function installEvilDrivers(dir: string): { textconvMarker: string; externalMarker: string } {
+    const textconvMarker = join(dir, "TEXTCONV_EXECUTED");
+    const externalMarker = join(dir, "EXTERNAL_EXECUTED");
+    const textconvScript = join(dir, "evil-textconv.sh");
+    const externalScript = join(dir, "evil-external.sh");
+    writeFileSync(
+      textconvScript,
+      `#!/bin/sh\necho ${CANARY} > "${textconvMarker}"\necho ${CANARY}\n`,
+    );
+    writeFileSync(
+      externalScript,
+      `#!/bin/sh\necho ${CANARY} > "${externalMarker}"\necho ${CANARY}\nexit 0\n`,
+    );
+    chmodSync(textconvScript, 0o755);
+    chmodSync(externalScript, 0o755);
+    // Repo-local config (spec-relevant attacker surface — GIT_CONFIG_NOSYSTEM
+    // only removes /etc/gitconfig, which an attacker committing a repo can
+    // never reach anyway).
+    g(dir, "config", "diff.evil.textconv", textconvScript);
+    g(dir, "config", "diff.external", externalScript);
+    writeFileSync(join(dir, ".gitattributes"), "*.bin diff=evil\n");
+    return { textconvMarker, externalMarker };
+  }
+
+  function bothMarkersAbsent(markers: { textconvMarker: string; externalMarker: string }): boolean {
+    return !existsSync(markers.textconvMarker) && !existsSync(markers.externalMarker);
+  }
+
+  it("every diff-index invocation carries --no-textconv and --no-ext-diff", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "a.ts"), "a\n");
+    commitAll(dir, "base");
+    writeFileSync(join(dir, "b.ts"), "b\n");
+    g(dir, "add", "b.ts");
+    g(dir, "mv", "a.ts", "renamed.ts");
+
+    gitArgvLog.calls = [];
+    captureWorkspace(dir, "staged");
+    captureWorkspace(dir, "default");
+
+    const diffIndexCalls = gitArgvLog.calls.filter((argv) => argv.includes("diff-index"));
+    expect(diffIndexCalls.length).toBeGreaterThan(0);
+    for (const argv of diffIndexCalls) {
+      expect(argv).toContain("--no-textconv");
+      expect(argv).toContain("--no-ext-diff");
+    }
+  });
+
+  it("staged mode: no driver marker file appears and no canary bytes reach the payload", () => {
+    const dir = makeRepo();
+    const markers = installEvilDrivers(dir);
+    writeFileSync(join(dir, ".gitattributes"), "*.bin diff=evil\n");
+    writeFileSync(join(dir, "evil.bin"), "binary-looking-content ");
+    commitAll(dir, "base");
+    writeFileSync(join(dir, "evil.bin"), "more-binary-content -changed");
+    g(dir, "add", "evil.bin");
+
+    const { text } = canonicalOf(captureWorkspace(dir, "staged"));
+
+    expect(bothMarkersAbsent(markers)).toBe(true);
+    expect(text).not.toContain(CANARY);
+  });
+
+  it("default mode: a staged rename of the attribute-mapped file still never runs a driver", () => {
+    const dir = makeRepo();
+    const markers = installEvilDrivers(dir);
+    writeFileSync(join(dir, ".gitattributes"), "*.bin diff=evil\n");
+    writeFileSync(join(dir, "evil.bin"), "rename-me-binary-content ");
+    commitAll(dir, "base");
+    // A staged rename routes through parseDiffIndexRenames's diff-index call.
+    g(dir, "mv", "evil.bin", "renamed.bin");
+
+    const { text } = canonicalOf(captureWorkspace(dir, "default"));
+
+    expect(bothMarkersAbsent(markers)).toBe(true);
+    expect(text).not.toContain(CANARY);
+  });
+
+  it("results are byte-identical to a baseline repo with the same content but no driver configured", () => {
+    const victim = makeRepo();
+    installEvilDrivers(victim);
+    writeFileSync(join(victim, ".gitattributes"), "*.bin diff=evil\n");
+    writeFileSync(join(victim, "evil.bin"), "shared-binary-content ");
+    commitAll(victim, "base");
+    writeFileSync(join(victim, "evil.bin"), "shared-binary-content-changed ");
+    g(victim, "add", "evil.bin");
+
+    const baseline = makeRepo();
+    // Same tracked content, including the same .gitattributes mapping, but no
+    // diff.evil.textconv / diff.external configured in this repo's config —
+    // isolating the driver config as the only variable.
+    writeFileSync(join(baseline, ".gitattributes"), "*.bin diff=evil\n");
+    writeFileSync(join(baseline, "evil.bin"), "shared-binary-content ");
+    commitAll(baseline, "base");
+    writeFileSync(join(baseline, "evil.bin"), "shared-binary-content-changed ");
+    g(baseline, "add", "evil.bin");
+
+    const victimStaged = canonicalOf(captureWorkspace(victim, "staged"));
+    const baselineStaged = canonicalOf(captureWorkspace(baseline, "staged"));
+    expect(victimStaged.outcome.manifest).toEqual(baselineStaged.outcome.manifest);
+
+    const victimDefault = canonicalOf(captureWorkspace(victim, "default"));
+    const baselineDefault = canonicalOf(captureWorkspace(baseline, "default"));
+    expect(victimDefault.outcome.manifest).toEqual(baselineDefault.outcome.manifest);
   });
 });
