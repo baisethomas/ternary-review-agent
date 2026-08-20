@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { runCli } from "./main.js";
 import { SCHEMA_VERSION } from "./types.js";
@@ -62,6 +63,46 @@ describe("argv wiring", () => {
     expect(run(["review", ".", "--uncommitted"], dir).code).toBe(2);
     expect(run(["review", ".", "--uncommitted"], dir).err.join("\n")).toContain("--uncommitted");
     expect(run(["deploy", "."], dir).code).toBe(2);
+  });
+
+  it("has NO override for the deny classes: every plausible bypass flag is rejected", () => {
+    // Spec 4.2: "no override in the alpha". This is the CLI half of that —
+    // there is no flag to write, and none of these parse.
+    for (const flag of [
+      "--no-deny",
+      "--include-env",
+      "--allow-secrets",
+      "--allow-env",
+      "--force",
+      "--unsafe",
+      "--include=.env",
+      "--no-redact",
+      "--disable-deny-classes",
+      "--override",
+    ]) {
+      const r = run(["review", ".", flag, "--dry-run"], dir);
+      expect(r.code, flag).toBe(2);
+      expect(r.err.join("\n"), flag).toContain(flag);
+      expect(r.err.join("\n"), flag).toContain("unknown flag");
+    }
+  });
+
+  it("carries no override switch in its source (structural, not just unparsed)", () => {
+    const srcDir = dirname(fileURLToPath(import.meta.url));
+    for (const file of readdirSync(srcDir).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))) {
+      const source = readFileSync(join(srcDir, file), "utf8");
+      expect(source, file).not.toMatch(/--(?:no-deny|allow-secrets|include-env|no-redact|unsafe)/);
+      expect(source, file).not.toMatch(/\ballowDenyOverride|skipDenyClasses|bypassDeny\b/);
+    }
+  });
+
+  it("refuses a file as the workspace path (an .env cannot be passed as the argument)", () => {
+    const argDir = makeDir();
+    writeFileSync(join(argDir, ".env"), "SECRET=argument-canary\n");
+    const r = run(["review", ".env", "--dry-run"], argDir);
+    expect(r.code).toBe(1);
+    expect(r.err.join("\n")).toContain("Workspace Root must be a directory");
+    expect(r.out.join("\n") + r.err.join("\n")).not.toContain("argument-canary");
   });
 
   it("rejects --staged with --all", () => {
@@ -165,10 +206,31 @@ describe("ternary review . --dry-run (end to end, offline)", () => {
   it("neutralizes hostile filenames end to end", () => {
     const dir = makeDir();
     writeFileSync(join(dir, "evil\x1b[8m.ts"), "x\n");
+    writeFileSync(join(dir, "hidden\rrewrite.ts"), "x\n");
+    writeFileSync(join(dir, "c1csi.ts"), "x\n");
+    writeFileSync(join(dir, `long${"y".repeat(200)}.ts`), "x\n");
     const r = run(["review", ".", "--manifest"], dir);
     expect(r.code).toBe(0);
     const text = r.out.join("\n") + r.err.join("\n");
-    expect(text).not.toContain("\x1b");
+    // The only escape sequences in the output are the CLI's own (there are
+    // none today): every control character is rendered visibly (spec 10).
+    expect(text).not.toMatch(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\r]/);
     expect(text).toContain("\\x1b");
+    expect(text).toContain("\\x0d");
+    expect(text).toContain("\\x9b");
+  });
+
+  it("renders bidi and zero-width characters in filenames without them steering the line", () => {
+    const dir = makeDir();
+    // U+202E RIGHT-TO-LEFT OVERRIDE and U+200B ZERO WIDTH SPACE are not
+    // control characters, so they survive into the manifest bytes; what
+    // matters is that they cannot introduce an escape sequence.
+    writeFileSync(join(dir, "sj.‮gnp.ts"), "x\n");
+    writeFileSync(join(dir, "zero​width.ts"), "x\n");
+    const r = run(["review", ".", "--manifest"], dir);
+    expect(r.code).toBe(0);
+    const text = r.out.join("\n");
+    expect(text).not.toContain("\x1b");
+    expect(text).toContain("zero​width.ts");
   });
 });

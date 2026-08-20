@@ -5,6 +5,7 @@ import {
   isKeyMaterialContent,
   isLfsPointer,
   parseIgnoreFile,
+  orderRules,
   pathDenyClass,
   runExclusionPipeline,
 } from "./deny.js";
@@ -438,6 +439,196 @@ describe("exclusion pipeline", () => {
     }));
     expect(outcome.manifest[0]?.lfs).toBe(true);
     expect(outcome.changeset?.[0]?.content).toBe(pointer);
+  });
+});
+
+// --- Adversarial matrix: one sample per deny class, proven on CANONICAL
+// BYTES rather than on the include list. A file that never reaches the
+// changeset can still leak through the manifest, the redaction records, or a
+// patch, so the assertion is always "these bytes do not appear anywhere".
+
+const CANARY = "CANARY_SECRET_9f2b7c41";
+
+const DENY_SAMPLES: Array<{ label: string; path: string; content: string; class: string }> = [
+  { label: "1 env file", path: ".env", content: `API_KEY=${CANARY}`, class: "env_file" },
+  {
+    label: "1 env file, deeply nested",
+    path: "packages/a/b/c/d/.env.production.local",
+    content: `API_KEY=${CANARY}`,
+    class: "env_file",
+  },
+  {
+    label: "2 key material by name",
+    path: "certs/server.pem",
+    content: CANARY,
+    class: "key_material",
+  },
+  {
+    label: "2 key material by name at depth",
+    path: "deep/dir/id_ed25519",
+    content: CANARY,
+    class: "key_material",
+  },
+  {
+    label: "2 key material by content under an innocent name",
+    path: "notes.txt",
+    content: `meeting notes\n-----BEGIN OPENSSH PRIVATE KEY-----\n${CANARY}\n-----END OPENSSH PRIVATE KEY-----\n`,
+    class: "key_material",
+  },
+  {
+    label: "3 cloud credential directory",
+    path: ".aws/credentials",
+    content: CANARY,
+    class: "credential_dir",
+  },
+  {
+    label: "3 docker config",
+    path: ".docker/config.json",
+    content: CANARY,
+    class: "credential_dir",
+  },
+  {
+    label: "3 kube config",
+    path: ".kube/config",
+    content: CANARY,
+    class: "credential_dir",
+  },
+  {
+    label: "3 terraform credentials",
+    path: ".terraform/terraform.tfstate",
+    content: CANARY,
+    class: "credential_dir",
+  },
+  { label: "4 npmrc token store", path: ".npmrc", content: CANARY, class: "token_store" },
+  { label: "4 pgpass", path: ".pgpass", content: CANARY, class: "token_store" },
+  {
+    label: "4 browser credential export",
+    path: "profile/logins.json",
+    content: CANARY,
+    class: "token_store",
+  },
+  { label: "5 VCS metadata", path: ".git/config", content: CANARY, class: "vcs_metadata" },
+  {
+    label: "6 dependency tree",
+    path: "node_modules/pkg/index.js",
+    content: CANARY,
+    class: "dependencies",
+  },
+  { label: "7 build output", path: "dist/bundle.js", content: CANARY, class: "build_output" },
+  { label: "7 minified artifact", path: "app.min.js", content: CANARY, class: "build_output" },
+];
+
+describe("deny-class completeness (spec 4.2 items 1-10)", () => {
+  it("no sample's bytes appear anywhere in the canonical payload", () => {
+    const capture = fakeCapture(DENY_SAMPLES.map((s) => worktreeFile(s.path)));
+    const files = Object.fromEntries(DENY_SAMPLES.map((s) => [s.path, s.content]));
+    const outcome = runExclusionPipeline(capture, NO_POLICY, DEFAULT_CAPS, fakeReaders(files));
+    const bytes = canonicalBytes(payloadFromOutcome(outcome)).toString("utf8");
+    expect(bytes).not.toContain(CANARY);
+    expect(bytes).not.toContain("PRIVATE KEY");
+    expect(outcome.changeset).toEqual([]);
+    for (const sample of DENY_SAMPLES) {
+      expect(
+        outcome.redaction.withheldFiles,
+        `${sample.label} (${sample.path})`,
+      ).toContainEqual({ path: sample.path, class: sample.class });
+    }
+  });
+
+  it("items 8-10: binary, oversize, and outside-root candidates carry no content bytes", () => {
+    const capture = fakeCapture([
+      worktreeFile("blob.bin"),
+      worktreeFile("huge.txt"),
+      {
+        path: "link.ts",
+        status: "added",
+        kind: "symlink",
+        mode: "symlink",
+        size: 0,
+        linkTarget: "../../../etc/passwd",
+        source: "worktree",
+      },
+    ]);
+    const outcome = runExclusionPipeline(
+      capture,
+      NO_POLICY,
+      { ...DEFAULT_CAPS, fileBytes: 4 },
+      fakeReaders({
+        "blob.bin": `\0${CANARY}`,
+        "huge.txt": CANARY,
+        "link.ts": "never read",
+      }),
+    );
+    const bytes = canonicalBytes(payloadFromOutcome(outcome)).toString("utf8");
+    expect(bytes).not.toContain(CANARY);
+    expect(bytes).not.toContain("never read");
+    expect(outcome.changeset).toEqual([]);
+    // The link entry is metadata only: the target string is recorded, never followed.
+    expect(outcome.manifest.find((m) => m.path === "link.ts")?.linkTarget).toBe(
+      "../../../etc/passwd",
+    );
+  });
+
+  it("NO include pattern can resurrect ANY denied class", () => {
+    // Local Policy includes/negations are evaluated after deny classes and
+    // can never win (spec 4.2, last paragraph). Proven per class, not once.
+    for (const sample of DENY_SAMPLES) {
+      const negations = [`!${sample.path}`, "!*", `!${sample.path.split("/").pop() as string}`];
+      const policy = {
+        excludeRules: orderRules(parseIgnoreFile(negations.join("\n"))),
+        excludePatterns: negations,
+      };
+      const capture = fakeCapture([worktreeFile(sample.path)]);
+      const outcome = runExclusionPipeline(
+        capture,
+        policy,
+        DEFAULT_CAPS,
+        fakeReaders({ [sample.path]: sample.content }),
+      );
+      const bytes = canonicalBytes(payloadFromOutcome(outcome)).toString("utf8");
+      expect(bytes, sample.label).not.toContain(CANARY);
+      expect(outcome.redaction.withheldFiles, sample.label).toEqual([
+        { path: sample.path, class: sample.class },
+      ]);
+    }
+  });
+
+  it("records every withheld, redacted, and truncated action with its class or rule", () => {
+    const token = `ghp_${"x".repeat(30)}`;
+    const capture = fakeCapture([
+      worktreeFile(".env"),
+      worktreeFile("app.ts"),
+      worktreeFile("long.ts"),
+    ]);
+    const outcome = runExclusionPipeline(
+      capture,
+      NO_POLICY,
+      { ...DEFAULT_CAPS, changesetChars: 30 },
+      fakeReaders({
+        ".env": `SECRET=${CANARY}`,
+        "app.ts": `const t = "${token}";\n`,
+        "long.ts": "y".repeat(200),
+      }),
+    );
+    expect(outcome.redaction.withheldFiles).toEqual([{ path: ".env", class: "env_file" }]);
+    expect(outcome.redaction.redactedSpans).toEqual([
+      { path: "app.ts", rule: "token.known-prefix", count: 1 },
+    ]);
+    expect(outcome.redaction.truncated).toEqual([
+      { path: "long.ts", originalBytes: 200, keptBytes: 30 - `const t = "[REDACTED]";\n`.length },
+    ]);
+    const bytes = canonicalBytes(payloadFromOutcome(outcome)).toString("utf8");
+    expect(bytes).not.toContain(CANARY);
+    expect(bytes).not.toContain(token);
+  });
+
+  it("hard-errors when a rename source escapes the Workspace Root", () => {
+    const capture = fakeCapture([
+      { ...worktreeFile("inside.ts", "renamed"), from: "../outside/secret.ts" },
+    ]);
+    expect(() =>
+      runExclusionPipeline(capture, NO_POLICY, DEFAULT_CAPS, fakeReaders({ "inside.ts": "x" })),
+    ).toThrowError(/escapes the Workspace Root/);
   });
 });
 

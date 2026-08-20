@@ -164,6 +164,15 @@ export function captureWorkspace(rootPath: string, mode: CaptureMode): CaptureRe
   // toplevel (which reports physical paths). Nothing below the root is ever
   // resolved through symlinks.
   const rootAbs = realpathSync(rootPath);
+  // A Workspace Root is a directory. Passing a file (`ternary review .env`)
+  // is rejected outright rather than treated as a one-file workspace, so no
+  // argument can smuggle a denied file past the deny classes.
+  if (!lstatSync(rootAbs).isDirectory()) {
+    throw new CollectorError(
+      "root_not_a_directory",
+      `the Workspace Root must be a directory: ${rootAbs}`,
+    );
+  }
   const workspace = detectWorkspace(rootAbs);
   if (workspace.vcs === "none") {
     if (mode === "staged") {
@@ -764,6 +773,14 @@ function readWorktreeVerified(
       // O_NOFOLLOW rejects a symlink in the final component (ELOOP).
       fd = openSync(abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
       const fst = fstatSync(fd);
+      if (fst.isFile() && fst.nlink > 1) {
+        // A hard link is the same inode under another name, so an innocent
+        // path can alias a denied file (`notes.txt` linked to `.env`) and the
+        // path-based deny classes would never see it. The alias cannot be
+        // resolved from the open handle, so exclusion is the only safe
+        // answer — and it is recorded, never silent.
+        return { ok: false, reason: "hardlink_alias" };
+      }
       if (fst.isFile() && fst.dev === expected.dev && fst.ino === expected.ino) {
         const bytes = readFileSync(fd);
         return { ok: true, bytes };

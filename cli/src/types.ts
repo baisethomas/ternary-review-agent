@@ -190,7 +190,7 @@ export interface CaptureResult {
 // stays free of filesystem/git access (capture.ts owns all reads).
 export type WorktreeReadResult =
   | { ok: true; bytes: Buffer }
-  | { ok: false; reason: "unverifiable" };
+  | { ok: false; reason: "unverifiable" | "hardlink_alias" };
 
 export interface ContentReaders {
   readWorktree(

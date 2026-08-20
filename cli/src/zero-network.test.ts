@@ -57,7 +57,10 @@ describe("structural zero-network (module graph)", () => {
     .map((f) => f.slice("external:".length));
 
   it("covers the collector modules (sanity: the walk is real)", () => {
-    for (const expected of ["main.ts", "capture.ts", "deny.ts", "payload.ts", "render.ts", "types.ts", "diff.ts"]) {
+    for (const expected of [
+      "main.ts", "capture.ts", "deny.ts", "payload.ts", "render.ts", "types.ts",
+      "diff.ts", "ignore.ts", "pathbytes.ts", "secrets.ts",
+    ]) {
       expect(files).toContain(expected);
     }
   });

@@ -48,6 +48,7 @@ export type DenyClass =
   | "policy_excluded"
   | "snapshot_file_cap"
   | "submodule_metadata_only"
+  | "hardlink_alias"
   | "unverifiable";
 
 const KEY_EXTENSIONS = new Set([

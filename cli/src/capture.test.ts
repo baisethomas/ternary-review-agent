@@ -1,12 +1,22 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { captureWorkspace, loadLocalPolicy, makeContentReaders } from "./capture.js";
 import { runExclusionPipeline } from "./deny.js";
-import { CollectorError, DEFAULT_CAPS } from "./types.js";
-import type { CaptureMode, CaptureResult } from "./types.js";
+import { canonicalBytes } from "./payload.js";
+import { CollectorError, DEFAULT_CAPS, SCHEMA_VERSION } from "./types.js";
+import type { CanonicalPayload, CaptureMode, CaptureResult } from "./types.js";
 
 // Deterministic git identity/dates so blob and commit shas are reproducible.
 const GIT_ENV = {
@@ -216,6 +226,167 @@ describe("capture-mode matrix (spec 7.1)", () => {
     expect(paths).not.toContain("noise.log");
     expect(paths).not.toContain("private/x.ts");
     expect(result.preExcluded).toContainEqual({ path: "private", class: "policy_excluded" });
+  });
+});
+
+// Canonical bytes of a full capture, for byte-absence assertions.
+function canonicalOf(result: CaptureResult): { text: string; outcome: ReturnType<typeof runExclusionPipeline> } {
+  const outcome = runExclusionPipeline(
+    result,
+    result.policy ?? { excludeRules: [], excludePatterns: [] },
+    DEFAULT_CAPS,
+    makeContentReaders(result.workspace.rootAbs, result.workspace),
+  );
+  const payload: CanonicalPayload = {
+    schemaVersion: SCHEMA_VERSION,
+    kind: result.kind,
+    captureMode: result.captureMode,
+    tool: { name: "ternary-cli", version: "0.1.0" },
+    workspace: {
+      label: result.workspace.label,
+      vcs: result.workspace.vcs,
+      ...(result.kind === "changeset"
+        ? {
+            baseState: result.workspace.unborn
+              ? ("unborn" as const)
+              : { headSha: result.workspace.headSha as string },
+          }
+        : {}),
+    },
+    manifest: outcome.manifest,
+    ...(outcome.changeset !== undefined ? { changeset: outcome.changeset } : {}),
+    ...(outcome.snapshot !== undefined ? { snapshot: outcome.snapshot } : {}),
+    context: [],
+    localPolicy: {
+      captureMode: result.captureMode,
+      include: ["**"],
+      exclude: result.policy?.excludePatterns ?? [],
+      denyRulesVersion: "ternary-deny/2",
+      caps: DEFAULT_CAPS,
+    },
+    redaction: outcome.redaction,
+  };
+  return { text: canonicalBytes(payload).toString("utf8"), outcome };
+}
+
+describe("adversarial: env files, symlinks, and hard links (spec 4.2, 7.2)", () => {
+  const ENV_SECRET = "ENV_CANARY_5d3a91";
+
+  it("an .env contributes zero bytes when untracked, staged, tracked, and nested — in every mode", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "src.ts"), "export const a = 1;\n");
+    // Tracked and committed: the worst case, since Git will happily report it.
+    writeFileSync(join(dir, ".env"), `TRACKED=${ENV_SECRET}\n`);
+    mkdirSync(join(dir, "packages", "api"), { recursive: true });
+    writeFileSync(join(dir, "packages", "api", ".env.production"), `NESTED=${ENV_SECRET}\n`);
+    g(dir, "add", "-A");
+    g(dir, "commit", "-q", "-m", "base");
+    // Staged modification plus a fresh untracked one.
+    writeFileSync(join(dir, ".env"), `STAGED=${ENV_SECRET}\n`);
+    g(dir, "add", ".env");
+    writeFileSync(join(dir, ".env.local"), `UNTRACKED=${ENV_SECRET}\n`);
+    writeFileSync(join(dir, "src.ts"), "export const a = 2;\n");
+
+    for (const mode of ["default", "staged", "all"] as CaptureMode[]) {
+      const { text, outcome } = canonicalOf(captureWorkspace(dir, mode));
+      expect(text, mode).not.toContain(ENV_SECRET);
+      expect(text, mode).not.toContain("TRACKED=");
+      const withheld = outcome.redaction.withheldFiles.filter((w) => w.class === "env_file");
+      expect(withheld.length, mode).toBeGreaterThan(0);
+    }
+  });
+
+  it("rejects a file as the Workspace Root, so an .env cannot be passed as the argument", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, ".env"), `ARG=${ENV_SECRET}\n`);
+    expect(() => captureWorkspace(join(dir, ".env"), "all")).toThrowError(
+      /Workspace Root must be a directory/,
+    );
+  });
+
+  it("a symlink chain out of the root contributes only link entries", () => {
+    const dir = makeDir();
+    const outside = makeDir();
+    writeFileSync(join(outside, "secret.txt"), `OUTSIDE=${ENV_SECRET}\n`);
+    symlinkSync(join(outside, "secret.txt"), join(dir, "hop2"));
+    symlinkSync(join(dir, "hop2"), join(dir, "hop1"));
+    // A link named like ordinary source, pointing outside.
+    symlinkSync(join(outside, "secret.txt"), join(dir, "utils.ts"));
+    writeFileSync(join(dir, "real.ts"), "export const real = 1;\n");
+    const { text, outcome } = canonicalOf(captureWorkspace(dir, "all"));
+    expect(text).not.toContain(ENV_SECRET);
+    for (const link of ["hop1", "hop2", "utils.ts"]) {
+      const entry = outcome.manifest.find((m) => m.path === link);
+      expect(entry?.mode, link).toBe("symlink");
+      expect(entry?.contentIncluded, link).toBe(false);
+    }
+    expect(outcome.snapshot?.map((s) => s.path)).toEqual(["real.ts"]);
+  });
+
+  it("a directory symlink escaping the root is never descended into", () => {
+    const dir = makeDir();
+    const outside = makeDir();
+    mkdirSync(join(outside, "private"));
+    writeFileSync(join(outside, "private", "notes.txt"), `DIRLINK=${ENV_SECRET}\n`);
+    symlinkSync(join(outside, "private"), join(dir, "docs"));
+    writeFileSync(join(dir, "real.ts"), "x\n");
+    const { text, outcome } = canonicalOf(captureWorkspace(dir, "all"));
+    expect(text).not.toContain(ENV_SECRET);
+    expect(outcome.manifest.find((m) => m.path === "docs")?.mode).toBe("symlink");
+    expect(outcome.manifest.some((m) => m.path.startsWith("docs/"))).toBe(false);
+  });
+
+  it("a hard link to a denied file under an innocent name is excluded, never silently included", () => {
+    const dir = makeDir();
+    writeFileSync(join(dir, ".env"), `HARDLINK=${ENV_SECRET}\n`);
+    linkSync(join(dir, ".env"), join(dir, "notes.txt"));
+    const { text, outcome } = canonicalOf(captureWorkspace(dir, "all"));
+    expect(text).not.toContain(ENV_SECRET);
+    expect(outcome.redaction.withheldFiles).toContainEqual({
+      path: "notes.txt",
+      class: "hardlink_alias",
+    });
+    expect(outcome.snapshot).toEqual([]);
+  });
+});
+
+describe("adversarial: hostile filenames and normalization determinism", () => {
+  it("control characters in filenames survive capture and stay deterministic", () => {
+    const digests: string[] = [];
+    for (let run = 0; run < 2; run++) {
+      // Fixed leaf name: the workspace label enters the payload.
+      const dir = join(makeDir(), "workspace");
+      mkdirSync(dir);
+      const names = [
+        "evil\x1b[2Jclear.ts", // ANSI CSI
+        "carriage\rreturn.ts",
+        "bidi‮ovveride.ts", // right-to-left override
+        "zero​width.ts",
+        `long-${"x".repeat(180)}.ts`,
+      ];
+      for (const name of names) writeFileSync(join(dir, name), "x\n");
+      const { text, outcome } = canonicalOf(captureWorkspace(dir, "all"));
+      // The manifest keeps the real bytes (the payload is data, not a screen);
+      // neutralization happens at the renderer (render.test.ts, main.test.ts).
+      expect(outcome.manifest).toHaveLength(names.length);
+      digests.push(createHash("sha256").update(text).digest("hex"));
+    }
+    expect(digests[0]).toBe(digests[1]);
+  });
+
+  it("NFC and NFD spellings of one name produce identical canonical bytes", () => {
+    const nfc = "café.ts".normalize("NFC");
+    const nfd = "café.ts".normalize("NFD");
+    expect(nfc).not.toBe(nfd);
+    const texts = [nfc, nfd].map((name) => {
+      const dir = makeDir();
+      writeFileSync(join(dir, name), "export const x = 1;\n");
+      return canonicalOf(captureWorkspace(dir, "all")).text;
+    });
+    // Workspace labels differ (temp dirs), so compare the manifest section.
+    const manifests = texts.map((t) => t.slice(t.indexOf('"manifest"'), t.indexOf('"redaction"')));
+    expect(manifests[0]).toBe(manifests[1]);
+    expect(manifests[0]).toContain(nfc);
   });
 });
 
