@@ -1,10 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  closeSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -433,6 +436,8 @@ describe("Local Policy resolution (nested ignore files)", () => {
 });
 
 describe("capture edge cases (spec 7.2/7.3)", () => {
+  const NESTED_CANARY = "NESTED_CANARY_7c1f04";
+
   it("ignored files never become untracked candidates in default mode", () => {
     const dir = makeRepo();
     writeFileSync(join(dir, ".gitignore"), "secret-ish.txt\n");
@@ -486,6 +491,55 @@ describe("capture edge cases (spec 7.2/7.3)", () => {
     expect(result.preExcluded).toContainEqual({ path: "nested", class: "nested_repository" });
   });
 
+  it("--all in a Git repo: a nested repository contributes nothing and is counted", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "a.ts"), "a\n");
+    // A directory whose files Git already tracks, which later became a repo:
+    // ls-files keeps reporting the individual tracked paths.
+    mkdirSync(join(dir, "was-tracked"));
+    writeFileSync(join(dir, "was-tracked", "x.ts"), `TRACKED_CANARY=${NESTED_CANARY}\n`);
+    commitAll(dir, "base");
+    g(join(dir, "was-tracked"), "init", "-q", "-b", "main");
+    // Untracked nested repository: git reports it as the directory "nested/".
+    mkdirSync(join(dir, "nested"));
+    g(join(dir, "nested"), "init", "-q", "-b", "main");
+    writeFileSync(join(dir, "nested", "inner.ts"), `NESTED_CANARY=${NESTED_CANARY}\n`);
+
+    const { text, outcome } = canonicalOf(captureWorkspace(dir, "all"));
+    expect(text).not.toContain(NESTED_CANARY);
+    expect(outcome.manifest.some((m) => m.path.startsWith("nested/"))).toBe(false);
+    expect(outcome.manifest.some((m) => m.path.startsWith("was-tracked/"))).toBe(false);
+    expect(outcome.manifest.some((m) => m.path === "nested")).toBe(false);
+    expect(outcome.redaction.withheldFiles).toContainEqual({
+      path: "nested",
+      class: "nested_repository",
+    });
+    expect(outcome.redaction.withheldFiles).toContainEqual({
+      path: "was-tracked",
+      class: "nested_repository",
+    });
+    expect(outcome.snapshot?.map((s) => s.path)).toEqual(["a.ts"]);
+  });
+
+  it("--all in a Git repo: a registered submodule stays metadata-only, not a nested repo", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "a.ts"), "a\n");
+    commitAll(dir, "base");
+    const headSha = g(dir, "rev-parse", "HEAD").trim();
+    g(dir, "update-index", "--add", "--cacheinfo", `160000,${headSha},vendor-lib`);
+    // A checked-out submodule has a `.git` file, exactly like a nested repo.
+    mkdirSync(join(dir, "vendor-lib"));
+    writeFileSync(join(dir, "vendor-lib", ".git"), "gitdir: ../.git/modules/vendor-lib\n");
+    const result = captureWorkspace(dir, "all");
+    const sub = candidate(result, "vendor-lib");
+    expect(sub?.kind).toBe("submodule");
+    expect(sub?.blobSha).toBe(headSha);
+    expect(result.preExcluded).not.toContainEqual({
+      path: "vendor-lib",
+      class: "nested_repository",
+    });
+  });
+
   it("case-collision in the index is a hard error (deterministic across platforms)", () => {
     const dir = makeRepo();
     const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], {
@@ -524,5 +578,48 @@ describe("capture edge cases (spec 7.2/7.3)", () => {
       class: "unverifiable",
     });
     expect(JSON.stringify(outcome)).not.toContain("localhost");
+  });
+
+  it("race-safe read: an ancestor directory swapped for a symlink out of the root excludes the file", () => {
+    const dir = makeDir();
+    const outside = makeDir();
+    mkdirSync(join(outside, "pkg"));
+    writeFileSync(join(outside, "pkg", "victim.ts"), `ANCESTOR=${NESTED_CANARY}\n`);
+    mkdirSync(join(dir, "pkg"));
+    writeFileSync(join(dir, "pkg", "victim.ts"), "innocent\n");
+    writeFileSync(join(dir, "keep.ts"), "kept\n");
+    const result = captureWorkspace(dir, "all");
+    // The race: after classification, the classified ancestor is moved out of
+    // the Workspace Root and replaced by a symlink to an attacker directory.
+    renameSync(join(dir, "pkg"), join(outside, "moved-pkg"));
+    symlinkSync(join(outside, "pkg"), join(dir, "pkg"));
+    const { text, outcome } = canonicalOf(result);
+    expect(text).not.toContain(NESTED_CANARY);
+    expect(outcome.redaction.withheldFiles).toContainEqual({
+      path: "pkg/victim.ts",
+      class: "unverifiable",
+    });
+    expect(outcome.snapshot?.map((s) => s.path)).toEqual(["keep.ts"]);
+  });
+
+  it("verified-chain reads: deeply nested files still capture, and leak no descriptors", () => {
+    const dir = makeDir();
+    const deep = join("a", "b", "c", "d");
+    mkdirSync(join(dir, deep), { recursive: true });
+    for (let i = 0; i < 40; i++) {
+      writeFileSync(join(dir, deep, `f${i}.ts`), `export const f${i} = ${i};\n`);
+    }
+    // Unix allocates the lowest free descriptor, so a probe opened before and
+    // after the capture lands on the same number unless the chain leaked one.
+    const probe = join(dir, deep, "f0.ts");
+    const before = openSync(probe, "r");
+    closeSync(before);
+    const { outcome } = canonicalOf(captureWorkspace(dir, "all"));
+    const after = openSync(probe, "r");
+    closeSync(after);
+    expect(after).toBe(before);
+    expect(outcome.snapshot).toHaveLength(40);
+    expect(outcome.snapshot?.[0]).toEqual({ path: `a/b/c/d/f0.ts`, content: "export const f0 = 0;\n" });
+    expect(outcome.redaction.withheldFiles).toEqual([]);
   });
 });

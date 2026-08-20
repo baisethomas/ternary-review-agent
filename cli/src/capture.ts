@@ -7,12 +7,13 @@
 // commands (rev-parse, symbolic-ref, status --porcelain=v2, diff-index,
 // ls-files, cat-file) — no checkout, no smudge filters, no LFS downloads.
 //
-// Race-safe reads (spec 7.3): worktree files are opened with O_NOFOLLOW,
-// verified with fstat against the classifying lstat (type + dev/inode), read
-// once, with at most one re-classification retry. Node has no openat-style
-// per-component no-follow traversal; as the documented platform fallback,
-// every ancestor component is lstat-checked to be a non-symlink directory and
-// any unverifiable identity EXCLUDES the file with reason code "unverifiable".
+// Race-safe reads (spec 7.3): every ancestor from the Workspace Root down is
+// opened O_NOFOLLOW|O_DIRECTORY and fstat-matched against its own lstat, all
+// those descriptors stay open across the leaf read, the leaf is opened
+// O_NOFOLLOW and fstat-verified against the classifying lstat, and the chain
+// identities are re-checked before any byte is read. One re-classification
+// retry; any unverifiable identity EXCLUDES the file with reason code
+// "unverifiable".
 
 import { execFileSync } from "node:child_process";
 import {
@@ -27,7 +28,7 @@ import {
   readlinkSync,
   realpathSync,
 } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { directoryDenyClass } from "./deny.js";
 import type { LoadedPolicy } from "./deny.js";
 import { isIgnored, orderRules, parseIgnoreFile } from "./ignore.js";
@@ -541,6 +542,36 @@ function enumerateGitSnapshot(rootAbs: string): {
   )
     .filter((n) => n.length > 0)
     .map((n) => encodePathBytes(n));
+  // Nested repositories are excluded entirely, descendants included (spec
+  // 7.2). `ls-files` prunes nothing: an embedded repository surfaces as the
+  // untracked directory entry `nested/`, and files that were tracked before
+  // their directory became a repository keep surfacing individually.
+  const nestedRepoDirs = new Map<string, boolean>();
+  const isNestedRepoDir = (rel: string): boolean => {
+    const cached = nestedRepoDirs.get(rel);
+    if (cached !== undefined) return cached;
+    const repoRel = prefix === "" ? rel : `${prefix}/${rel}`;
+    // A registered submodule also holds a `.git`; it stays metadata-only.
+    const nested = !gitlinks.has(repoRel) && existsSync(join(rootAbs, rel, ".git"));
+    nestedRepoDirs.set(rel, nested);
+    return nested;
+  };
+  // The shallowest nested-repository ancestor of a path, or null.
+  const nestedRepoAncestor = (rel: string): string | null => {
+    const segments = rel.split("/");
+    for (let i = 1; i <= segments.length - 1; i++) {
+      const dir = segments.slice(0, i).join("/");
+      if (isNestedRepoDir(dir)) return dir;
+    }
+    return null;
+  };
+  const excludedNested = new Set<string>();
+  const excludeNested = (dir: string): void => {
+    if (excludedNested.has(dir)) return;
+    excludedNested.add(dir);
+    preExcluded.push({ path: dir, class: "nested_repository" });
+  };
+
   const seen = new Set<string>();
   const candidates: Candidate[] = [];
   for (const name of names) {
@@ -549,6 +580,17 @@ function enumerateGitSnapshot(rootAbs: string): {
     seen.add(repoRel);
     const rel = toWorkspaceRelative(repoRel, prefix);
     if (rel === null) continue;
+    if (rel.endsWith("/")) {
+      // Directory entry: only embedded repositories surface this way.
+      const dirRel = rel.slice(0, -1);
+      if (isNestedRepoDir(dirRel)) excludeNested(dirRel);
+      continue;
+    }
+    const nestedAncestor = nestedRepoAncestor(rel);
+    if (nestedAncestor !== null) {
+      excludeNested(nestedAncestor);
+      continue;
+    }
     if (name.encoded) {
       candidates.push(invalidPathCandidate(rel, "unchanged"));
       continue;
@@ -742,36 +784,117 @@ export function makeContentReaders(rootAbs: string, workspace: WorkspaceInfo): C
   };
 }
 
+// One verified ancestor: the identity its lstat reported and its open FD
+// agreed on. The FD is held until the leaf read completes.
+interface ChainLink {
+  abs: string;
+  dev: number;
+  ino: number;
+}
+
+const DIR_OPEN_FLAGS =
+  fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_DIRECTORY;
+
+// Node exposes no openat/fchdir, so each component is still opened by its
+// cumulative path; holding every ancestor FD open and requiring lstat and
+// fstat to name the same inode detects a persistent replacement, but a
+// flip-flop between the two calls would not be seen. That needs a
+// concurrently running local attacker process, which spec 12 places outside
+// the alpha threat model.
+function openVerifiedChain(rootAbs: string, relPath: string, fds: number[]): ChainLink[] | null {
+  const links: ChainLink[] = [];
+  try {
+    const rootStat = lstatSync(rootAbs);
+    const rootFd = openSync(rootAbs, DIR_OPEN_FLAGS);
+    fds.push(rootFd);
+    const rootFstat = fstatSync(rootFd);
+    if (
+      rootStat.isSymbolicLink() ||
+      !rootFstat.isDirectory() ||
+      rootFstat.dev !== rootStat.dev ||
+      rootFstat.ino !== rootStat.ino
+    ) {
+      throw new Error("identity mismatch");
+    }
+    links.push({ abs: rootAbs, dev: rootStat.dev, ino: rootStat.ino });
+  } catch {
+    // The Workspace Root is the anchor of every containment check; losing it
+    // is the one condition that is not a per-file exclusion.
+    throw new CollectorError(
+      "workspace_root_unverifiable",
+      `the Workspace Root could not be verified as a directory: ${rootAbs}`,
+    );
+  }
+  const segments = relPath.split("/").slice(0, -1);
+  let abs = rootAbs;
+  for (const segment of segments) {
+    if (segment === "" || segment === "." || segment === "..") return null;
+    abs = join(abs, segment);
+    try {
+      const st = lstatSync(abs);
+      if (st.isSymbolicLink() || !st.isDirectory()) return null;
+      const fd = openSync(abs, DIR_OPEN_FLAGS);
+      fds.push(fd);
+      const fst = fstatSync(fd);
+      if (!fst.isDirectory() || fst.dev !== st.dev || fst.ino !== st.ino) return null;
+      links.push({ abs, dev: st.dev, ino: st.ino });
+    } catch {
+      return null;
+    }
+  }
+  return links;
+}
+
+// Re-check the recorded chain identities after the leaf is open and before
+// any byte is read.
+function chainStillIntact(links: readonly ChainLink[]): boolean {
+  for (const link of links) {
+    try {
+      const st = lstatSync(link.abs);
+      if (st.isSymbolicLink() || !st.isDirectory()) return false;
+      if (st.dev !== link.dev || st.ino !== link.ino) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function closeAll(fds: readonly number[]): void {
+  for (const fd of fds) {
+    try {
+      closeSync(fd);
+    } catch {
+      // Already closed or invalid: nothing left to release.
+    }
+  }
+}
+
 function readWorktreeVerified(
   rootAbs: string,
   relPath: string,
   classify: { dev: number; ino: number } | undefined,
 ): WorktreeReadResult {
-  // Platform fallback for openat-per-component: every ancestor must be a
-  // real (non-symlink) directory under the Workspace Root.
   const abs = join(rootAbs, relPath);
-  let ancestor = dirname(abs);
-  try {
-    while (ancestor.length >= rootAbs.length && ancestor !== dirname(ancestor)) {
-      if (lstatSync(ancestor).isSymbolicLink()) return { ok: false, reason: "unverifiable" };
-      if (ancestor === rootAbs) break;
-      ancestor = dirname(ancestor);
-    }
-  } catch {
-    return { ok: false, reason: "unverifiable" };
-  }
-
   let expected = classify;
+  // Any mismatch, in the chain or at the leaf, gets one bounded
+  // re-classification retry and then excludes the path (spec 7.3).
   for (let attempt = 0; attempt < 2; attempt++) {
-    let fd: number | null = null;
+    const fds: number[] = [];
     try {
+      const chain = openVerifiedChain(rootAbs, relPath, fds);
+      if (chain === null) {
+        expected = undefined;
+        continue;
+      }
       if (expected === undefined) {
         const st = lstatSync(abs);
         if (!st.isFile()) return { ok: false, reason: "unverifiable" };
         expected = { dev: st.dev, ino: st.ino };
       }
       // O_NOFOLLOW rejects a symlink in the final component (ELOOP).
-      fd = openSync(abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      const fd = openSync(abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      fds.push(fd);
       const fst = fstatSync(fd);
       if (fst.isFile() && fst.nlink > 1) {
         // A hard link is the same inode under another name, so an innocent
@@ -781,16 +904,21 @@ function readWorktreeVerified(
         // answer — and it is recorded, never silent.
         return { ok: false, reason: "hardlink_alias" };
       }
-      if (fst.isFile() && fst.dev === expected.dev && fst.ino === expected.ino) {
+      if (
+        fst.isFile() &&
+        fst.dev === expected.dev &&
+        fst.ino === expected.ino &&
+        chainStillIntact(chain)
+      ) {
         const bytes = readFileSync(fd);
         return { ok: true, bytes };
       }
-      // Identity mismatch: one bounded re-classification retry (spec 7.3).
       expected = undefined;
-    } catch {
+    } catch (error) {
+      if (error instanceof CollectorError) throw error;
       return { ok: false, reason: "unverifiable" };
     } finally {
-      if (fd !== null) closeSync(fd);
+      closeAll(fds);
     }
   }
   return { ok: false, reason: "unverifiable" };
