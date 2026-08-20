@@ -22,6 +22,8 @@ import {
 import {
   assertCheckEvidenceInvariants,
   workspaceVerdict,
+  type CheckEvidence,
+  type CommandEvidence,
   type WorkspaceAnalysisInput,
   type WorkspaceChangeSet,
   type WorkspaceFinding,
@@ -82,11 +84,71 @@ function isAbortError(error: unknown) {
 }
 
 /**
+ * Field-map exhaustiveness checks (one per type below): each literal must
+ * satisfy `Record<keyof T, true>`, listing every field on the type. If
+ * `CheckEvidence`, `CommandEvidence`, or `WorkspaceChangeSet` gains or loses
+ * a field, the corresponding literal stops satisfying its `Record` type and
+ * the build fails right here — forcing a conscious decision about whether
+ * the new field carries user-controlled text that needs redaction, instead
+ * of it silently reaching the prompt unredacted. This is what makes the
+ * redaction below exhaustive-by-construction rather than field-by-field
+ * patching: every field is accounted for, even the ones that are
+ * deliberately left unredacted (enums, counts, hashes, already-normalized
+ * paths).
+ */
+const CHECK_EVIDENCE_FIELDS = {
+  origin: true, // enum, not user-controlled text
+  trust: true, // enum, not user-controlled text
+  status: true, // enum, not user-controlled text
+  label: true, // user-controlled text — redacted
+  commands: true, // CommandEvidence[] — redacted via redactCommandEvidence
+  truncation: true, // { skippedCommands: string[] } — command names, redacted
+  redaction: true, // { redactedSpans: number } — count only, not text
+  unavailableReason: true, // user-controlled text — redacted
+} satisfies Record<keyof CheckEvidence, true>;
+void CHECK_EVIDENCE_FIELDS;
+
+const COMMAND_EVIDENCE_FIELDS = {
+  command: true, // user-controlled text — redacted
+  exitCode: true, // number, not text
+  output: true, // user-controlled text — redacted
+} satisfies Record<keyof CommandEvidence, true>;
+void COMMAND_EVIDENCE_FIELDS;
+
+const WORKSPACE_CHANGE_SET_FIELDS = {
+  kind: true, // enum, not user-controlled text
+  workspaceLabel: true, // user-controlled text — redacted
+  vcs: true, // enum, not user-controlled text
+  baseState: true, // git SHA / literal "unborn" — not free text
+  branch: true, // user-controlled text — redacted
+  changeset: true, // ChangesetEntry[] — patch/content redacted; path/from already normalized (spec §8.3)
+  snapshot: true, // SnapshotEntry[] — content redacted; path already normalized (spec §8.3)
+} satisfies Record<keyof WorkspaceChangeSet, true>;
+void WORKSPACE_CHANGE_SET_FIELDS;
+
+function redactCommandEvidence(command: CommandEvidence, redact: (value: string) => string): CommandEvidence {
+  return { ...command, command: redact(command.command), output: redact(command.output) };
+}
+
+/** Redact every user-controlled string field on one evidence entry, per `CHECK_EVIDENCE_FIELDS` above. */
+function redactCheckEvidence(check: CheckEvidence, redact: (value: string) => string): CheckEvidence {
+  return {
+    ...check,
+    label: redact(check.label),
+    commands: check.commands.map((command) => redactCommandEvidence(command, redact)),
+    ...(check.truncation
+      ? { truncation: { skippedCommands: check.truncation.skippedCommands.map(redact) } }
+      : {}),
+    ...(check.unavailableReason !== undefined ? { unavailableReason: redact(check.unavailableReason) } : {}),
+  };
+}
+
+/**
  * Defense-in-depth redaction (spec §4.3): apply `redactSecrets` to every
- * inbound text field embedded into the prompt, exactly once, before prompt
- * construction. This is a second net only — the collector is the primary
- * control (spec §1.3) — so this never fails the review; it only rewrites
- * text and reports how many fields it actually changed.
+ * user-controlled text field embedded into the prompt, exactly once, before
+ * prompt construction. This is a second net only — the collector is the
+ * primary control (spec §1.3) — so this never fails the review; it only
+ * rewrites text and reports how many fields it actually changed.
  */
 function redactWorkspaceAnalysisInput(
   input: WorkspaceAnalysisInput,
@@ -101,6 +163,7 @@ function redactWorkspaceAnalysisInput(
   const changeSet: WorkspaceChangeSet = {
     ...input.changeSet,
     workspaceLabel: redact(input.changeSet.workspaceLabel),
+    ...(input.changeSet.branch !== undefined ? { branch: redact(input.changeSet.branch) } : {}),
     ...(input.changeSet.changeset
       ? {
           changeset: input.changeSet.changeset.map((entry) => ({
@@ -115,10 +178,7 @@ function redactWorkspaceAnalysisInput(
       : {}),
   };
 
-  const evidence = input.evidence.map((check) => ({
-    ...check,
-    commands: check.commands.map((command) => ({ ...command, output: redact(command.output) })),
-  }));
+  const evidence = input.evidence.map((check) => redactCheckEvidence(check, redact));
 
   return {
     input: { ...input, changeSet, repositoryContext: redact(input.repositoryContext), evidence },

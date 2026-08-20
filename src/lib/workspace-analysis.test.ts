@@ -242,6 +242,31 @@ describe("analyzeWorkspaceReview", () => {
     expect(result.redactionApplied).toBeGreaterThan(0);
   });
 
+  it("redacts secrets in evidence label and command text before the model call, and counts the change", async () => {
+    const requestModel = fakeModel({ summary: "ok", findings: [] });
+    const input = changesetInput({
+      evidence: [{
+        origin: "local",
+        trust: "unverified_client",
+        status: "complete",
+        label: "leaked token ghp_bbbbbbbbbbbbbbbbbbbbbbbb",
+        commands: [{
+          command: "curl -H \"Authorization: Bearer commandsecrettoken456\" https://example.test",
+          exitCode: 0,
+          output: "ok",
+        }],
+      }],
+    });
+
+    const result = await analyzeWorkspaceReview(input, { requestModel });
+
+    const call = vi.mocked(requestModel).mock.calls[0][0];
+    expect(call.input).not.toContain("ghp_bbbbbbbbbbbbbbbbbbbbbbbb");
+    expect(call.input).not.toContain("commandsecrettoken456");
+    expect(call.input).toContain("[REDACTED]");
+    expect(result.redactionApplied).toBeGreaterThan(0);
+  });
+
   it("passes clean input through byte-identical and reports zero redactions", async () => {
     const requestModel = fakeModel({ summary: "ok", findings: [] });
     const input = changesetInput();
