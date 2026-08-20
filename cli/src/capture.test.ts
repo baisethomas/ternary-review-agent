@@ -14,8 +14,26 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
-import { captureWorkspace, loadLocalPolicy, makeContentReaders } from "./capture.js";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+
+// A conditional lstatSync hook for one test (identity-mismatch-vs-nlink
+// ordering, below): node:fs is a real ES module and its exports are not
+// individually spy-able, so the whole module is mocked here with a
+// passthrough that only diverts when a test installs a hook. Every other
+// test leaves the hook unset and gets real filesystem behavior.
+const lstatHook = vi.hoisted(() => ({ fn: null as null | ((path: unknown) => void) }));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    lstatSync: (...args: Parameters<typeof actual.lstatSync>) => {
+      lstatHook.fn?.(args[0]);
+      return actual.lstatSync(...args);
+    },
+  };
+});
+import { captureWorkspace, isWorktreeAbsent, loadLocalPolicy, makeContentReaders } from "./capture.js";
+import type { StatusRecord } from "./capture.js";
 import { runExclusionPipeline } from "./deny.js";
 import { canonicalBytes } from "./payload.js";
 import { CollectorError, DEFAULT_CAPS, SCHEMA_VERSION } from "./types.js";
@@ -36,6 +54,9 @@ const GIT_ENV = {
 const roots: string[] = [];
 afterAll(() => {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
+});
+afterEach(() => {
+  lstatHook.fn = null;
 });
 
 function makeDir(): string {
@@ -524,6 +545,126 @@ describe("adversarial: env files, symlinks, and hard links (spec 4.2, 7.2)", () 
     });
     expect(outcome.snapshot).toEqual([]);
   });
+
+  it("chain break plus a hard-linked leaf resolves to unverifiable, never hardlink_alias — identity/chain is checked before nlink (spec 7.3)", () => {
+    const dir = makeDir();
+    const outside = makeDir();
+    mkdirSync(join(dir, "pkg"));
+    writeFileSync(join(dir, "pkg", "victim.ts"), "innocent\n");
+    // nlink > 1 on the leaf: if the hardlink check ran before the chain
+    // re-check, this alone would exclude the file as "hardlink_alias".
+    linkSync(join(dir, "pkg", "victim.ts"), join(dir, "pkg", "victim-alias.ts"));
+    const result = captureWorkspace(dir, "all");
+    expect(candidate(result, "pkg/victim.ts")?.mode).toBe("regular");
+    // The race: after classification, the classified ancestor directory is
+    // moved out of the Workspace Root and replaced by a symlink — chain
+    // identity is now broken for every path underneath it, including the
+    // hard-linked leaf.
+    renameSync(join(dir, "pkg"), join(outside, "moved-pkg"));
+    symlinkSync(join(outside, "moved-pkg"), join(dir, "pkg"));
+    const outcome = runExclusionPipeline(
+      result,
+      result.policy ?? { excludeRules: [], excludePatterns: [] },
+      DEFAULT_CAPS,
+      makeContentReaders(result.workspace.rootAbs, result.workspace),
+    );
+    expect(outcome.redaction.withheldFiles).toContainEqual({
+      path: "pkg/victim.ts",
+      class: "unverifiable",
+    });
+    expect(outcome.redaction.withheldFiles).not.toContainEqual({
+      path: "pkg/victim.ts",
+      class: "hardlink_alias",
+    });
+  });
+
+  it("identity mismatch plus a hard-linked leaf resolves to unverifiable, never hardlink_alias — identity is checked before nlink (spec 7.3)", () => {
+    // This isolates the exact reorder: with the classifying identity already
+    // known, one bounded re-classification retry is all a mismatch gets. If
+    // the hardlink check ran before identity was verified, a swapped-in
+    // hard-linked file would wrongly resolve as hardlink_alias on the very
+    // first attempt, without ever consulting the classifying identity. With
+    // identity checked first, the mismatch instead forces the retry's
+    // re-classification — which this test makes fail — so the outcome is
+    // "unverifiable", proving identity/chain is checked before nlink.
+    const dir = makeRepo();
+    writeFileSync(join(dir, "victim.ts"), "innocent\n");
+    commitAll(dir, "base");
+    writeFileSync(join(dir, "victim.ts"), "changed\n");
+    const result = captureWorkspace(dir, "default");
+    const victimAbs = join(dir, "victim.ts");
+    // Race: the classified file is swapped for a different, hard-linked file
+    // at the same path — a different inode, so the classifying dev/ino no
+    // longer match.
+    rmSync(victimAbs);
+    writeFileSync(victimAbs, "swapped\n");
+    linkSync(victimAbs, join(dir, "victim-alias.ts"));
+    // Force the read's one bounded re-classification retry to fail (ENOENT),
+    // so the identity mismatch cannot self-heal on the second attempt.
+    lstatHook.fn = (path) => {
+      if (path === victimAbs) {
+        const error = new Error("ENOENT: simulated vanish during retry") as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }
+    };
+    const outcome = runExclusionPipeline(
+      result,
+      result.policy ?? { excludeRules: [], excludePatterns: [] },
+      DEFAULT_CAPS,
+      makeContentReaders(result.workspace.rootAbs, result.workspace),
+    );
+    expect(outcome.redaction.withheldFiles).toContainEqual({
+      path: "victim.ts",
+      class: "unverifiable",
+    });
+    expect(outcome.redaction.withheldFiles).not.toContainEqual({
+      path: "victim.ts",
+      class: "hardlink_alias",
+    });
+  });
+});
+
+describe("isWorktreeAbsent decision boundary (spec 7.1 worktree-wins semantics)", () => {
+  // A minimal well-formed StatusRecord; each case overrides only the fields
+  // the predicate reads.
+  function record(overrides: Partial<StatusRecord>): StatusRecord {
+    return {
+      path: "f.ts",
+      pathEncoded: false,
+      stagedChar: ".",
+      worktreeChar: ".",
+      headSha: "0",
+      indexSha: "0",
+      submodule: false,
+      untracked: false,
+      ...overrides,
+    };
+  }
+
+  it('worktreeChar "D" is absent regardless of the other fields', () => {
+    expect(isWorktreeAbsent(record({ worktreeChar: "D", stagedChar: "M", indexSha: "abc123" }))).toBe(
+      true,
+    );
+  });
+
+  it('stagedChar "D" with a zero indexSha and no untracked recreation is absent (plain staged delete)', () => {
+    expect(
+      isWorktreeAbsent(record({ stagedChar: "D", indexSha: "0", untracked: false })),
+    ).toBe(true);
+  });
+
+  it('stagedChar "D" with a zero indexSha but an untracked file recreated at the path is not absent (worktree wins)', () => {
+    expect(
+      isWorktreeAbsent(record({ stagedChar: "D", indexSha: "0", untracked: true })),
+    ).toBe(false);
+  });
+
+  it('stagedChar "D" with a nonzero indexSha is not absent', () => {
+    expect(
+      isWorktreeAbsent(record({ stagedChar: "D", indexSha: "abc123", untracked: false })),
+    ).toBe(false);
+  });
 });
 
 describe("adversarial: hostile filenames and normalization determinism", () => {
@@ -773,6 +914,29 @@ describe("capture edge cases (spec 7.2/7.3)", () => {
       class: "unverifiable",
     });
     expect(outcome.snapshot?.map((s) => s.path)).toEqual(["keep.ts"]);
+  });
+
+  it("a symlink passed as the Workspace Root resolves to the physical directory and everything is bounded there", () => {
+    const physical = makeDir();
+    writeFileSync(join(physical, "real.ts"), "export const x = 1;\n");
+    mkdirSync(join(physical, "sub"));
+    writeFileSync(join(physical, "sub", "nested.ts"), "export const y = 2;\n");
+    // The symlink itself lives outside the physical directory it points at.
+    const linkParent = makeDir();
+    const rootLink = join(linkParent, "root-link");
+    symlinkSync(physical, rootLink);
+    const result = captureWorkspace(rootLink, "all");
+    // realpath resolution: the Workspace Root is the physical directory, not
+    // the symlink path the user passed.
+    expect(result.workspace.rootAbs).toBe(physical);
+    const paths = capturedPaths(result);
+    expect(paths).toEqual(["real.ts", "sub/nested.ts"]);
+    // Paths are relative to the physical root — the symlink's parent never
+    // appears anywhere in the payload.
+    expect(paths.some((p) => p.includes(linkParent))).toBe(false);
+    const { outcome } = canonicalOf(result);
+    expect(outcome.snapshot?.map((s) => s.path).sort()).toEqual(["real.ts", "sub/nested.ts"]);
+    expect(outcome.redaction.withheldFiles).toEqual([]);
   });
 
   it("verified-chain reads: deeply nested files still capture, and leak no descriptors", () => {

@@ -210,7 +210,7 @@ export function captureWorkspace(rootPath: string, mode: CaptureMode): CaptureRe
 
 // --- Default mode: HEAD vs combined index + worktree, worktree wins ---
 
-interface StatusRecord {
+export interface StatusRecord {
   path: string;
   pathEncoded: boolean; // path bytes were not valid UTF-8 (spec 7.2)
   from?: string;
@@ -233,7 +233,10 @@ interface StatusRecord {
 // merge loop above), worktreeChar stays "." but `untracked` is set, so this
 // returns false and the record falls through to the normal worktree-read
 // path so the recreated content wins.
-function isWorktreeAbsent(record: StatusRecord): boolean {
+// Exported for direct unit testing of the four-case decision boundary
+// (spec 7.1 worktree-wins semantics) — a pure predicate, so this is simpler
+// than reconstructing every case through crafted git status output.
+export function isWorktreeAbsent(record: StatusRecord): boolean {
   const worktreeDeleted = record.worktreeChar === "D";
   const stagedDeleted =
     !worktreeDeleted && !record.untracked && record.stagedChar === "D" && ZERO_SHA.test(record.indexSha);
@@ -869,8 +872,9 @@ const DIR_OPEN_FLAGS =
 // cumulative path; holding every ancestor FD open and requiring lstat and
 // fstat to name the same inode detects a persistent replacement, but a
 // flip-flop between the two calls would not be seen. That needs a
-// concurrently running local attacker process, which spec 12 places outside
-// the alpha threat model.
+// concurrently running local attacker process, which spec 12 (Threat model,
+// T12 / residual risks) places outside the alpha threat model — see that
+// section for the accepted-risk rationale.
 function openVerifiedChain(rootAbs: string, relPath: string, fds: number[]): ChainLink[] | null {
   const links: ChainLink[] = [];
   try {
@@ -966,20 +970,25 @@ function readWorktreeVerified(
       const fd = openSync(abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
       fds.push(fd);
       const fst = fstatSync(fd);
-      if (fst.isFile() && fst.nlink > 1) {
-        // A hard link is the same inode under another name, so an innocent
-        // path can alias a denied file (`notes.txt` linked to `.env`) and the
-        // path-based deny classes would never see it. The alias cannot be
-        // resolved from the open handle, so exclusion is the only safe
-        // answer — and it is recorded, never silent.
-        return { ok: false, reason: "hardlink_alias" };
-      }
+      // Identity (leaf fstat vs. the classifying lstat) and the ancestor
+      // chain are re-checked before any byte is read — including before the
+      // hardlink check — matching spec 7.3's ordering exactly. A chain break
+      // or identity mismatch always resolves to "unverifiable" first; only
+      // once identity is confirmed does the hardlink check run.
       if (
         fst.isFile() &&
         fst.dev === expected.dev &&
         fst.ino === expected.ino &&
         chainStillIntact(chain)
       ) {
+        if (fst.nlink > 1) {
+          // A hard link is the same inode under another name, so an innocent
+          // path can alias a denied file (`notes.txt` linked to `.env`) and
+          // the path-based deny classes would never see it. The alias cannot
+          // be resolved from the open handle, so exclusion is the only safe
+          // answer — and it is recorded, never silent.
+          return { ok: false, reason: "hardlink_alias" };
+        }
         const bytes = readFileSync(fd);
         return { ok: true, bytes };
       }
