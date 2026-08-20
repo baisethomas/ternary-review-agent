@@ -20,7 +20,7 @@ These decisions are recorded, not open for relitigation:
 4. **Evidence provenance is explicit.** `CheckEvidence` carries `origin: "local" | "sandbox"`, `trust: "unverified_client" | "isolated"`, `status: "complete" | "partial" | "unavailable"`. Local evidence is never treated as equivalent to sandbox evidence, in prompts, verdicts, or reporting.
 5. **`RepositoryIndexer` is not a direct CLI seam.** Only small pure primitives (source-file filtering, chunking, tokenization, bounded context selection) get extracted or recreated later, after characterization tests exist. No `LocalRepositorySource` is threaded through the server-only `repository-context-service.ts` (it is `import "server-only"` and Redis/GitHub-coupled by construction).
 6. **Vercel Hobby shape for the Phase 4 sync endpoint:** single model attempt, **no fallback chain** (the DeepSeek→OpenAI cascade in `review-route-service.ts` stays PR-queue-only), a tight server-owned token budget, an end-to-end deadline of **≤ 120 seconds**, and a deterministic timeout that aborts the in-flight model request.
-7. **Zero-network for the collector is structural.** The collector module graph imports no HTTP client at all — not "doesn't call", *cannot import*. Tests additionally assert zero network calls in dry-run.
+7. **Zero-network for the collector is structural, with one explicit transmit boundary.** Capture, deny/redaction, payload-construction, and rendering modules can never import a networking transport — not "don't call", *cannot import*. Exactly one narrowly scoped transmit module MAY import an HTTP client; its only permitted outbound operation is submitting already-finalized canonical bytes to the configured endpoint and receiving the response (including enforcing the client-side timeout in section 6). `--dry-run` and `--manifest` execute through a code path that never imports or instantiates the transmit module — asserted by a module-graph test — and tests additionally assert those modes make zero network calls.
 8. **Capture-mode disagreement rule:** in default mode (`ternary review .`), when the Git index and the worktree disagree on a file, the **worktree** version wins.
 9. **The versioned canonical payload schema (section 8) is the CLI↔server contract.** Both sides validate against shared fixture payloads.
 
@@ -200,6 +200,15 @@ There is **no `--uncommitted` flag**; the default mode covers that intent.
 - **Path traversal:** any candidate path that, after normalization, contains `..` segments or resolves outside the Workspace Root is **rejected** (hard error listing the path), not skipped silently.
 - **Case-sensitivity determinism:** manifest ordering is a bytewise sort of normalized paths; on case-insensitive filesystems, two paths differing only by case are an error, so the same workspace produces the same manifest (and digest) on every platform.
 
+### 7.3 Race-safe capture (TOCTOU)
+
+Classification (section 4.2) and capture must act on the **same bytes**: a file may be replaced with a symlink, grow past a cap, or gain secret content between the moment it is classified and the moment it is read. The capture algorithm is therefore normative:
+
+- Files are opened with **directory-relative, no-follow** handles (`openat`-style traversal from the Workspace Root with `O_NOFOLLOW` on every component, or the platform equivalent). Root containment is established by handle-based traversal, never by string-prefix checks on resolved paths.
+- After open, the handle is verified with `fstat`: file type must be a regular file, and device/inode identity must match the `lstat` that classified the candidate. On mismatch the collector performs at most one bounded re-classification retry, then rejects the path with a hard error naming it.
+- Deny, binary, size-cap, and secret checks apply to the **bytes actually read from the verified handle**, and those same bytes (post-redaction, post-truncation, both recorded) are what enters the payload. Read once; never re-open a path between check and use.
+- On platforms without no-follow primitives, the sequence is `lstat` → open → `fstat` compare (device, inode, type, size); if identity cannot be verified, the file is **excluded** with reason code `unverifiable` — exclusion is always the failure mode, inclusion never is.
+
 ## 8. Canonical payload schema
 
 ### 8.1 Versioning
@@ -235,12 +244,74 @@ CanonicalPayload = {
 }
 ```
 
+Referenced entry types (all part of the versioned schema; every field shown is normative):
+
+```
+ManifestEntry = {
+  path: string;                       // normalized per 8.3
+  status: "added" | "modified" | "deleted" | "renamed" | "unchanged";
+  from?: string;                      // renamed only: prior path
+  similarity?: number;                // renamed only: integer 0–100
+  size: number;                       // bytes, integer ≥ 0
+  mode: "regular" | "executable" | "symlink";
+  linkTarget?: string;                // symlink only: the literal target string, never resolved
+  blobSha?: string;                   // Git blob SHA when known
+  binary?: true;                      // deny class 8
+  oversize?: true;                    // deny class 9
+  lfs?: true;                         // LFS pointer (7.2)
+  contentIncluded: boolean;           // whether this file's bytes appear in changeset/snapshot
+}
+
+ChangesetEntry = {
+  path: string;
+  status: "added" | "modified" | "renamed";   // deletions carry no content and live only in the manifest
+  from?: string;                      // renamed only
+  patch?: string;                     // unified diff text, UTF-8, no timestamps or index lines
+  content?: string;                   // full file text for additions (patch and content are mutually exclusive)
+}
+
+SnapshotEntry = {
+  path: string;
+  content: string;                    // full file text, UTF-8, post-redaction/truncation (recorded in redaction)
+}
+
+ContextExcerpt = {
+  path: string;
+  startLine: number;                  // 1-based, integer
+  endLine: number;                    // inclusive, integer
+  content: string;
+}
+
+EffectiveLocalPolicy = {
+  captureMode: "default" | "staged" | "all";
+  include: string[];                  // resolved glob patterns, sorted
+  exclude: string[];                  // resolved glob patterns, sorted
+  denyRulesVersion: string;           // version of the deny-class rule set applied (4.2)
+  caps: {                             // the effective values of every limit in 4.4, integers
+    payloadBytes: number; changesetChars: number; contextExcerpts: number;
+    contextChars: number; snapshotBytes: number; snapshotFiles: number;
+    snapshotChunks: number; fileBytes: number; evidenceCapturedChars: number;
+    evidenceModelChars: number; manifestEntries: number;
+  };
+}
+```
+
 ### 8.3 Normalization and digest
 
 - **Paths are normalized deliberately:** relative to the Workspace Root, `/` separators, no `.`/`..` segments, NFC-normalized where representable, bytewise-sorted.
 - **Metadata is normalized deliberately:** timestamps are excluded from digested content; sizes are byte counts; mode bits reduce to the three-value set in 4.1.
 - **Source contents are never silently normalized:** no newline conversion, no whitespace trimming, no encoding transcode of file bytes. The only content mutations are the explicit, recorded operations in `redaction` (redacted spans, truncation).
 - **Digest:** SHA-256 over the **exact canonical bytes to be transmitted** — the serialized payload itself, not a reconstruction. The digest travels in a transport header/envelope field, outside the digested bytes.
+
+### 8.4 Canonical serialization (normative)
+
+The canonical bytes are UTF-8 JSON produced under **RFC 8785 (JSON Canonicalization Scheme)**:
+
+- Object members sorted per JCS (lexicographic by UTF-16 code units); no insignificant whitespace; minimal string escaping per JCS.
+- **Every number in this schema is a non-negative integer** — the schema deliberately contains no fractional or floating-point values, so JCS number serialization stays trivial (no exponents, no leading zeros, no `-0`).
+- File contents embedded in the payload are always valid UTF-8 text (invalid UTF-8 marks a file binary and excludes its content, per 7.2), carried as JSON strings. **String values are not Unicode-normalized** — only paths are NFC-normalized, per 8.3; content bytes pass through untouched apart from the recorded redaction/truncation operations.
+- Optional fields that are absent are **omitted entirely**, never serialized as `null`.
+- **Fixtures are canonical-byte fixtures:** the shared fixture set (fixed decision 9) contains, for each case, the logical payload, the expected canonical byte sequence, and the expected SHA-256 digest. Both the CLI and the server must reproduce the bytes and digest exactly; a fixture mismatch on either side is a contract break, not a warning.
 
 ## 9. Local command trust boundary
 
@@ -335,6 +406,7 @@ B5. Local evidence → review reasoning (`unverified_client` labeling).
 | T9 | Cost/DoS: oversized payloads or hot-loop resubmission (no idempotency) | B3 | Hard payload caps (4.4), server-owned token budget, ≤120s deadline with model abort (6); single Principal limits blast radius; spend monitoring stays advisory |
 | T10 | Server-side retention creating a new data store to breach | B3 | Nothing persisted (5); logs carry metadata only |
 | T11 | Replay of a captured payload by a network observer | B2 | Internal endpoint over TLS with bearer token; acceptable residual risk for a single-user alpha — revisit before any multi-user phase |
+| T12 | Filesystem race (TOCTOU): a classified-safe file is swapped for a symlink or secret-bearing content before it is read | B1 | Race-safe capture: no-follow directory-relative opens, post-open `fstat` identity verification, checks applied to the bytes actually read, exclusion as the only failure mode (7.3) |
 
 ### Residual risks (accepted for the alpha)
 
