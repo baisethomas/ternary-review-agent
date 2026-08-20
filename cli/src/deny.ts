@@ -12,6 +12,7 @@
 import { unifiedDiff } from "./diff.js";
 import { isIgnored } from "./ignore.js";
 import type { LoadedPolicy } from "./ignore.js";
+import { encodePathString } from "./pathbytes.js";
 import { isKeyMaterialContent, redactSecretSpans } from "./secrets.js";
 import {
   assertNoCaseCollisions,
@@ -207,7 +208,7 @@ export function runExclusionPipeline(
   const snapshot: SnapshotEntry[] = [];
   const isChangeset = capture.kind === "changeset";
   for (const pre of capture.preExcluded) {
-    withheldFiles.push({ path: escapeIllFormed(pre.path), class: pre.class });
+    withheldFiles.push({ path: encodePathString(pre.path).path, class: pre.class });
   }
   let totalSourceBytes = 0;
   let contentCharsUsed = 0;
@@ -218,7 +219,13 @@ export function runExclusionPipeline(
   const normalized: Array<{ candidate: Candidate; path: string }> = [];
   for (const candidate of capture.candidates) {
     if (!candidate.path.isWellFormed()) {
-      withheldFiles.push({ path: escapeIllFormed(candidate.path), class: "invalid_path" });
+      // A path string that is not well-formed Unicode (lone surrogates) is
+      // re-encoded losslessly rather than dropped (spec 7.2).
+      const encoded = encodePathString(candidate.path);
+      normalized.push({
+        candidate: { ...candidate, path: encoded.path, pathEncoded: true },
+        path: normalizePath(encoded.path),
+      });
       continue;
     }
     normalized.push({ candidate, path: normalizePath(candidate.path) });
@@ -239,6 +246,21 @@ export function runExclusionPipeline(
       continue;
     }
     // Stage 3: shape-specific handling.
+    if (candidate.pathEncoded === true) {
+      // Invalid UTF-8 in the path (spec 7.2): the manifest carries the
+      // lossless escaped path, the content is excluded, and the exclusion is
+      // recorded. The file is never opened — the escaped string does not name
+      // it on disk.
+      manifest.push({
+        path,
+        status: candidate.status,
+        size: 0,
+        mode: candidate.mode,
+        contentIncluded: false,
+      });
+      withheldFiles.push({ path, class: "invalid_path" });
+      continue;
+    }
     if (candidate.kind === "deleted") {
       manifest.push({
         path,
@@ -465,17 +487,3 @@ function sliceUtf8(text: string, maxBytes: number): string {
   return sliced.isWellFormed() ? sliced : text.slice(0, Math.max(0, end - 1));
 }
 
-// Ill-formed path strings (invalid UTF-8 on disk) are excluded; the recorded
-// path escapes each lone surrogate so the record itself stays well-formed.
-// Byte-lossless encoding of invalid paths is TER-36.
-export function escapeIllFormed(path: string): string {
-  let out = "";
-  for (const unit of path.split("")) {
-    const code = unit.charCodeAt(0);
-    out +=
-      code >= 0xd800 && code <= 0xdfff && !unit.isWellFormed()
-        ? `\\u${code.toString(16).padStart(4, "0")}`
-        : unit;
-  }
-  return out;
-}

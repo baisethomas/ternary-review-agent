@@ -283,6 +283,44 @@ describe("exclusion pipeline", () => {
     expect(outcome.redaction.withheldFiles).toEqual([{ path: "racy.ts", class: "unverifiable" }]);
   });
 
+  it("represents invalid-UTF-8 paths losslessly and excludes their content", () => {
+    // capture.ts hands the pipeline an already-encoded path; this is the
+    // pipeline half of spec 7.2 (the encoder itself is pathbytes.test.ts).
+    const capture = fakeCapture([
+      { ...worktreeFile("caf%E9.ts", "added"), pathEncoded: true as const },
+      worktreeFile("ok.ts"),
+    ]);
+    const outcome = runExclusionPipeline(capture, NO_POLICY, DEFAULT_CAPS, fakeReaders({
+      "caf%E9.ts": "must never be read",
+      "ok.ts": "fine\n",
+    }));
+    expect(outcome.manifest).toContainEqual({
+      path: "caf%E9.ts",
+      status: "added",
+      size: 0,
+      mode: "regular",
+      contentIncluded: false,
+    });
+    expect(outcome.redaction.withheldFiles).toContainEqual({
+      path: "caf%E9.ts",
+      class: "invalid_path",
+    });
+    const bytes = canonicalBytes(payloadFromOutcome(outcome)).toString("utf8");
+    expect(bytes).not.toContain("must never be read");
+  });
+
+  it("re-encodes ill-formed path strings instead of dropping them", () => {
+    const lone = `bad${String.fromCharCode(0xdc80)}.ts`;
+    const capture = fakeCapture([worktreeFile(lone)]);
+    const outcome = runExclusionPipeline(capture, NO_POLICY, DEFAULT_CAPS, fakeReaders({}));
+    expect(outcome.redaction.withheldFiles).toEqual([
+      { path: "bad%ED%B2%80.ts", class: "invalid_path" },
+    ]);
+    expect(canonicalBytes(payloadFromOutcome(outcome)).toString("utf8")).toContain(
+      "bad%ED%B2%80.ts",
+    );
+  });
+
   it("hard-errors on traversal paths, naming the path", () => {
     const capture = fakeCapture([worktreeFile("../escape.ts")]);
     expect(() => runExclusionPipeline(capture, NO_POLICY, DEFAULT_CAPS, fakeReaders({}))).toThrowError(

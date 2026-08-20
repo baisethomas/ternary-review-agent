@@ -157,6 +157,10 @@ export interface Candidate {
   baseSha?: string; // HEAD-side blob sha, for patch bases
   source: "worktree" | "index";
   classifyingStat?: { dev: number; ino: number }; // for TOCTOU verification (7.3)
+  // The path bytes were not valid UTF-8 and are carried in the lossless
+  // escaped form (spec 7.2); such a file contributes no content bytes and is
+  // never opened — its string path does not name the file on disk.
+  pathEncoded?: true;
 }
 
 export interface WorkspaceInfo {

@@ -32,6 +32,8 @@ import { directoryDenyClass } from "./deny.js";
 import type { LoadedPolicy } from "./deny.js";
 import { isIgnored, orderRules, parseIgnoreFile } from "./ignore.js";
 import type { IgnoreRule } from "./ignore.js";
+import { encodePathBytes } from "./pathbytes.js";
+import type { EncodedPath } from "./pathbytes.js";
 import { CollectorError } from "./types.js";
 import type {
   Candidate,
@@ -65,6 +67,45 @@ function git(cwd: string, args: string[]): Buffer {
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
+}
+
+// --- NUL-delimited git output, kept as bytes ---
+//
+// Git's `-z` output is raw bytes: a path that is not valid UTF-8 arrives as
+// such. Decoding the whole buffer to a string would replace those bytes with
+// U+FFFD — lossy, and two distinct files could collapse onto one manifest
+// path. Tokens are therefore split as bytes and only the ASCII field prefixes
+// are decoded as text; paths go through encodePathBytes (spec 7.2).
+
+function splitNulBuffer(out: Buffer): Buffer[] {
+  const tokens: Buffer[] = [];
+  let start = 0;
+  for (let i = 0; i < out.length; i++) {
+    if (out[i] === 0) {
+      tokens.push(out.subarray(start, i));
+      start = i + 1;
+    }
+  }
+  if (start < out.length) tokens.push(out.subarray(start));
+  return tokens;
+}
+
+// Split `count` space-delimited ASCII fields off the front of a token; the
+// remainder is the raw path.
+function splitFieldsBuffer(token: Buffer, count: number): { fields: string[]; path: EncodedPath } {
+  let offset = 0;
+  const fields: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const space = token.indexOf(0x20, offset);
+    if (space === -1) {
+      fields.push(token.subarray(offset).toString("latin1"));
+      offset = token.length;
+      continue;
+    }
+    fields.push(token.subarray(offset, space).toString("latin1"));
+    offset = space + 1;
+  }
+  return { fields, path: encodePathBytes(token.subarray(offset)) };
 }
 
 function gitText(cwd: string, args: string[]): string {
@@ -161,6 +202,7 @@ export function captureWorkspace(rootPath: string, mode: CaptureMode): CaptureRe
 
 interface StatusRecord {
   path: string;
+  pathEncoded: boolean; // path bytes were not valid UTF-8 (spec 7.2)
   from?: string;
   similarity?: number;
   stagedChar: string;
@@ -236,6 +278,12 @@ function enumerateDefault(rootAbs: string): {
       continue;
     }
     const inHead = !ZERO_SHA.test(record.headSha);
+    if (record.pathEncoded) {
+      // Invalid UTF-8 in the path: the manifest carries the lossless escaped
+      // form, the file is never opened, and no content bytes are captured.
+      candidates.push(invalidPathCandidate(record.path, inHead ? "modified" : "added"));
+      continue;
+    }
     if (record.submodule) {
       candidates.push({
         path: record.path,
@@ -277,15 +325,17 @@ function enumerateDefault(rootAbs: string): {
 }
 
 function parseStatusV2(out: Buffer): StatusRecord[] {
-  const tokens = out.toString("utf8").split("\0");
+  const tokens = splitNulBuffer(out);
   const records: StatusRecord[] = [];
   for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i] as string;
-    if (token === "") continue;
-    const type = token[0];
+    const token = tokens[i] as Buffer;
+    if (token.length === 0) continue;
+    const type = String.fromCharCode(token[0] as number);
     if (type === "?") {
+      const path = encodePathBytes(token.subarray(2));
       records.push({
-        path: token.slice(2),
+        path: path.path,
+        pathEncoded: path.encoded,
         stagedChar: ".",
         worktreeChar: ".",
         headSha: "0",
@@ -293,56 +343,32 @@ function parseStatusV2(out: Buffer): StatusRecord[] {
         submodule: false,
         untracked: true,
       });
-    } else if (type === "1") {
-      const [fields, path] = splitFields(token, 8);
-      records.push({
-        path,
-        stagedChar: (fields[1] as string)[0] as string,
-        worktreeChar: (fields[1] as string)[1] as string,
-        headSha: fields[6] as string,
-        indexSha: fields[7] as string,
+    } else if (type === "1" || type === "2" || type === "u") {
+      const count = type === "1" ? 8 : type === "2" ? 9 : 10;
+      const { fields, path } = splitFieldsBuffer(token, count);
+      const xy = fields[1] as string;
+      const shaFields = type === "u" ? [fields[7], fields[8]] : [fields[6], fields[7]];
+      const record: StatusRecord = {
+        path: path.path,
+        pathEncoded: path.encoded,
+        stagedChar: type === "u" ? "U" : (xy[0] as string),
+        worktreeChar: xy[1] as string,
+        headSha: shaFields[0] as string,
+        indexSha: shaFields[1] as string,
         submodule: (fields[2] as string).startsWith("S"),
         untracked: false,
-      });
-    } else if (type === "2") {
-      const [fields, path] = splitFields(token, 9);
-      i++; // consume the NUL-separated original path
-      records.push({
-        path,
-        from: tokens[i],
-        stagedChar: (fields[1] as string)[0] as string,
-        worktreeChar: (fields[1] as string)[1] as string,
-        headSha: fields[6] as string,
-        indexSha: fields[7] as string,
-        submodule: (fields[2] as string).startsWith("S"),
-        untracked: false,
-      });
-    } else if (type === "u") {
-      const [fields, path] = splitFields(token, 10);
-      records.push({
-        path,
-        stagedChar: "U",
-        worktreeChar: (fields[1] as string)[1] as string,
-        headSha: fields[7] as string,
-        indexSha: fields[8] as string,
-        submodule: (fields[2] as string).startsWith("S"),
-        untracked: false,
-      });
+      };
+      if (type === "2") {
+        i++; // consume the NUL-separated original path
+        const original = encodePathBytes((tokens[i] ?? Buffer.alloc(0)) as Buffer);
+        record.from = original.path;
+        record.pathEncoded = record.pathEncoded || original.encoded;
+      }
+      records.push(record);
     }
     // "!" (ignored) and "#" (headers) are not requested and are skipped.
   }
   return records;
-}
-
-function splitFields(token: string, count: number): [string[], string] {
-  const fields: string[] = [];
-  let rest = token;
-  for (let i = 0; i < count; i++) {
-    const space = rest.indexOf(" ");
-    fields.push(rest.slice(0, space));
-    rest = rest.slice(space + 1);
-  }
-  return [fields, rest];
 }
 
 // Staged rename detection for default mode (worktree-wins statuses come from
@@ -375,40 +401,31 @@ interface DiffIndexRecord {
   newSha: string;
   status: string;
   path: string; // rename/copy: destination
+  pathEncoded: boolean;
   fromPath?: string;
 }
 
 function parseDiffIndexZ(out: Buffer): DiffIndexRecord[] {
-  const tokens = out.toString("utf8").split("\0");
+  const tokens = splitNulBuffer(out);
   const records: DiffIndexRecord[] = [];
   for (let i = 0; i < tokens.length; i++) {
-    const meta = tokens[i] as string;
+    const meta = (tokens[i] as Buffer).toString("latin1");
     if (!meta.startsWith(":")) continue;
     const parts = meta.slice(1).split(" ");
     const status = parts[4] as string;
     const isPair = status.startsWith("R") || status.startsWith("C");
-    const first = tokens[++i] as string;
-    if (isPair) {
-      const second = tokens[++i] as string;
-      records.push({
-        oldMode: parts[0] as string,
-        newMode: parts[1] as string,
-        oldSha: parts[2] as string,
-        newSha: parts[3] as string,
-        status,
-        path: second,
-        fromPath: first,
-      });
-    } else {
-      records.push({
-        oldMode: parts[0] as string,
-        newMode: parts[1] as string,
-        oldSha: parts[2] as string,
-        newSha: parts[3] as string,
-        status,
-        path: first,
-      });
-    }
+    const first = encodePathBytes(tokens[++i] ?? Buffer.alloc(0));
+    const second = isPair ? encodePathBytes(tokens[++i] ?? Buffer.alloc(0)) : null;
+    records.push({
+      oldMode: parts[0] as string,
+      newMode: parts[1] as string,
+      oldSha: parts[2] as string,
+      newSha: parts[3] as string,
+      status,
+      path: second === null ? first.path : second.path,
+      pathEncoded: first.encoded || (second?.encoded ?? false),
+      ...(second === null ? {} : { fromPath: first.path }),
+    });
   }
   return records;
 }
@@ -430,6 +447,10 @@ function enumerateStaged(
         ? (toWorkspaceRelative(record.fromPath, prefix) ?? record.fromPath)
         : undefined;
     const letter = record.status[0] as string;
+    if (record.pathEncoded) {
+      candidates.push(invalidPathCandidate(rel, letter === "A" ? "added" : "modified"));
+      continue;
+    }
     if (letter === "D") {
       candidates.push({
         path: rel,
@@ -497,25 +518,32 @@ function enumerateGitSnapshot(rootAbs: string): {
   const prefix = relative(toplevel, rootAbs).split(sep).join("/");
   const preExcluded: Array<{ path: string; class: string }> = [];
   // Tracked entry metadata (detects gitlinks/submodules without touching them).
-  const staged = git(toplevel, ["ls-files", "-s", "-z"]).toString("utf8");
   const gitlinks = new Map<string, string>();
-  for (const line of staged.split("\0")) {
-    if (line === "") continue;
-    const tab = line.indexOf("\t");
-    const meta = line.slice(0, tab).split(" ");
-    if (meta[0] === "160000") gitlinks.set(line.slice(tab + 1), meta[1] as string);
+  for (const line of splitNulBuffer(git(toplevel, ["ls-files", "-s", "-z"]))) {
+    if (line.length === 0) continue;
+    const tab = line.indexOf(0x09);
+    const meta = line.subarray(0, tab).toString("latin1").split(" ");
+    if (meta[0] === "160000") {
+      gitlinks.set(encodePathBytes(line.subarray(tab + 1)).path, meta[1] as string);
+    }
   }
-  const names = git(toplevel, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
-    .toString("utf8")
-    .split("\0")
-    .filter((n) => n !== "");
+  const names = splitNulBuffer(
+    git(toplevel, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]),
+  )
+    .filter((n) => n.length > 0)
+    .map((n) => encodePathBytes(n));
   const seen = new Set<string>();
   const candidates: Candidate[] = [];
-  for (const repoRel of names) {
+  for (const name of names) {
+    const repoRel = name.path;
     if (seen.has(repoRel)) continue;
     seen.add(repoRel);
     const rel = toWorkspaceRelative(repoRel, prefix);
     if (rel === null) continue;
+    if (name.encoded) {
+      candidates.push(invalidPathCandidate(rel, "unchanged"));
+      continue;
+    }
     const gitlinkSha = gitlinks.get(repoRel);
     if (gitlinkSha !== undefined) {
       candidates.push({
@@ -562,18 +590,29 @@ function walkWorkspace(rootAbs: string): {
     const own = loadIgnoreFilesIn(rootAbs, relPrefix, "none");
     allRules.push(...own);
     const rules = own.length === 0 ? inherited : [...inherited, ...own];
-    const entries = readdirSync(dirAbs, { withFileTypes: true }).sort((a, b) =>
-      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+    // Dirent names are read as bytes: Node's string decoding replaces invalid
+    // UTF-8 with U+FFFD, which would be lossy and could collapse two distinct
+    // names onto one manifest path (spec 7.2).
+    const entries = readdirSync(dirAbs, { withFileTypes: true, encoding: "buffer" }).sort((a, b) =>
+      Buffer.compare(a.name, b.name),
     );
     for (const entry of entries) {
-      const rel = relPrefix === "" ? entry.name : `${relPrefix}/${entry.name}`;
+      const decoded = encodePathBytes(entry.name);
+      const rel = relPrefix === "" ? decoded.path : `${relPrefix}/${decoded.path}`;
+      if (decoded.encoded) {
+        // The escaped path does not name the entry on disk, so it is never
+        // opened or descended into; only the lossless path is recorded.
+        candidates.push(invalidPathCandidate(rel, "unchanged"));
+        continue;
+      }
+      const name = decoded.path;
       if (entry.isDirectory()) {
-        const denied = directoryDenyClass(entry.name);
+        const denied = directoryDenyClass(name);
         if (denied !== null) {
           preExcluded.push({ path: rel, class: denied });
           continue;
         }
-        if (existsSync(join(dirAbs, entry.name, ".git"))) {
+        if (existsSync(join(dirAbs, name, ".git"))) {
           preExcluded.push({ path: rel, class: "nested_repository" });
           continue;
         }
@@ -581,7 +620,7 @@ function walkWorkspace(rootAbs: string): {
           preExcluded.push({ path: rel, class: "policy_excluded" });
           continue;
         }
-        visit(join(dirAbs, entry.name), rel, rules);
+        visit(join(dirAbs, name), rel, rules);
       } else if (isIgnored(rules, rel)) {
         // Ignored files never surface, matching Git's own behavior for
         // ignored untracked files in the Git capture modes.
@@ -589,7 +628,7 @@ function walkWorkspace(rootAbs: string): {
       } else if (entry.isSymbolicLink()) {
         let target = "";
         try {
-          target = readlinkSync(join(dirAbs, entry.name), "utf8");
+          target = readlinkSync(join(dirAbs, name), "utf8");
         } catch {
           preExcluded.push({ path: rel, class: "unverifiable" });
           continue;
@@ -618,6 +657,20 @@ function walkWorkspace(rootAbs: string): {
 }
 
 // --- Worktree classification and race-safe reading (spec 7.3) ---
+
+// A candidate whose path bytes are not valid UTF-8: represented losslessly,
+// never opened, content always excluded (spec 7.2).
+function invalidPathCandidate(encodedPath: string, status: ManifestStatus): Candidate {
+  return {
+    path: encodedPath,
+    status,
+    kind: "regular",
+    mode: "regular",
+    size: 0,
+    source: "worktree",
+    pathEncoded: true,
+  };
+}
 
 function classifyWorktreeCandidate(
   rootAbs: string,
