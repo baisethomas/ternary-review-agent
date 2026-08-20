@@ -79,3 +79,39 @@ _Avoid_: golden set, benchmark sample
 **Eval Run**:
 One reproducible execution of the evaluation suite against a prompt, model, policy, and retrieval variant, including quality metrics and cost/latency telemetry.
 _Avoid_: benchmark run, experiment trial
+
+## Workspace Review Language
+
+Defined by `docs/workspace-review-spec.md`. These terms extend the language above; none redefines an existing term.
+
+**Workspace Review**:
+Ternary's advisory evaluation of a local changeset or bounded local workspace snapshot, produced without a hosted pull request and carrying a verdict of pass or findings.
+_Avoid_: local review, pre-review, dry-run review, CLI review, Review
+
+**Changeset Review**:
+A Workspace Review whose subject is the difference between a base state (usually HEAD) and the captured working state of a Git workspace.
+_Avoid_: diff review, uncommitted review, patch review
+
+**Snapshot Review**:
+A Workspace Review whose subject is a bounded whole-workspace capture with no base state and no merge boundary.
+_Avoid_: full scan, repo audit, directory review
+
+**Workspace Root**:
+The single directory that bounds everything a Workspace Review may read; no capture, symlink resolution, or command execution escapes it.
+_Avoid_: project dir, cwd, repo root
+
+**Local Policy**:
+The effective, locally resolved configuration a collector applies before transmission — inclusion/exclusion, caps, and capture mode — recorded verbatim in the Canonical Payload.
+_Avoid_: Review Policy, client settings, config blob
+
+**Canonical Payload**:
+The versioned, schema-validated byte sequence a collector produces for one Workspace Review; its digest is computed from the exact canonical bytes transmitted, and it is the complete CLI↔server contract.
+_Avoid_: request body, upload, bundle, wire format
+
+**Principal**:
+The single authenticated internal identity (holder of `TERNARY_CLI_TOKEN`) on whose behalf a Workspace Review runs during the alpha.
+_Avoid_: user account, tenant, installation
+
+**Workspace Scope**:
+The access boundary of one Workspace Review: one Principal plus one Workspace Root at one capture instant; nothing outside it is readable, attributable, or reusable across reviews.
+_Avoid_: Repository Scope, session, namespace
