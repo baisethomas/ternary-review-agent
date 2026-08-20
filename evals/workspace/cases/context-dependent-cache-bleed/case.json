@@ -1,0 +1,22 @@
+{
+  "id": "context-dependent-cache-bleed",
+  "title": "Cache key drops the user scope shared callers rely on",
+  "tags": [
+    "security",
+    "context-dependent",
+    "changeset"
+  ],
+  "kind": "changeset",
+  "expectedFindings": [
+    {
+      "ruleId": "security-data-isolation",
+      "severity": "blocking",
+      "file": "src/lib/profile-cache.ts",
+      "line": 3,
+      "lineTolerance": 5,
+      "titleContains": "cache",
+      "required": true
+    }
+  ],
+  "expectedNonFindings": []
+}

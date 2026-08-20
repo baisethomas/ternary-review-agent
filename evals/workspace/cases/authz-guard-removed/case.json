@@ -1,0 +1,22 @@
+{
+  "id": "authz-guard-removed",
+  "title": "Ownership check deleted from a destructive admin route",
+  "tags": [
+    "security",
+    "authorization",
+    "changeset"
+  ],
+  "kind": "changeset",
+  "expectedFindings": [
+    {
+      "ruleId": "security-authorization",
+      "severity": "blocking",
+      "file": "src/routes/admin.ts",
+      "line": 3,
+      "lineTolerance": 5,
+      "titleContains": "authorization",
+      "required": true
+    }
+  ],
+  "expectedNonFindings": []
+}

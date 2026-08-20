@@ -1,0 +1,22 @@
+{
+  "id": "secret-logging-leak",
+  "title": "Payment secret written to logs and error responses",
+  "tags": [
+    "security",
+    "secret-leakage",
+    "changeset"
+  ],
+  "kind": "changeset",
+  "expectedFindings": [
+    {
+      "ruleId": "security-secret-exposure",
+      "severity": "blocking",
+      "file": "src/lib/payments.ts",
+      "line": 5,
+      "lineTolerance": 6,
+      "titleContains": "secret",
+      "required": true
+    }
+  ],
+  "expectedNonFindings": []
+}

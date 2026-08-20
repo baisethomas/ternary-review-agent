@@ -1,0 +1,32 @@
+{
+  "id": "hallucinated-location-trap",
+  "title": "Off-by-one in pagination; findings must cite the real file",
+  "tags": [
+    "correctness",
+    "hallucination-trap",
+    "changeset"
+  ],
+  "kind": "changeset",
+  "scoreUnmatchedAsFp": true,
+  "expectedFindings": [
+    {
+      "ruleId": "correctness-bounds",
+      "severity": "blocking",
+      "file": "src/lib/pagination.ts",
+      "line": 3,
+      "lineTolerance": 4,
+      "titleContains": "bound",
+      "required": true
+    }
+  ],
+  "expectedNonFindings": [
+    {
+      "file": "src/lib/paging.ts",
+      "topicContains": "bound"
+    },
+    {
+      "file": "src/pagination.ts",
+      "topicContains": "bound"
+    }
+  ]
+}

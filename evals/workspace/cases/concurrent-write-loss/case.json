@@ -1,0 +1,23 @@
+{
+  "id": "concurrent-write-loss",
+  "title": "Unlocked read-modify-write on shared account balance",
+  "tags": [
+    "correctness",
+    "concurrency",
+    "data-loss",
+    "changeset"
+  ],
+  "kind": "changeset",
+  "expectedFindings": [
+    {
+      "ruleId": "correctness-concurrency",
+      "severity": "blocking",
+      "file": "src/lib/wallet.ts",
+      "line": 4,
+      "lineTolerance": 6,
+      "titleContains": "concurren",
+      "required": true
+    }
+  ],
+  "expectedNonFindings": []
+}

@@ -1,0 +1,22 @@
+{
+  "id": "unsafe-input-shell",
+  "title": "Request input interpolated into a shell command",
+  "tags": [
+    "security",
+    "unsafe-input",
+    "changeset"
+  ],
+  "kind": "changeset",
+  "expectedFindings": [
+    {
+      "ruleId": "security-injection",
+      "severity": "blocking",
+      "file": "src/routes/export.ts",
+      "line": 4,
+      "lineTolerance": 5,
+      "titleContains": "inject",
+      "required": true
+    }
+  ],
+  "expectedNonFindings": []
+}

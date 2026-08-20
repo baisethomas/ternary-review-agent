@@ -1,0 +1,16 @@
+{
+  "kind": "snapshot",
+  "workspaceLabel": "inventory-service",
+  "vcs": "git",
+  "branch": "main",
+  "snapshot": [
+    {
+      "path": "src/lib/sql.ts",
+      "content": "// Central query helper: every call site passes parameters separately;\n// string interpolation into SQL is rejected in review.\nexport function query<T>(text: string, params: unknown[]): Promise<T[]> {\n  return pool.query(text, params).then((result) => result.rows);\n}"
+    },
+    {
+      "path": "src/lib/flags.ts",
+      "content": "// TODO(inventory-2210): remove after the rollout completes.\nexport const flags = {\n  newPickingFlow: process.env.FLAG_NEW_PICKING === \"1\",\n  // Deliberately defaults off; ops flips the env var per warehouse.\n};"
+    }
+  ]
+}

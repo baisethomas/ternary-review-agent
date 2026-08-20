@@ -1,0 +1,25 @@
+{
+  "id": "snapshot-established-pattern-trap",
+  "title": "Snapshot: deliberate scaffolding and safe helpers must not alarm",
+  "tags": [
+    "false-positive-bait",
+    "snapshot"
+  ],
+  "kind": "snapshot",
+  "scoreUnmatchedAsFp": true,
+  "expectedFindings": [],
+  "expectedNonFindings": [
+    {
+      "file": "src/lib/sql.ts",
+      "topicContains": "sql"
+    },
+    {
+      "file": "src/lib/flags.ts",
+      "topicContains": "flag"
+    },
+    {
+      "file": "src/lib/flags.ts",
+      "topicContains": "todo"
+    }
+  ]
+}

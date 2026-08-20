@@ -1,0 +1,15 @@
+{
+  "kind": "changeset",
+  "workspaceLabel": "report-service",
+  "vcs": "git",
+  "baseState": {
+    "headSha": "91b04dd"
+  },
+  "changeset": [
+    {
+      "path": "src/lib/format.ts",
+      "status": "modified",
+      "patch": "@@ -1,7 +1,7 @@\n-export function fmtAmt(v: number) {\n-  return new Intl.NumberFormat(\"en-US\", {style: \"currency\", currency: \"USD\"}).format(v);\n+export function formatAmount(value: number) {\n+  return new Intl.NumberFormat(\"en-US\", { style: \"currency\", currency: \"USD\" }).format(value);\n }\n\n-export const fmtPct = (v: number) => `${(v * 100).toFixed(1)}%`;\n+export const formatPercent = (value: number) => `${(value * 100).toFixed(1)}%`;"
+    }
+  ]
+}
