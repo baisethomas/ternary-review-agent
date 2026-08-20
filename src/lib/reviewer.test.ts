@@ -110,6 +110,67 @@ describe("runReview", () => {
     );
   });
 
+  // TER-37 characterization: workspace analysis must not disturb the GitHub
+  // orchestration path — policy application, model-call inputs, and publisher
+  // behavior (comment upsert, inline finding sync, check-run finish) stay as-is.
+  it("characterization: applies policy to the diff and publishes through GitHub unchanged", async () => {
+    const diff = [
+      "diff --git a/src/auth.ts b/src/auth.ts\n+++ b/src/auth.ts\n+drop check",
+      "diff --git a/dist/bundle.js b/dist/bundle.js\n+++ b/dist/bundle.js\n+generated",
+    ].join("\n");
+    mocks.getPullRequestDiff.mockResolvedValue(diff);
+    mocks.runInSandbox.mockResolvedValue({ ok: true, commands: [], durationMs: 100, sandboxId: "sandbox-1" });
+    mocks.getRepositoryReviewContext.mockResolvedValue({ text: "ctx", status: "ok", chunks: [], indexedCommitSha: null, latencyMs: 1 });
+    mocks.upsertPullRequestComment.mockResolvedValue(undefined);
+    mocks.syncFindingReviewComments.mockResolvedValue(undefined);
+    const finding = {
+      ruleId: "security-authorization",
+      findingKey: "security-authorization:check",
+      severity: "blocking",
+      file: "src/auth.ts",
+      line: 3,
+      title: "Authorization removed",
+      explanation: "check() was dropped.",
+    };
+    mocks.generateRoutedReview.mockResolvedValue({
+      verdict: "request_changes",
+      summary: "blocking issue",
+      findings: [finding],
+      sandbox: { ok: true, commands: [], durationMs: 100, sandboxId: "sandbox-1" },
+      authoritativeFindings: true,
+    });
+    const policy = {
+      automaticReview: { opened: true, reopened: true, synchronize: true, readyForReview: true },
+      minimumSeverity: "suggestion" as const,
+      model: "test/model",
+      reviewCommands: [],
+      excludedPaths: ["dist/**"],
+    };
+
+    const result = await runReview({ ...request, policy });
+
+    // Policy application: the excluded path never reaches the model.
+    const [reviewedDiff, , context, passedPolicy] = mocks.generateRoutedReview.mock.calls[0];
+    expect(reviewedDiff).toContain("src/auth.ts");
+    expect(reviewedDiff).not.toContain("dist/bundle.js");
+    expect(context).toBe("ctx");
+    expect(passedPolicy).toEqual(policy);
+
+    // Publisher behavior: summary comment, inline finding sync, failing check run.
+    expect(mocks.upsertPullRequestComment).toHaveBeenCalledWith(
+      "ternary", "agent", 8, "token", expect.stringContaining("Authorization removed"), undefined,
+    );
+    expect(mocks.syncFindingReviewComments).toHaveBeenCalledWith(
+      "ternary", "agent", 8, "abc1234", "token",
+      [expect.objectContaining({ path: "src/auth.ts", line: 3 })],
+      expect.objectContaining({ deadlineAt: expect.any(Number) }),
+    );
+    expect(mocks.finishCheckRun).toHaveBeenCalledWith(
+      "ternary", "agent", 99, "token", "failure", "Review complete", expect.any(String), expect.any(String),
+    );
+    expect(result.verdict).toBe("request_changes");
+  });
+
   it("degrades to an AI-only review when the sandbox is unavailable instead of failing the job", async () => {
     mocks.getPullRequestDiff.mockResolvedValue("diff --git a/a.ts b/a.ts\n+++ b/a.ts\n+change");
     mocks.runInSandbox.mockRejectedValue(new Error("Sandbox creation is paused: monthly quota exhausted"));

@@ -1,0 +1,22 @@
+{
+  "id": "missing-validation-amount",
+  "title": "Transfer endpoint trusts unvalidated request fields",
+  "tags": [
+    "correctness",
+    "missing-validation",
+    "changeset"
+  ],
+  "kind": "changeset",
+  "expectedFindings": [
+    {
+      "ruleId": "correctness-validation",
+      "severity": "warning",
+      "file": "src/routes/transfer.ts",
+      "line": 2,
+      "lineTolerance": 5,
+      "titleContains": "validat",
+      "required": true
+    }
+  ],
+  "expectedNonFindings": []
+}

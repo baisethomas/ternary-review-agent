@@ -1,0 +1,15 @@
+{
+  "kind": "changeset",
+  "workspaceLabel": "catalog-service",
+  "vcs": "git",
+  "baseState": {
+    "headSha": "0c9d411"
+  },
+  "changeset": [
+    {
+      "path": "src/lib/pagination.ts",
+      "status": "added",
+      "content": "export function page<T>(items: T[], pageIndex: number, pageSize: number): T[] {\n  const start = pageIndex * pageSize;\n  const end = start + pageSize + 1;\n  return items.slice(start, end);\n}"
+    }
+  ]
+}

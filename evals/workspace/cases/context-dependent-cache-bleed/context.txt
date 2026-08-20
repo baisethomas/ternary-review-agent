@@ -1,0 +1,6 @@
+### src/routes/profile.ts:12-20 [getProfile]
+export async function getProfile(req: Request) {
+  // cachedProfile is shared across every authenticated user of the pod;
+  // the cache instance is process-global and not per-session.
+  return cachedProfile(req.user.id, req.params.section);
+}

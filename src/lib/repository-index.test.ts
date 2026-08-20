@@ -110,6 +110,63 @@ describe("RepositoryIndexer", () => {
     expect(context.text.length).toBeLessThanOrEqual(3_000);
   });
 
+  // TER-37 characterization: pin the pure primitive behavior (tokenize/symbols/chunking,
+  // candidate selection, bounded-context selection) before extracting it for workspace analysis.
+  describe("characterization: extractable context primitives", () => {
+    it("chunks long files into 120-line windows with 20-line overlap", async () => {
+      const store = new InMemoryRepositoryIndexStore();
+      const content = Array.from({ length: 200 }, (_, index) => `const line${index + 1} = ${index + 1};`).join("\n");
+      const fixture = source({ "long.ts": { sha: "long", content } });
+      await new RepositoryIndexer(store, fixture.repositorySource).update(request);
+
+      const snapshot = await store.get(request);
+      const chunks = snapshot!.files[0].chunks;
+      expect(chunks.map((chunk) => [chunk.startLine, chunk.endLine])).toEqual([[1, 120], [101, 200]]);
+      expect(chunks[0].content.split("\n")).toHaveLength(120);
+    });
+
+    it("selects candidates by source extension, per-file size, bytewise path order, and byte budget", async () => {
+      const store = new InMemoryRepositoryIndexStore();
+      const fixture = source({
+        "b.ts": { sha: "b", content: "export const b = 2" },
+        "a.ts": { sha: "a", content: "export const a = 1" },
+        "binary.exe": { sha: "x", content: "MZ not source" },
+        "huge.ts": { sha: "h", content: "h".repeat(50) },
+      });
+      const indexer = new RepositoryIndexer(store, fixture.repositorySource, { maxFileBytes: 40, maxSourceBytes: 36 });
+      const snapshot = await indexer.update(request);
+
+      // huge.ts fails maxFileBytes; binary.exe fails the source-extension filter;
+      // a.ts and b.ts both fit the 36-byte source budget in path order.
+      expect(snapshot.files.map((file) => file.path)).toEqual(["a.ts", "b.ts"]);
+    });
+
+    it("scores symbol-name matches above plain content matches and renders location headers", async () => {
+      const store = new InMemoryRepositoryIndexStore();
+      const fixture = source({
+        "mentions.ts": { sha: "m", content: "// talks about transferFunds in a comment\nconst other = 1;" },
+        "owner.ts": { sha: "o", content: "export function transferFunds(amount: number) {\n  return amount;\n}" },
+      });
+      const indexer = new RepositoryIndexer(store, fixture.repositorySource);
+      await indexer.update(request);
+
+      const context = await indexer.retrieve(request, "transferFunds");
+      expect(context.chunks[0].path).toBe("owner.ts");
+      expect(context.text).toContain("### owner.ts:1-3 [transferFunds]");
+      expect(context.text).toContain("### mentions.ts:1-2 [other]\n");
+    });
+
+    it("ignores stop-word and short tokens when matching queries", async () => {
+      const store = new InMemoryRepositoryIndexStore();
+      const fixture = source({ "noise.ts": { sha: "n", content: "export const from = 1; // return with this into" } });
+      const indexer = new RepositoryIndexer(store, fixture.repositorySource);
+      await indexer.update(request);
+
+      // Every shared token is either in the ignored set or shorter than 3 chars, so nothing matches.
+      await expect(indexer.retrieve(request, "return export from with this into ab")).resolves.toMatchObject({ chunks: [] });
+    });
+  });
+
   it("bounds total indexed source bytes and prevents late writes after the deadline", async () => {
     const store = new InMemoryRepositoryIndexStore();
     const fixture = source({

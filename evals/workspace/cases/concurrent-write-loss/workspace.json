@@ -1,0 +1,15 @@
+{
+  "kind": "changeset",
+  "workspaceLabel": "billing-service",
+  "vcs": "git",
+  "baseState": {
+    "headSha": "5f2c1aa"
+  },
+  "changeset": [
+    {
+      "path": "src/lib/wallet.ts",
+      "status": "added",
+      "content": "export async function credit(accountId: string, amount: number) {\n  const account = await db.accounts.findOne({ id: accountId });\n  const balance = account.balance + amount;\n  await db.accounts.update({ id: accountId }, { balance });\n  return balance;\n}"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "id": "snapshot-architecture-risk",
+  "title": "Snapshot: unauthenticated admin surface and hardcoded credentials",
+  "tags": [
+    "architecture",
+    "security",
+    "snapshot"
+  ],
+  "kind": "snapshot",
+  "expectedFindings": [
+    {
+      "ruleId": "security-authorization",
+      "severity": "blocking",
+      "file": "src/server.ts",
+      "line": 6,
+      "lineTolerance": 6,
+      "titleContains": "admin",
+      "required": true
+    },
+    {
+      "ruleId": "security-secret-exposure",
+      "severity": "blocking",
+      "file": "src/config.ts",
+      "line": 2,
+      "lineTolerance": 4,
+      "titleContains": "credential",
+      "required": true
+    }
+  ],
+  "expectedNonFindings": []
+}

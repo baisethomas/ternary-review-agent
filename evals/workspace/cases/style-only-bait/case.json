@@ -1,0 +1,26 @@
+{
+  "id": "style-only-bait",
+  "title": "Pure rename and reformat with no behavioral change",
+  "tags": [
+    "false-positive-bait",
+    "style",
+    "changeset"
+  ],
+  "kind": "changeset",
+  "scoreUnmatchedAsFp": true,
+  "expectedFindings": [],
+  "expectedNonFindings": [
+    {
+      "file": "src/lib/format.ts",
+      "topicContains": "rename"
+    },
+    {
+      "file": "src/lib/format.ts",
+      "topicContains": "style"
+    },
+    {
+      "file": "src/lib/format.ts",
+      "topicContains": "naming"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "kind": "changeset",
+  "workspaceLabel": "billing-service",
+  "vcs": "git",
+  "baseState": {
+    "headSha": "5f2c1aa"
+  },
+  "changeset": [
+    {
+      "path": "src/lib/payments.ts",
+      "status": "modified",
+      "patch": "@@ -2,7 +2,10 @@\n export async function charge(amount: number) {\n   const key = process.env.STRIPE_SECRET_KEY;\n   try {\n+    console.log(`charging with key ${key}`);\n     return await stripe.charge(amount, key);\n   } catch (error) {\n-    throw new PaymentError(\"charge failed\");\n+    throw new PaymentError(`charge failed with key ${key}: ${error}`);\n   }\n }"
+    }
+  ]
+}

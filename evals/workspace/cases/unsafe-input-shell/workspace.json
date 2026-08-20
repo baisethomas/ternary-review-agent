@@ -1,0 +1,15 @@
+{
+  "kind": "changeset",
+  "workspaceLabel": "report-service",
+  "vcs": "git",
+  "baseState": {
+    "headSha": "91b04dd"
+  },
+  "changeset": [
+    {
+      "path": "src/routes/export.ts",
+      "status": "added",
+      "content": "import { exec } from \"node:child_process\";\n\nexport function exportReport(req: Request, res: Response) {\n  exec(`pandoc reports/${req.query.name} -o out.pdf`, (error) => {\n    if (error) return res.status(500).send(\"failed\");\n    res.sendFile(\"out.pdf\");\n  });\n}"
+    }
+  ]
+}

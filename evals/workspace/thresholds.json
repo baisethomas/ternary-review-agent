@@ -1,0 +1,6 @@
+{
+  "blockingRecallMin": 0.75,
+  "precisionMin": 0.5,
+  "severityAgreementMin": 0.7,
+  "locationAccuracyMin": 0.7
+}

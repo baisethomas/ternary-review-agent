@@ -1,0 +1,15 @@
+{
+  "kind": "snapshot",
+  "workspaceLabel": "ops-dashboard",
+  "vcs": "none",
+  "snapshot": [
+    {
+      "path": "src/server.ts",
+      "content": "import { routes } from \"./routes\";\nimport { requireAuth } from \"./auth\";\n\napp.use(\"/api\", requireAuth, routes.api);\n// admin mounted before the auth middleware was written; never revisited\napp.use(\"/admin\", routes.admin);\napp.listen(8080);"
+    },
+    {
+      "path": "src/config.ts",
+      "content": "export const config = {\n  databaseUrl: \"postgres://ops:SuperSecret9@db.internal:5432/ops\",\n  sessionSecret: \"keyboard-cat\",\n};"
+    }
+  ]
+}

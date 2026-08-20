@@ -1,0 +1,15 @@
+{
+  "kind": "changeset",
+  "workspaceLabel": "billing-service",
+  "vcs": "git",
+  "baseState": {
+    "headSha": "5f2c1aa"
+  },
+  "changeset": [
+    {
+      "path": "src/routes/transfer.ts",
+      "status": "added",
+      "content": "export async function transfer(req: Request) {\n  const { from, to, amount } = req.body;\n  await wallet.debit(from, amount);\n  await wallet.credit(to, amount);\n  return { ok: true };\n}"
+    }
+  ]
+}

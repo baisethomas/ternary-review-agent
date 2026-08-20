@@ -1,0 +1,15 @@
+{
+  "kind": "changeset",
+  "workspaceLabel": "profile-service",
+  "vcs": "git",
+  "baseState": {
+    "headSha": "77ac210"
+  },
+  "changeset": [
+    {
+      "path": "src/lib/profile-cache.ts",
+      "status": "modified",
+      "patch": "@@ -1,6 +1,6 @@\n export async function cachedProfile(userId: string, section: string) {\n-  const key = `profile:${userId}:${section}`;\n+  const key = `profile:${section}`;\n   const hit = await cache.get(key);\n   if (hit) return hit;\n   return cache.fill(key, () => loadProfile(userId, section));"
+    }
+  ]
+}
