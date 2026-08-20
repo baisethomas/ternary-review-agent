@@ -12,6 +12,7 @@ import { neutralizeControlSequences, renderReport } from "./render.js";
 import {
   DEFAULT_TIMEOUT_MS,
   resolveTransmitConfig,
+  TransmitError,
   transmitCanonicalPayload,
 } from "./transmit.js";
 import type { WorkspaceReviewResult } from "./transmit.js";
@@ -21,7 +22,7 @@ import type { CaptureMode } from "./types.js";
 export interface SubmitIo {
   stdout: (line: string) => void;
   stderr: (line: string) => void;
-  env: NodeJS.ProcessEnv;
+  env: Record<string, string | undefined>;
   stdin: NodeJS.ReadableStream & { isTTY?: boolean };
   /**
    * Optional external abort signal (wired from the CLI entry's SIGINT
@@ -91,8 +92,14 @@ export async function confirmOrThrow(io: SubmitIo, timeoutMs: number = CONFIRM_T
   const rl = createInterface({ input: io.stdin });
   let timer: NodeJS.Timeout | undefined;
   let answer: string | undefined;
+  // Race the confirmation read against the external abort signal too (the
+  // CLI's SIGINT handler; see SubmitIo.signal): without this, the whole-run
+  // SIGINT listener disables Node's default SIGINT kill, and this prompt
+  // never observes `io.signal`, so Ctrl+C here just keeps the prompt
+  // waiting on input/close/the 60s timer instead of ending immediately.
+  let onSignalAbort: (() => void) | undefined;
   try {
-    const outcome = await Promise.race<"answered" | "closed" | "timeout">([
+    const outcome = await Promise.race<"answered" | "closed" | "timeout" | "signalAborted">([
       (async () => {
         const next = await rl[Symbol.asyncIterator]().next();
         answer = next.done ? undefined : next.value;
@@ -106,8 +113,24 @@ export async function confirmOrThrow(io: SubmitIo, timeoutMs: number = CONFIRM_T
       new Promise<"timeout">((resolve) => {
         timer = setTimeout(() => resolve("timeout"), timeoutMs);
       }),
+      new Promise<"signalAborted">((resolve) => {
+        if (io.signal === undefined) return; // no external signal wired: never settles
+        if (io.signal.aborted) {
+          resolve("signalAborted");
+          return;
+        }
+        onSignalAbort = () => resolve("signalAborted");
+        io.signal.addEventListener("abort", onSignalAbort, { once: true });
+      }),
     ]);
 
+    if (outcome === "signalAborted") {
+      // A deliberate user interrupt, reported the same way transmit.ts
+      // reports one: `TransmitError` code "aborted", which runCli maps to
+      // exit code 130 — never a CollectorError, and never Ternary-branded
+      // config/usage text.
+      throw new TransmitError("aborted", "Workspace Review confirmation aborted by interrupt");
+    }
     if (outcome === "timeout") {
       throw new CollectorError(
         "usage",
@@ -119,6 +142,9 @@ export async function confirmOrThrow(io: SubmitIo, timeoutMs: number = CONFIRM_T
     }
   } finally {
     if (timer) clearTimeout(timer);
+    if (io.signal !== undefined && onSignalAbort !== undefined) {
+      io.signal.removeEventListener("abort", onSignalAbort);
+    }
     rl.close();
   }
 }

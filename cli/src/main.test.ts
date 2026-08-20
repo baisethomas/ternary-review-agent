@@ -3,6 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFile
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { runCli } from "./main.js";
@@ -356,5 +357,32 @@ describe("ternary review . --yes (SIGINT during an in-flight submission)", () =>
     } finally {
       await new Promise<void>((resolvePromise) => server.close(() => resolvePromise()));
     }
+  });
+
+  it("also aborts quietly with exit 130 when SIGINT fires while the confirmation prompt is still pending (no --yes)", async () => {
+    const dir = makeDir();
+    g(dir, "init", "-q", "-b", "main");
+    writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
+    g(dir, "add", "-A");
+    g(dir, "commit", "-q", "-m", "base");
+
+    // A TTY-like stdin that never sends an answer: only the (simulated)
+    // interrupt should end the wait, not the 60s confirmation timeout and
+    // not a server round-trip (no server is even started here — the abort
+    // must happen before transmit is ever reached).
+    const stdin = new PassThrough() as PassThrough & { isTTY?: boolean };
+    stdin.isTTY = true;
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 20);
+
+    const r = await runAsync(["review", "."], dir, {
+      stdin,
+      env: {},
+      signal: controller.signal,
+    });
+    expect(r.code).toBe(130);
+    expect(r.err).toEqual([]);
+    expect(r.out.join("\n")).not.toContain("ternary:");
   });
 });
