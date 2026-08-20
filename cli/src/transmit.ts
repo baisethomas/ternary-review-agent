@@ -105,7 +105,7 @@ export interface TransmitConfig {
  * pointing at production until dogfood starts deliberately).
  */
 export function resolveTransmitConfig(
-  env: NodeJS.ProcessEnv,
+  env: Record<string, string | undefined>,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): TransmitConfig {
   const endpoint = env.TERNARY_ENDPOINT;
@@ -147,72 +147,102 @@ export async function transmitCanonicalPayload(
     if (externalSignal.aborted) onExternalAbort();
     else externalSignal.addEventListener("abort", onExternalAbort, { once: true });
   }
-  let response: Response;
+  // The deadline timer and the external-signal listener above must stay live
+  // across the ENTIRE exchange — fetch() (which resolves once headers
+  // arrive) AND full response-body consumption below — so only the outer
+  // `finally` tears them down. A server that sends headers then stalls (or
+  // streams forever) must still hit the deadline, and SIGINT must still
+  // reach an in-flight body read, not just the headers phase.
   try {
-    response = await fetch(config.endpoint, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${config.token}`,
-        "Content-Type": "application/json",
-        "X-Ternary-Payload-Digest": digest,
-        // Explicit no compression, on both directions of the exchange: the
-        // server rejects any Content-Encoding other than identity, and we
-        // decline a compressed response so the bytes we parse are exact.
-        "Content-Encoding": "identity",
-        "Accept-Encoding": "identity",
-      },
-      body: bytes,
-      signal: controller.signal,
-    });
-  } catch (err) {
-    if (controller.signal.aborted) {
-      // Distinguish OUR deadline timer from an external (user-interrupt)
-      // abort: the latter must never be reported as a timeout, and must
-      // never carry config/usage-style text (main.ts maps "aborted" to a
-      // silent exit, not a Ternary-branded error line).
-      if (controller.signal.reason === "interrupted") {
-        throw new TransmitError("aborted", "Workspace Review submission aborted by interrupt");
-      }
-      throw new TransmitError(
-        "client_timeout",
-        `Workspace Review submission timed out after ${config.timeoutMs} ms (client-side timeout; the server may still be working)`,
-      );
+    let response: Response;
+    try {
+      response = await fetch(config.endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.token}`,
+          "Content-Type": "application/json",
+          "X-Ternary-Payload-Digest": digest,
+          // Explicit no compression, on both directions of the exchange: the
+          // server rejects any Content-Encoding other than identity, and we
+          // decline a compressed response so the bytes we parse are exact.
+          "Content-Encoding": "identity",
+          "Accept-Encoding": "identity",
+        },
+        // `Buffer<ArrayBufferLike>` doesn't structurally satisfy DOM's
+        // `ArrayBufferView<ArrayBuffer>` half of `BodyInit`; a plain
+        // `Uint8Array<ArrayBuffer>` view over the same bytes does, with no
+        // re-serialization (still the exact bytes given).
+        body: new Uint8Array(bytes),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      throw classifyTransportError(err, controller, config);
     }
-    throw new TransmitError(
-      "network_error",
-      `Workspace Review submission failed: ${networkErrorReason(err)}`,
-    );
+
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (err) {
+      throw classifyTransportError(err, controller, config);
+    }
+
+    let json: unknown;
+    if (text.length > 0) {
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw new TransmitError(
+          "malformed_response",
+          `the server response was not valid JSON (HTTP ${response.status})`,
+          response.status,
+        );
+      }
+    }
+
+    if (response.ok) {
+      if (!isWorkspaceReviewResult(json)) {
+        throw new TransmitError(
+          "malformed_response",
+          `the server returned HTTP ${response.status} with a response that does not match the expected result shape`,
+          response.status,
+        );
+      }
+      return json;
+    }
+
+    throw mapErrorResponse(response.status, json, response.headers.get("retry-after"));
   } finally {
     clearTimeout(timer);
     if (externalSignal) externalSignal.removeEventListener("abort", onExternalAbort);
   }
+}
 
-  const text = await response.text().catch(() => undefined);
-  let json: unknown;
-  if (text !== undefined && text.length > 0) {
-    try {
-      json = JSON.parse(text);
-    } catch {
-      throw new TransmitError(
-        "malformed_response",
-        `the server response was not valid JSON (HTTP ${response.status})`,
-        response.status,
-      );
+/**
+ * Classify a rejection from either fetch() (headers phase) or
+ * response.text() (body-read phase) the same way: distinguish OUR deadline
+ * timer from an external (user-interrupt) abort — the latter must never be
+ * reported as a timeout, and must never carry config/usage-style text
+ * (main.ts maps "aborted" to a silent exit, not a Ternary-branded error
+ * line) — and fall back to a network error for anything else.
+ */
+function classifyTransportError(
+  err: unknown,
+  controller: AbortController,
+  config: TransmitConfig,
+): TransmitError {
+  if (controller.signal.aborted) {
+    if (controller.signal.reason === "interrupted") {
+      return new TransmitError("aborted", "Workspace Review submission aborted by interrupt");
     }
+    return new TransmitError(
+      "client_timeout",
+      `Workspace Review submission timed out after ${config.timeoutMs} ms (client-side timeout; the server may still be working)`,
+    );
   }
-
-  if (response.ok) {
-    if (!isWorkspaceReviewResult(json)) {
-      throw new TransmitError(
-        "malformed_response",
-        `the server returned HTTP ${response.status} with a response that does not match the expected result shape`,
-        response.status,
-      );
-    }
-    return json;
-  }
-
-  throw mapErrorResponse(response.status, json, response.headers.get("retry-after"));
+  return new TransmitError(
+    "network_error",
+    `Workspace Review submission failed: ${networkErrorReason(err)}`,
+  );
 }
 
 function networkErrorReason(err: unknown): string {

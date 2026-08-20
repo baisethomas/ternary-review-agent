@@ -312,6 +312,59 @@ describe("transmitCanonicalPayload: timeout", () => {
     // 130s default.
     expect(Date.now() - start).toBeLessThan(5_000);
   });
+
+  it(
+    "still fires the deadline when headers arrive but the response body stalls",
+    async () => {
+      server = await startServer((_req, res) => {
+        // Headers (and a status) arrive — fetch() resolves — but the body
+        // never finishes: res.end() is never called. Before the fix, the
+        // deadline timer was cleared right after fetch() resolved, so this
+        // hung past the deadline; the injected 80ms timeout must still be
+        // the one that fires.
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.write('{"verdict":"pass"');
+      });
+      const start = Date.now();
+      await expect(
+        transmitCanonicalPayload(Buffer.from("{}"), "sha256:" + "cd".repeat(32), config(server.url, 80)),
+      ).rejects.toMatchObject({ code: "client_timeout" });
+      expect(Date.now() - start).toBeLessThan(5_000);
+    },
+    5_000,
+  );
+});
+
+describe("transmitCanonicalPayload: external abort during body read", () => {
+  let server: RunningServer | undefined;
+  afterEach(async () => {
+    await server?.close();
+    server = undefined;
+  });
+
+  it(
+    "maps to \"aborted\" when the external signal fires while headers arrived but the body is still stalled",
+    async () => {
+      server = await startServer((_req, res) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.write('{"verdict":"pass"');
+        // Never res.end(): only the external signal should end this.
+      });
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 20);
+      const start = Date.now();
+      await expect(
+        transmitCanonicalPayload(
+          Buffer.from("{}"),
+          "sha256:" + "ce".repeat(32),
+          config(server.url, 5_000), // a long client timeout that must NOT be the one that fires
+          controller.signal,
+        ),
+      ).rejects.toMatchObject({ code: "aborted" });
+      expect(Date.now() - start).toBeLessThan(2_000);
+    },
+    5_000,
+  );
 });
 
 describe("transmitCanonicalPayload: external abort (e.g. CLI SIGINT)", () => {
