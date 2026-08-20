@@ -307,7 +307,17 @@ function enumerateDefault(rootAbs: string): {
       continue;
     }
     const worktreeDeleted = record.worktreeChar === "D";
-    if (worktreeDeleted) {
+    // A staged deletion (`git rm`, index side "D") with no untracked file
+    // recreated at the path: the worktree agrees with the index that the
+    // path is gone, so porcelain reports it as "D." (worktreeChar ".", not
+    // "D") rather than the worktree-delete shape above. Worktree-wins still
+    // applies: if an untracked file was recreated at the path, this record
+    // was already merged with that untracked record above (worktreeChar
+    // stays "." but `untracked` is set), and it falls through to the normal
+    // worktree-read path below so the recreated content wins.
+    const stagedDeleted =
+      !worktreeDeleted && !record.untracked && record.stagedChar === "D" && ZERO_SHA.test(record.indexSha);
+    if (worktreeDeleted || stagedDeleted) {
       // Worktree wins: absent from the worktree means deleted vs HEAD —
       // unless HEAD never had it, in which case there is nothing to report.
       if (inHead) {

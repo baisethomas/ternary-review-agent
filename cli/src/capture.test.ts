@@ -123,6 +123,60 @@ describe("capture-mode matrix (spec 7.1)", () => {
     expect(candidate(result, "gone.ts")?.kind).toBe("deleted");
   });
 
+  it("default mode: a staged deletion (git rm, nothing recreated) is a deletion, not unverifiable", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "gone.ts"), "here\n");
+    commitAll(dir, "base");
+    g(dir, "rm", "-q", "gone.ts");
+    const result = captureWorkspace(dir, "default");
+    expect(candidate(result, "gone.ts")?.status).toBe("deleted");
+    const outcome = runExclusionPipeline(
+      result,
+      result.policy ?? { excludeRules: [], excludePatterns: [] },
+      DEFAULT_CAPS,
+      makeContentReaders(result.workspace.rootAbs, result.workspace),
+    );
+    const entry = outcome.manifest.find((m) => m.path === "gone.ts");
+    expect(entry?.status).toBe("deleted");
+    expect(entry?.contentIncluded).toBe(false);
+    expect(entry?.size).toBe(0);
+    expect(outcome.redaction.withheldFiles).not.toContainEqual({
+      path: "gone.ts",
+      class: "unverifiable",
+    });
+  });
+
+  it("default mode: a staged deletion recreated as an untracked file is captured as content (worktree wins)", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "gone.ts"), "here\n");
+    commitAll(dir, "base");
+    g(dir, "rm", "-q", "gone.ts");
+    writeFileSync(join(dir, "gone.ts"), "recreated\n");
+    const result = captureWorkspace(dir, "default");
+    expect(candidate(result, "gone.ts")?.status).not.toBe("deleted");
+    const outcome = runExclusionPipeline(
+      result,
+      result.policy ?? { excludeRules: [], excludePatterns: [] },
+      DEFAULT_CAPS,
+      makeContentReaders(result.workspace.rootAbs, result.workspace),
+    );
+    expect(outcome.manifest.some((m) => m.path === "gone.ts" && m.status === "deleted")).toBe(false);
+    const changesetEntry = outcome.changeset?.find((c) => c.path === "gone.ts");
+    expect(changesetEntry?.content ?? changesetEntry?.patch).toContain("recreated");
+  });
+
+  it("default mode: staged rename whose target is then deleted in the worktree (documents current behavior)", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "before.ts"), "line one\nline two\nline three\n");
+    commitAll(dir, "base");
+    g(dir, "mv", "before.ts", "after.ts");
+    rmSync(join(dir, "after.ts"));
+    const result = captureWorkspace(dir, "default");
+    // Documents current behavior for a neighboring case surfaced while fixing
+    // the staged-deletion finding; not itself part of that fix (see report).
+    expect(capturedPaths(result)).toEqual([]);
+  });
+
   it("default mode: staged renames are represented as renames, not delete+add", () => {
     const dir = makeRepo();
     writeFileSync(join(dir, "before.ts"), "line one\nline two\nline three\n");
