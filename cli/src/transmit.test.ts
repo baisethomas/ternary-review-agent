@@ -172,15 +172,76 @@ describe("transmitCanonicalPayload: error status mappings", () => {
   });
 
   it("429 rate_limited -> rate_limited", async () => {
-    await expectMapped(429, { error: "rate_limited", retryAfter: 60 }, "rate_limited");
+    // retryAfterSeconds is the field the server actually sends (see
+    // src/lib/workspace-review-route.ts / workspace-review-gate.ts and their
+    // tests) — never a bare `retryAfter`.
+    await expectMapped(429, { error: "rate_limited", retryAfterSeconds: 60 }, "rate_limited");
   });
 
   it("429 concurrency_ceiling -> concurrency_ceiling", async () => {
-    await expectMapped(429, { error: "concurrency_ceiling", retryAfter: 5 }, "concurrency_ceiling");
+    await expectMapped(429, { error: "concurrency_ceiling", retryAfterSeconds: 5 }, "concurrency_ceiling");
   });
 
   it("503 -> gate_unavailable", async () => {
     await expectMapped(503, { error: "gate_unavailable" }, "gate_unavailable");
+  });
+
+  it("rate_limited message carries the retry hint from the body's retryAfterSeconds", async () => {
+    server = await startServer((_req, res) => {
+      res.writeHead(429, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "rate_limited", retryAfterSeconds: 1_800 }));
+    });
+    try {
+      await transmitCanonicalPayload(Buffer.from("{}"), "sha256:" + "cc".repeat(32), config(server.url));
+      throw new Error("expected transmitCanonicalPayload to reject");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TransmitError);
+      expect((err as TransmitError).message).toContain("retry after 1800s");
+    }
+  });
+
+  it("concurrency_ceiling message carries the retry hint from the body's retryAfterSeconds", async () => {
+    server = await startServer((_req, res) => {
+      res.writeHead(429, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "concurrency_ceiling", retryAfterSeconds: 150 }));
+    });
+    try {
+      await transmitCanonicalPayload(Buffer.from("{}"), "sha256:" + "dd".repeat(32), config(server.url));
+      throw new Error("expected transmitCanonicalPayload to reject");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TransmitError);
+      expect((err as TransmitError).message).toContain("retry after 150s");
+    }
+  });
+
+  it("prefers the standard Retry-After response header over the body field when both are present", async () => {
+    server = await startServer((_req, res) => {
+      // Header says 42s; body disagrees at 999s — the header should win.
+      res.writeHead(429, { "Content-Type": "application/json", "Retry-After": "42" });
+      res.end(JSON.stringify({ error: "rate_limited", retryAfterSeconds: 999 }));
+    });
+    try {
+      await transmitCanonicalPayload(Buffer.from("{}"), "sha256:" + "ee".repeat(32), config(server.url));
+      throw new Error("expected transmitCanonicalPayload to reject");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TransmitError);
+      expect((err as TransmitError).message).toContain("retry after 42s");
+      expect((err as TransmitError).message).not.toContain("999");
+    }
+  });
+
+  it("falls back to the body's retryAfterSeconds when no Retry-After header is present", async () => {
+    server = await startServer((_req, res) => {
+      res.writeHead(429, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "rate_limited", retryAfterSeconds: 7 }));
+    });
+    try {
+      await transmitCanonicalPayload(Buffer.from("{}"), "sha256:" + "ff".repeat(32), config(server.url));
+      throw new Error("expected transmitCanonicalPayload to reject");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TransmitError);
+      expect((err as TransmitError).message).toContain("retry after 7s");
+    }
   });
 
   it("504 -> workspace_review_timeout", async () => {

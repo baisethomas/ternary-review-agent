@@ -212,7 +212,7 @@ export async function transmitCanonicalPayload(
     return json;
   }
 
-  throw mapErrorResponse(response.status, json);
+  throw mapErrorResponse(response.status, json, response.headers.get("retry-after"));
 }
 
 function networkErrorReason(err: unknown): string {
@@ -236,7 +236,12 @@ interface StructuredErrorBody {
   // endpoint.md §5).
   field?: string;
   message?: string;
-  retryAfter?: number;
+  // The field the server actually sends for rate_limited/concurrency_ceiling
+  // (see src/lib/workspace-review-gate.ts's WorkspaceGateDecision and
+  // workspace-review-route.ts's response body) — never a bare `retryAfter`.
+  // The server also sends the standard `Retry-After` response header, which
+  // retryAfterSuffix below prefers when present.
+  retryAfterSeconds?: number;
 }
 
 function isStructuredErrorBody(value: unknown): value is StructuredErrorBody {
@@ -247,7 +252,7 @@ function isStructuredErrorBody(value: unknown): value is StructuredErrorBody {
   );
 }
 
-function mapErrorResponse(status: number, body: unknown): TransmitError {
+function mapErrorResponse(status: number, body: unknown, retryAfterHeader: string | null): TransmitError {
   const code = isStructuredErrorBody(body) ? body.error : undefined;
   switch (code) {
     case "unauthorized":
@@ -293,13 +298,13 @@ function mapErrorResponse(status: number, body: unknown): TransmitError {
     case "rate_limited":
       return new TransmitError(
         "rate_limited",
-        `rate limit exceeded; try again later${retryAfterSuffix(body)}`,
+        `rate limit exceeded; try again later${retryAfterSuffix(body, retryAfterHeader)}`,
         status,
       );
     case "concurrency_ceiling":
       return new TransmitError(
         "concurrency_ceiling",
-        `another Workspace Review is already in flight; try again shortly${retryAfterSuffix(body)}`,
+        `another Workspace Review is already in flight; try again shortly${retryAfterSuffix(body, retryAfterHeader)}`,
         status,
       );
     case "workspace_review_timeout":
@@ -329,9 +334,24 @@ function mapErrorResponse(status: number, body: unknown): TransmitError {
   }
 }
 
-function retryAfterSuffix(body: unknown): string {
-  const retryAfter = isStructuredErrorBody(body) ? body.retryAfter : undefined;
-  return typeof retryAfter === "number" ? ` (retry after ${retryAfter}s)` : "";
+/**
+ * Prefer the standard `Retry-After` response header when present and
+ * parseable — it's the interoperable, transport-level signal and doesn't
+ * depend on the body having parsed as JSON at all — falling back to the
+ * body's `retryAfterSeconds` field (the one the server actually sends;
+ * see the `StructuredErrorBody.retryAfterSeconds` doc comment above).
+ */
+function retryAfterSuffix(body: unknown, retryAfterHeader: string | null): string {
+  const fromHeader = parseNonNegativeInt(retryAfterHeader);
+  if (fromHeader !== undefined) return ` (retry after ${fromHeader}s)`;
+  const fromBody = isStructuredErrorBody(body) ? body.retryAfterSeconds : undefined;
+  return typeof fromBody === "number" ? ` (retry after ${fromBody}s)` : "";
+}
+
+function parseNonNegativeInt(value: string | null): number | undefined {
+  if (value === null) return undefined;
+  const parsed = Number(value.trim());
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 function isWorkspaceReviewResult(value: unknown): value is WorkspaceReviewResult {
