@@ -2,11 +2,18 @@
 // The canonical payload shapes below implement docs/workspace-review-spec.md
 // sections 8.2 and 8.4 exactly; any change here is a schema-version change.
 
+import type { LoadedPolicy } from "./ignore.js";
+
 export const SCHEMA_VERSION = "workspace-review/1";
 export const TOOL_NAME = "ternary-cli";
 export const TOOL_VERSION = "0.1.0";
-export const DENY_RULES_VERSION = "ternary-deny/1";
-export const REDACTION_RULES_VERSION = "ternary-redaction/1";
+// Bumped by TER-36: broader path deny classes (browser/keychain exports,
+// .pgpass, .ssh/.gnupg, id_* at any depth), content heuristics beyond the
+// server's mirrored patterns, and HEAD-side patch redaction. The canonical
+// payload SHAPE is unchanged, so schemaVersion stays workspace-review/1
+// (spec 8.1); only the rule-set versions move.
+export const DENY_RULES_VERSION = "ternary-deny/2";
+export const REDACTION_RULES_VERSION = "ternary-redaction/2";
 
 export type ReviewKind = "changeset" | "snapshot";
 export type CaptureMode = "default" | "staged" | "all";
@@ -150,6 +157,10 @@ export interface Candidate {
   baseSha?: string; // HEAD-side blob sha, for patch bases
   source: "worktree" | "index";
   classifyingStat?: { dev: number; ino: number }; // for TOCTOU verification (7.3)
+  // The path bytes were not valid UTF-8 and are carried in the lossless
+  // escaped form (spec 7.2); such a file contributes no content bytes and is
+  // never opened — its string path does not name the file on disk.
+  pathEncoded?: true;
 }
 
 export interface WorkspaceInfo {
@@ -166,6 +177,10 @@ export interface CaptureResult {
   kind: ReviewKind;
   captureMode: CaptureMode;
   candidates: Candidate[];
+  // The Local Policy resolved while enumerating (root and nested ignore
+  // files). Capture owns it because only capture knows which directories
+  // contributed candidates, and it must be read exactly once.
+  policy?: LoadedPolicy;
   // Exclusions decided during enumeration (pruned deny-class directories,
   // nested repositories); merged into redaction.withheldFiles by the pipeline.
   preExcluded: Array<{ path: string; class: string }>;
@@ -175,7 +190,7 @@ export interface CaptureResult {
 // stays free of filesystem/git access (capture.ts owns all reads).
 export type WorktreeReadResult =
   | { ok: true; bytes: Buffer }
-  | { ok: false; reason: "unverifiable" };
+  | { ok: false; reason: "unverifiable" | "hardlink_alias" };
 
 export interface ContentReaders {
   readWorktree(

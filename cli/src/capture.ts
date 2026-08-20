@@ -7,12 +7,13 @@
 // commands (rev-parse, symbolic-ref, status --porcelain=v2, diff-index,
 // ls-files, cat-file) — no checkout, no smudge filters, no LFS downloads.
 //
-// Race-safe reads (spec 7.3): worktree files are opened with O_NOFOLLOW,
-// verified with fstat against the classifying lstat (type + dev/inode), read
-// once, with at most one re-classification retry. Node has no openat-style
-// per-component no-follow traversal; as the documented platform fallback,
-// every ancestor component is lstat-checked to be a non-symlink directory and
-// any unverifiable identity EXCLUDES the file with reason code "unverifiable".
+// Race-safe reads (spec 7.3): every ancestor from the Workspace Root down is
+// opened O_NOFOLLOW|O_DIRECTORY and fstat-matched against its own lstat, all
+// those descriptors stay open across the leaf read, the leaf is opened
+// O_NOFOLLOW and fstat-verified against the classifying lstat, and the chain
+// identities are re-checked before any byte is read. One re-classification
+// retry; any unverifiable identity EXCLUDES the file with reason code
+// "unverifiable".
 
 import { execFileSync } from "node:child_process";
 import {
@@ -27,9 +28,13 @@ import {
   readlinkSync,
   realpathSync,
 } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { directoryDenyClass, isIgnored, parseIgnoreFile } from "./deny.js";
-import type { IgnoreRule, LoadedPolicy } from "./deny.js";
+import { basename, join, relative, resolve, sep } from "node:path";
+import { directoryDenyClass } from "./deny.js";
+import type { LoadedPolicy } from "./deny.js";
+import { isIgnored, orderRules, parseIgnoreFile } from "./ignore.js";
+import type { IgnoreRule } from "./ignore.js";
+import { encodePathBytes } from "./pathbytes.js";
+import type { EncodedPath } from "./pathbytes.js";
 import { CollectorError } from "./types.js";
 import type {
   Candidate,
@@ -63,6 +68,45 @@ function git(cwd: string, args: string[]): Buffer {
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
+}
+
+// --- NUL-delimited git output, kept as bytes ---
+//
+// Git's `-z` output is raw bytes: a path that is not valid UTF-8 arrives as
+// such. Decoding the whole buffer to a string would replace those bytes with
+// U+FFFD — lossy, and two distinct files could collapse onto one manifest
+// path. Tokens are therefore split as bytes and only the ASCII field prefixes
+// are decoded as text; paths go through encodePathBytes (spec 7.2).
+
+function splitNulBuffer(out: Buffer): Buffer[] {
+  const tokens: Buffer[] = [];
+  let start = 0;
+  for (let i = 0; i < out.length; i++) {
+    if (out[i] === 0) {
+      tokens.push(out.subarray(start, i));
+      start = i + 1;
+    }
+  }
+  if (start < out.length) tokens.push(out.subarray(start));
+  return tokens;
+}
+
+// Split `count` space-delimited ASCII fields off the front of a token; the
+// remainder is the raw path.
+function splitFieldsBuffer(token: Buffer, count: number): { fields: string[]; path: EncodedPath } {
+  let offset = 0;
+  const fields: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const space = token.indexOf(0x20, offset);
+    if (space === -1) {
+      fields.push(token.subarray(offset).toString("latin1"));
+      offset = token.length;
+      continue;
+    }
+    fields.push(token.subarray(offset, space).toString("latin1"));
+    offset = space + 1;
+  }
+  return { fields, path: encodePathBytes(token.subarray(offset)) };
 }
 
 function gitText(cwd: string, args: string[]): string {
@@ -121,6 +165,15 @@ export function captureWorkspace(rootPath: string, mode: CaptureMode): CaptureRe
   // toplevel (which reports physical paths). Nothing below the root is ever
   // resolved through symlinks.
   const rootAbs = realpathSync(rootPath);
+  // A Workspace Root is a directory. Passing a file (`ternary review .env`)
+  // is rejected outright rather than treated as a one-file workspace, so no
+  // argument can smuggle a denied file past the deny classes.
+  if (!lstatSync(rootAbs).isDirectory()) {
+    throw new CollectorError(
+      "root_not_a_directory",
+      `the Workspace Root must be a directory: ${rootAbs}`,
+    );
+  }
   const workspace = detectWorkspace(rootAbs);
   if (workspace.vcs === "none") {
     if (mode === "staged") {
@@ -129,25 +182,37 @@ export function captureWorkspace(rootPath: string, mode: CaptureMode): CaptureRe
         `--staged requires a Git repository; ${rootAbs} is not inside one`,
       );
     }
-    const { candidates, preExcluded } = walkWorkspace(rootAbs, loadWalkRules(rootAbs));
-    return { workspace, kind: "snapshot", captureMode: mode, candidates, preExcluded };
+    const { candidates, preExcluded, policy } = walkWorkspace(rootAbs);
+    return { workspace, kind: "snapshot", captureMode: mode, candidates, preExcluded, policy };
   }
-  if (mode === "all") {
-    const { candidates, preExcluded } = enumerateGitSnapshot(rootAbs);
-    return { workspace, kind: "snapshot", captureMode: mode, candidates, preExcluded };
-  }
-  if (mode === "staged") {
-    const { candidates, preExcluded } = enumerateStaged(rootAbs, workspace);
-    return { workspace, kind: "changeset", captureMode: mode, candidates, preExcluded };
-  }
-  const { candidates, preExcluded } = enumerateDefault(rootAbs);
-  return { workspace, kind: "changeset", captureMode: mode, candidates, preExcluded };
+  const enumerated =
+    mode === "all"
+      ? enumerateGitSnapshot(rootAbs)
+      : mode === "staged"
+        ? enumerateStaged(rootAbs, workspace)
+        : enumerateDefault(rootAbs);
+  // Nested .ternaryignore files anywhere a candidate lives are part of the
+  // effective Local Policy; Git already applied .gitignore for us.
+  const policy = loadLocalPolicy(
+    rootAbs,
+    "git",
+    directoriesOf(enumerated.candidates.map((c) => c.path)),
+  );
+  return {
+    workspace,
+    kind: mode === "all" ? "snapshot" : "changeset",
+    captureMode: mode,
+    candidates: enumerated.candidates,
+    preExcluded: enumerated.preExcluded,
+    policy,
+  };
 }
 
 // --- Default mode: HEAD vs combined index + worktree, worktree wins ---
 
 interface StatusRecord {
   path: string;
+  pathEncoded: boolean; // path bytes were not valid UTF-8 (spec 7.2)
   from?: string;
   similarity?: number;
   stagedChar: string;
@@ -223,6 +288,12 @@ function enumerateDefault(rootAbs: string): {
       continue;
     }
     const inHead = !ZERO_SHA.test(record.headSha);
+    if (record.pathEncoded) {
+      // Invalid UTF-8 in the path: the manifest carries the lossless escaped
+      // form, the file is never opened, and no content bytes are captured.
+      candidates.push(invalidPathCandidate(record.path, inHead ? "modified" : "added"));
+      continue;
+    }
     if (record.submodule) {
       candidates.push({
         path: record.path,
@@ -264,15 +335,17 @@ function enumerateDefault(rootAbs: string): {
 }
 
 function parseStatusV2(out: Buffer): StatusRecord[] {
-  const tokens = out.toString("utf8").split("\0");
+  const tokens = splitNulBuffer(out);
   const records: StatusRecord[] = [];
   for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i] as string;
-    if (token === "") continue;
-    const type = token[0];
+    const token = tokens[i] as Buffer;
+    if (token.length === 0) continue;
+    const type = String.fromCharCode(token[0] as number);
     if (type === "?") {
+      const path = encodePathBytes(token.subarray(2));
       records.push({
-        path: token.slice(2),
+        path: path.path,
+        pathEncoded: path.encoded,
         stagedChar: ".",
         worktreeChar: ".",
         headSha: "0",
@@ -280,56 +353,32 @@ function parseStatusV2(out: Buffer): StatusRecord[] {
         submodule: false,
         untracked: true,
       });
-    } else if (type === "1") {
-      const [fields, path] = splitFields(token, 8);
-      records.push({
-        path,
-        stagedChar: (fields[1] as string)[0] as string,
-        worktreeChar: (fields[1] as string)[1] as string,
-        headSha: fields[6] as string,
-        indexSha: fields[7] as string,
+    } else if (type === "1" || type === "2" || type === "u") {
+      const count = type === "1" ? 8 : type === "2" ? 9 : 10;
+      const { fields, path } = splitFieldsBuffer(token, count);
+      const xy = fields[1] as string;
+      const shaFields = type === "u" ? [fields[7], fields[8]] : [fields[6], fields[7]];
+      const record: StatusRecord = {
+        path: path.path,
+        pathEncoded: path.encoded,
+        stagedChar: type === "u" ? "U" : (xy[0] as string),
+        worktreeChar: xy[1] as string,
+        headSha: shaFields[0] as string,
+        indexSha: shaFields[1] as string,
         submodule: (fields[2] as string).startsWith("S"),
         untracked: false,
-      });
-    } else if (type === "2") {
-      const [fields, path] = splitFields(token, 9);
-      i++; // consume the NUL-separated original path
-      records.push({
-        path,
-        from: tokens[i],
-        stagedChar: (fields[1] as string)[0] as string,
-        worktreeChar: (fields[1] as string)[1] as string,
-        headSha: fields[6] as string,
-        indexSha: fields[7] as string,
-        submodule: (fields[2] as string).startsWith("S"),
-        untracked: false,
-      });
-    } else if (type === "u") {
-      const [fields, path] = splitFields(token, 10);
-      records.push({
-        path,
-        stagedChar: "U",
-        worktreeChar: (fields[1] as string)[1] as string,
-        headSha: fields[7] as string,
-        indexSha: fields[8] as string,
-        submodule: (fields[2] as string).startsWith("S"),
-        untracked: false,
-      });
+      };
+      if (type === "2") {
+        i++; // consume the NUL-separated original path
+        const original = encodePathBytes((tokens[i] ?? Buffer.alloc(0)) as Buffer);
+        record.from = original.path;
+        record.pathEncoded = record.pathEncoded || original.encoded;
+      }
+      records.push(record);
     }
     // "!" (ignored) and "#" (headers) are not requested and are skipped.
   }
   return records;
-}
-
-function splitFields(token: string, count: number): [string[], string] {
-  const fields: string[] = [];
-  let rest = token;
-  for (let i = 0; i < count; i++) {
-    const space = rest.indexOf(" ");
-    fields.push(rest.slice(0, space));
-    rest = rest.slice(space + 1);
-  }
-  return [fields, rest];
 }
 
 // Staged rename detection for default mode (worktree-wins statuses come from
@@ -362,40 +411,31 @@ interface DiffIndexRecord {
   newSha: string;
   status: string;
   path: string; // rename/copy: destination
+  pathEncoded: boolean;
   fromPath?: string;
 }
 
 function parseDiffIndexZ(out: Buffer): DiffIndexRecord[] {
-  const tokens = out.toString("utf8").split("\0");
+  const tokens = splitNulBuffer(out);
   const records: DiffIndexRecord[] = [];
   for (let i = 0; i < tokens.length; i++) {
-    const meta = tokens[i] as string;
+    const meta = (tokens[i] as Buffer).toString("latin1");
     if (!meta.startsWith(":")) continue;
     const parts = meta.slice(1).split(" ");
     const status = parts[4] as string;
     const isPair = status.startsWith("R") || status.startsWith("C");
-    const first = tokens[++i] as string;
-    if (isPair) {
-      const second = tokens[++i] as string;
-      records.push({
-        oldMode: parts[0] as string,
-        newMode: parts[1] as string,
-        oldSha: parts[2] as string,
-        newSha: parts[3] as string,
-        status,
-        path: second,
-        fromPath: first,
-      });
-    } else {
-      records.push({
-        oldMode: parts[0] as string,
-        newMode: parts[1] as string,
-        oldSha: parts[2] as string,
-        newSha: parts[3] as string,
-        status,
-        path: first,
-      });
-    }
+    const first = encodePathBytes(tokens[++i] ?? Buffer.alloc(0));
+    const second = isPair ? encodePathBytes(tokens[++i] ?? Buffer.alloc(0)) : null;
+    records.push({
+      oldMode: parts[0] as string,
+      newMode: parts[1] as string,
+      oldSha: parts[2] as string,
+      newSha: parts[3] as string,
+      status,
+      path: second === null ? first.path : second.path,
+      pathEncoded: first.encoded || (second?.encoded ?? false),
+      ...(second === null ? {} : { fromPath: first.path }),
+    });
   }
   return records;
 }
@@ -417,6 +457,10 @@ function enumerateStaged(
         ? (toWorkspaceRelative(record.fromPath, prefix) ?? record.fromPath)
         : undefined;
     const letter = record.status[0] as string;
+    if (record.pathEncoded) {
+      candidates.push(invalidPathCandidate(rel, letter === "A" ? "added" : "modified"));
+      continue;
+    }
     if (letter === "D") {
       candidates.push({
         path: rel,
@@ -484,25 +528,73 @@ function enumerateGitSnapshot(rootAbs: string): {
   const prefix = relative(toplevel, rootAbs).split(sep).join("/");
   const preExcluded: Array<{ path: string; class: string }> = [];
   // Tracked entry metadata (detects gitlinks/submodules without touching them).
-  const staged = git(toplevel, ["ls-files", "-s", "-z"]).toString("utf8");
   const gitlinks = new Map<string, string>();
-  for (const line of staged.split("\0")) {
-    if (line === "") continue;
-    const tab = line.indexOf("\t");
-    const meta = line.slice(0, tab).split(" ");
-    if (meta[0] === "160000") gitlinks.set(line.slice(tab + 1), meta[1] as string);
+  for (const line of splitNulBuffer(git(toplevel, ["ls-files", "-s", "-z"]))) {
+    if (line.length === 0) continue;
+    const tab = line.indexOf(0x09);
+    const meta = line.subarray(0, tab).toString("latin1").split(" ");
+    if (meta[0] === "160000") {
+      gitlinks.set(encodePathBytes(line.subarray(tab + 1)).path, meta[1] as string);
+    }
   }
-  const names = git(toplevel, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
-    .toString("utf8")
-    .split("\0")
-    .filter((n) => n !== "");
+  const names = splitNulBuffer(
+    git(toplevel, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]),
+  )
+    .filter((n) => n.length > 0)
+    .map((n) => encodePathBytes(n));
+  // Nested repositories are excluded entirely, descendants included (spec
+  // 7.2). `ls-files` prunes nothing: an embedded repository surfaces as the
+  // untracked directory entry `nested/`, and files that were tracked before
+  // their directory became a repository keep surfacing individually.
+  const nestedRepoDirs = new Map<string, boolean>();
+  const isNestedRepoDir = (rel: string): boolean => {
+    const cached = nestedRepoDirs.get(rel);
+    if (cached !== undefined) return cached;
+    const repoRel = prefix === "" ? rel : `${prefix}/${rel}`;
+    // A registered submodule also holds a `.git`; it stays metadata-only.
+    const nested = !gitlinks.has(repoRel) && existsSync(join(rootAbs, rel, ".git"));
+    nestedRepoDirs.set(rel, nested);
+    return nested;
+  };
+  // The shallowest nested-repository ancestor of a path, or null.
+  const nestedRepoAncestor = (rel: string): string | null => {
+    const segments = rel.split("/");
+    for (let i = 1; i <= segments.length - 1; i++) {
+      const dir = segments.slice(0, i).join("/");
+      if (isNestedRepoDir(dir)) return dir;
+    }
+    return null;
+  };
+  const excludedNested = new Set<string>();
+  const excludeNested = (dir: string): void => {
+    if (excludedNested.has(dir)) return;
+    excludedNested.add(dir);
+    preExcluded.push({ path: dir, class: "nested_repository" });
+  };
+
   const seen = new Set<string>();
   const candidates: Candidate[] = [];
-  for (const repoRel of names) {
+  for (const name of names) {
+    const repoRel = name.path;
     if (seen.has(repoRel)) continue;
     seen.add(repoRel);
     const rel = toWorkspaceRelative(repoRel, prefix);
     if (rel === null) continue;
+    if (rel.endsWith("/")) {
+      // Directory entry: only embedded repositories surface this way.
+      const dirRel = rel.slice(0, -1);
+      if (isNestedRepoDir(dirRel)) excludeNested(dirRel);
+      continue;
+    }
+    const nestedAncestor = nestedRepoAncestor(rel);
+    if (nestedAncestor !== null) {
+      excludeNested(nestedAncestor);
+      continue;
+    }
+    if (name.encoded) {
+      candidates.push(invalidPathCandidate(rel, "unchanged"));
+      continue;
+    }
     const gitlinkSha = gitlinks.get(repoRel);
     if (gitlinkSha !== undefined) {
       candidates.push({
@@ -523,34 +615,55 @@ function enumerateGitSnapshot(rootAbs: string): {
 
 // --- Non-Git bounded snapshot walk ---
 
-function loadWalkRules(rootAbs: string): IgnoreRule[] {
+// Ignore files that live in one directory, parsed with that directory as
+// their base so their rules stay scoped to it (spec: Local Policy is
+// resolved locally and recorded verbatim).
+function loadIgnoreFilesIn(rootAbs: string, relDir: string, vcs: "git" | "none"): IgnoreRule[] {
   const rules: IgnoreRule[] = [];
-  for (const name of [".gitignore", ".ternaryignore"]) {
-    const file = join(rootAbs, name);
-    if (existsSync(file)) rules.push(...parseIgnoreFile(readFileSync(file, "utf8")));
+  for (const name of ignoreFileNames(vcs)) {
+    const file = relDir === "" ? join(rootAbs, name) : join(rootAbs, relDir, name);
+    if (existsSync(file)) rules.push(...parseIgnoreFile(readFileSync(file, "utf8"), relDir));
   }
   return rules;
 }
 
-function walkWorkspace(
-  rootAbs: string,
-  rules: IgnoreRule[],
-): { candidates: Candidate[]; preExcluded: Array<{ path: string; class: string }> } {
+function walkWorkspace(rootAbs: string): {
+  candidates: Candidate[];
+  preExcluded: Array<{ path: string; class: string }>;
+  policy: LoadedPolicy;
+} {
   const candidates: Candidate[] = [];
   const preExcluded: Array<{ path: string; class: string }> = [];
-  const visit = (dirAbs: string, relPrefix: string): void => {
-    const entries = readdirSync(dirAbs, { withFileTypes: true }).sort((a, b) =>
-      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+  const allRules: IgnoreRule[] = [];
+  const visit = (dirAbs: string, relPrefix: string, inherited: IgnoreRule[]): void => {
+    // Nested ignore files are loaded on the way down, so a deeper file's
+    // rules already win for everything below it.
+    const own = loadIgnoreFilesIn(rootAbs, relPrefix, "none");
+    allRules.push(...own);
+    const rules = own.length === 0 ? inherited : [...inherited, ...own];
+    // Dirent names are read as bytes: Node's string decoding replaces invalid
+    // UTF-8 with U+FFFD, which would be lossy and could collapse two distinct
+    // names onto one manifest path (spec 7.2).
+    const entries = readdirSync(dirAbs, { withFileTypes: true, encoding: "buffer" }).sort((a, b) =>
+      Buffer.compare(a.name, b.name),
     );
     for (const entry of entries) {
-      const rel = relPrefix === "" ? entry.name : `${relPrefix}/${entry.name}`;
+      const decoded = encodePathBytes(entry.name);
+      const rel = relPrefix === "" ? decoded.path : `${relPrefix}/${decoded.path}`;
+      if (decoded.encoded) {
+        // The escaped path does not name the entry on disk, so it is never
+        // opened or descended into; only the lossless path is recorded.
+        candidates.push(invalidPathCandidate(rel, "unchanged"));
+        continue;
+      }
+      const name = decoded.path;
       if (entry.isDirectory()) {
-        const denied = directoryDenyClass(entry.name);
+        const denied = directoryDenyClass(name);
         if (denied !== null) {
           preExcluded.push({ path: rel, class: denied });
           continue;
         }
-        if (existsSync(join(dirAbs, entry.name, ".git"))) {
+        if (existsSync(join(dirAbs, name, ".git"))) {
           preExcluded.push({ path: rel, class: "nested_repository" });
           continue;
         }
@@ -558,7 +671,7 @@ function walkWorkspace(
           preExcluded.push({ path: rel, class: "policy_excluded" });
           continue;
         }
-        visit(join(dirAbs, entry.name), rel);
+        visit(join(dirAbs, name), rel, rules);
       } else if (isIgnored(rules, rel)) {
         // Ignored files never surface, matching Git's own behavior for
         // ignored untracked files in the Git capture modes.
@@ -566,7 +679,7 @@ function walkWorkspace(
       } else if (entry.isSymbolicLink()) {
         let target = "";
         try {
-          target = readlinkSync(join(dirAbs, entry.name), "utf8");
+          target = readlinkSync(join(dirAbs, name), "utf8");
         } catch {
           preExcluded.push({ path: rel, class: "unverifiable" });
           continue;
@@ -586,11 +699,29 @@ function walkWorkspace(
       // Sockets, FIFOs, devices: never captured.
     }
   };
-  visit(rootAbs, "");
-  return { candidates, preExcluded };
+  visit(rootAbs, "", []);
+  const ordered = orderRules(allRules);
+  const excludePatterns = allRules
+    .map((rule) => (rule.base === "" ? rule.pattern : `${rule.base}/:${rule.pattern}`))
+    .sort();
+  return { candidates, preExcluded, policy: { excludeRules: ordered, excludePatterns } };
 }
 
 // --- Worktree classification and race-safe reading (spec 7.3) ---
+
+// A candidate whose path bytes are not valid UTF-8: represented losslessly,
+// never opened, content always excluded (spec 7.2).
+function invalidPathCandidate(encodedPath: string, status: ManifestStatus): Candidate {
+  return {
+    path: encodedPath,
+    status,
+    kind: "regular",
+    mode: "regular",
+    size: 0,
+    source: "worktree",
+    pathEncoded: true,
+  };
+}
 
 function classifyWorktreeCandidate(
   rootAbs: string,
@@ -653,65 +784,190 @@ export function makeContentReaders(rootAbs: string, workspace: WorkspaceInfo): C
   };
 }
 
+// One verified ancestor: the identity its lstat reported and its open FD
+// agreed on. The FD is held until the leaf read completes.
+interface ChainLink {
+  abs: string;
+  dev: number;
+  ino: number;
+}
+
+const DIR_OPEN_FLAGS =
+  fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_DIRECTORY;
+
+// Node exposes no openat/fchdir, so each component is still opened by its
+// cumulative path; holding every ancestor FD open and requiring lstat and
+// fstat to name the same inode detects a persistent replacement, but a
+// flip-flop between the two calls would not be seen. That needs a
+// concurrently running local attacker process, which spec 12 places outside
+// the alpha threat model.
+function openVerifiedChain(rootAbs: string, relPath: string, fds: number[]): ChainLink[] | null {
+  const links: ChainLink[] = [];
+  try {
+    const rootStat = lstatSync(rootAbs);
+    const rootFd = openSync(rootAbs, DIR_OPEN_FLAGS);
+    fds.push(rootFd);
+    const rootFstat = fstatSync(rootFd);
+    if (
+      rootStat.isSymbolicLink() ||
+      !rootFstat.isDirectory() ||
+      rootFstat.dev !== rootStat.dev ||
+      rootFstat.ino !== rootStat.ino
+    ) {
+      throw new Error("identity mismatch");
+    }
+    links.push({ abs: rootAbs, dev: rootStat.dev, ino: rootStat.ino });
+  } catch {
+    // The Workspace Root is the anchor of every containment check; losing it
+    // is the one condition that is not a per-file exclusion.
+    throw new CollectorError(
+      "workspace_root_unverifiable",
+      `the Workspace Root could not be verified as a directory: ${rootAbs}`,
+    );
+  }
+  const segments = relPath.split("/").slice(0, -1);
+  let abs = rootAbs;
+  for (const segment of segments) {
+    if (segment === "" || segment === "." || segment === "..") return null;
+    abs = join(abs, segment);
+    try {
+      const st = lstatSync(abs);
+      if (st.isSymbolicLink() || !st.isDirectory()) return null;
+      const fd = openSync(abs, DIR_OPEN_FLAGS);
+      fds.push(fd);
+      const fst = fstatSync(fd);
+      if (!fst.isDirectory() || fst.dev !== st.dev || fst.ino !== st.ino) return null;
+      links.push({ abs, dev: st.dev, ino: st.ino });
+    } catch {
+      return null;
+    }
+  }
+  return links;
+}
+
+// Re-check the recorded chain identities after the leaf is open and before
+// any byte is read.
+function chainStillIntact(links: readonly ChainLink[]): boolean {
+  for (const link of links) {
+    try {
+      const st = lstatSync(link.abs);
+      if (st.isSymbolicLink() || !st.isDirectory()) return false;
+      if (st.dev !== link.dev || st.ino !== link.ino) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function closeAll(fds: readonly number[]): void {
+  for (const fd of fds) {
+    try {
+      closeSync(fd);
+    } catch {
+      // Already closed or invalid: nothing left to release.
+    }
+  }
+}
+
 function readWorktreeVerified(
   rootAbs: string,
   relPath: string,
   classify: { dev: number; ino: number } | undefined,
 ): WorktreeReadResult {
-  // Platform fallback for openat-per-component: every ancestor must be a
-  // real (non-symlink) directory under the Workspace Root.
   const abs = join(rootAbs, relPath);
-  let ancestor = dirname(abs);
-  try {
-    while (ancestor.length >= rootAbs.length && ancestor !== dirname(ancestor)) {
-      if (lstatSync(ancestor).isSymbolicLink()) return { ok: false, reason: "unverifiable" };
-      if (ancestor === rootAbs) break;
-      ancestor = dirname(ancestor);
-    }
-  } catch {
-    return { ok: false, reason: "unverifiable" };
-  }
-
   let expected = classify;
+  // Any mismatch, in the chain or at the leaf, gets one bounded
+  // re-classification retry and then excludes the path (spec 7.3).
   for (let attempt = 0; attempt < 2; attempt++) {
-    let fd: number | null = null;
+    const fds: number[] = [];
     try {
+      const chain = openVerifiedChain(rootAbs, relPath, fds);
+      if (chain === null) {
+        expected = undefined;
+        continue;
+      }
       if (expected === undefined) {
         const st = lstatSync(abs);
         if (!st.isFile()) return { ok: false, reason: "unverifiable" };
         expected = { dev: st.dev, ino: st.ino };
       }
       // O_NOFOLLOW rejects a symlink in the final component (ELOOP).
-      fd = openSync(abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      const fd = openSync(abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      fds.push(fd);
       const fst = fstatSync(fd);
-      if (fst.isFile() && fst.dev === expected.dev && fst.ino === expected.ino) {
+      if (fst.isFile() && fst.nlink > 1) {
+        // A hard link is the same inode under another name, so an innocent
+        // path can alias a denied file (`notes.txt` linked to `.env`) and the
+        // path-based deny classes would never see it. The alias cannot be
+        // resolved from the open handle, so exclusion is the only safe
+        // answer — and it is recorded, never silent.
+        return { ok: false, reason: "hardlink_alias" };
+      }
+      if (
+        fst.isFile() &&
+        fst.dev === expected.dev &&
+        fst.ino === expected.ino &&
+        chainStillIntact(chain)
+      ) {
         const bytes = readFileSync(fd);
         return { ok: true, bytes };
       }
-      // Identity mismatch: one bounded re-classification retry (spec 7.3).
       expected = undefined;
-    } catch {
+    } catch (error) {
+      if (error instanceof CollectorError) throw error;
       return { ok: false, reason: "unverifiable" };
     } finally {
-      if (fd !== null) closeSync(fd);
+      closeAll(fds);
     }
   }
   return { ok: false, reason: "unverifiable" };
 }
 
 // --- Local Policy loading ---
+//
+// `.ternaryignore` is always ours to interpret (Git knows nothing about it).
+// `.gitignore` is Git's in Git capture modes — ignored files never become
+// candidates there — and ours only in a non-Git workspace.
+//
+// Nested ignore files are honored: every directory that contributes a
+// candidate is checked for its own ignore files, and a deeper file's rules
+// win (ignore.ts orderRules).
 
-export function loadLocalPolicy(rootAbs: string, vcs: "git" | "none"): LoadedPolicy {
-  const sources = vcs === "git" ? [".ternaryignore"] : [".gitignore", ".ternaryignore"];
+export function ignoreFileNames(vcs: "git" | "none"): string[] {
+  return vcs === "git" ? [".ternaryignore"] : [".gitignore", ".ternaryignore"];
+}
+
+/** Every directory prefix of the given relative paths, including "" (root). */
+export function directoriesOf(relPaths: readonly string[]): string[] {
+  const dirs = new Set<string>([""]);
+  for (const rel of relPaths) {
+    const segments = rel.split("/");
+    for (let i = 0; i < segments.length - 1; i++) {
+      dirs.add(segments.slice(0, i + 1).join("/"));
+    }
+  }
+  return [...dirs].sort();
+}
+
+export function loadLocalPolicy(
+  rootAbs: string,
+  vcs: "git" | "none",
+  dirs: readonly string[] = [""],
+): LoadedPolicy {
   const excludeRules: IgnoreRule[] = [];
   const excludePatterns: string[] = [];
-  for (const name of sources) {
-    const file = join(rootAbs, name);
-    if (!existsSync(file)) continue;
-    const rules = parseIgnoreFile(readFileSync(file, "utf8"));
-    excludeRules.push(...rules);
-    for (const rule of rules) excludePatterns.push(rule.pattern);
+  for (const dir of [...dirs].sort()) {
+    for (const name of ignoreFileNames(vcs)) {
+      const file = dir === "" ? join(rootAbs, name) : join(rootAbs, dir, name);
+      if (!existsSync(file)) continue;
+      const rules = parseIgnoreFile(readFileSync(file, "utf8"), dir);
+      excludeRules.push(...rules);
+      for (const rule of rules) {
+        excludePatterns.push(dir === "" ? rule.pattern : `${dir}/:${rule.pattern}`);
+      }
+    }
   }
   excludePatterns.sort();
-  return { excludeRules, excludePatterns };
+  return { excludeRules: orderRules(excludeRules), excludePatterns };
 }

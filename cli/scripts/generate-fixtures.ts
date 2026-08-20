@@ -9,6 +9,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runExclusionPipeline } from "../src/deny.js";
 import { canonicalBytes, digestOf } from "../src/payload.js";
 import {
   DEFAULT_CAPS,
@@ -18,7 +19,7 @@ import {
   TOOL_NAME,
   TOOL_VERSION,
 } from "../src/types.js";
-import type { CanonicalPayload } from "../src/types.js";
+import type { CanonicalPayload, CaptureResult } from "../src/types.js";
 
 const FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures");
 
@@ -147,9 +148,74 @@ const snapshotBasic: CanonicalPayload = {
   },
 };
 
+// A third case built by running the REAL exclusion pipeline over synthetic
+// inputs, so the golden bytes cover redaction as it is actually applied
+// (withheld files, redacted spans, truncation) rather than hand-written
+// metadata. Readers are injected, so this stays a pure, offline computation.
+const REDACTED_FILES: Record<string, string> = {
+  ".env": "API_KEY=fixture-secret-value-not-transmitted\n",
+  "certs/server.pem": "-----BEGIN RSA PRIVATE KEY-----\nMIIfixture\n-----END RSA PRIVATE KEY-----\n",
+  "src/client.ts": `const token = "ghp_${"f".repeat(30)}";\nexport const client = { token };\n`,
+  "src/notes.md": "Deploy with postgres://svc:fixturepassword@db.internal:5432/app\n",
+};
+
+const redactedCapture: CaptureResult = {
+  workspace: { rootAbs: "/fixture", label: "fixture-redacted", vcs: "git", headSha: "b".repeat(40), unborn: false },
+  kind: "changeset",
+  captureMode: "default",
+  candidates: Object.keys(REDACTED_FILES).map((path) => ({
+    path,
+    status: "added" as const,
+    kind: "regular" as const,
+    mode: "regular" as const,
+    size: 0,
+    source: "worktree" as const,
+  })),
+  preExcluded: [],
+};
+
+const redactedOutcome = runExclusionPipeline(
+  redactedCapture,
+  { excludeRules: [], excludePatterns: [] },
+  DEFAULT_CAPS,
+  {
+    readWorktree(relPath) {
+      const content = REDACTED_FILES[relPath];
+      return content === undefined
+        ? { ok: false, reason: "unverifiable" }
+        : { ok: true, bytes: Buffer.from(content, "utf8") };
+    },
+    readBlob: () => null,
+  },
+);
+
+const changesetRedacted: CanonicalPayload = {
+  schemaVersion: SCHEMA_VERSION,
+  kind: "changeset",
+  captureMode: "default",
+  tool: { name: TOOL_NAME, version: TOOL_VERSION },
+  workspace: {
+    label: "fixture-redacted",
+    vcs: "git",
+    baseState: { headSha: "b".repeat(40) },
+  },
+  manifest: redactedOutcome.manifest,
+  ...(redactedOutcome.changeset !== undefined ? { changeset: redactedOutcome.changeset } : {}),
+  context: [],
+  localPolicy: {
+    captureMode: "default",
+    include: ["**"],
+    exclude: [],
+    denyRulesVersion: DENY_RULES_VERSION,
+    caps: DEFAULT_CAPS,
+  },
+  redaction: redactedOutcome.redaction,
+};
+
 mkdirSync(FIXTURES_DIR, { recursive: true });
 for (const [name, payload] of Object.entries({
   "changeset-basic": changesetBasic,
+  "changeset-redacted": changesetRedacted,
   "snapshot-basic": snapshotBasic,
 })) {
   const bytes = canonicalBytes(payload);

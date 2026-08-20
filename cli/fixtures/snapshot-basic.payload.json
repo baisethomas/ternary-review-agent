@@ -51,7 +51,7 @@
       "**"
     ],
     "exclude": [],
-    "denyRulesVersion": "ternary-deny/1",
+    "denyRulesVersion": "ternary-deny/2",
     "caps": {
       "payloadBytes": 2000000,
       "changesetChars": 160000,
@@ -67,7 +67,7 @@
     }
   },
   "redaction": {
-    "rulesVersion": "ternary-redaction/1",
+    "rulesVersion": "ternary-redaction/2",
     "withheldFiles": [],
     "redactedSpans": [],
     "truncated": [],

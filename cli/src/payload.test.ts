@@ -151,6 +151,21 @@ describe("shared contract fixtures (spec 8.4: canonical-byte fixtures)", () => {
     expect(cases.some((c) => c.startsWith("snapshot"))).toBe(true);
   });
 
+  it("includes a case whose bytes were produced with redaction applied", () => {
+    expect(cases).toContain("changeset-redacted");
+    const bytes = readFileSync(join(FIXTURES_DIR, "changeset-redacted.canonical.json"), "utf8");
+    expect(bytes).toContain("[REDACTED]");
+    expect(bytes).toContain('"class":"env_file"');
+    expect(bytes).toContain('"class":"key_material"');
+  });
+
+  it("no fixture carries secret-shaped bytes", () => {
+    for (const name of cases) {
+      const bytes = readFileSync(join(FIXTURES_DIR, `${name}.canonical.json`), "utf8");
+      expect(bytes, name).not.toMatch(/PRIVATE KEY|ghp_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16}/);
+    }
+  });
+
   for (const name of cases) {
     it(`reproduces canonical bytes and digest for ${name}`, () => {
       const logical = JSON.parse(

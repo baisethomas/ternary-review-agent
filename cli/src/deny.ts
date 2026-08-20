@@ -10,6 +10,10 @@
 // Pure module: all filesystem/git reads are injected via ContentReaders.
 
 import { unifiedDiff } from "./diff.js";
+import { isIgnored } from "./ignore.js";
+import type { LoadedPolicy } from "./ignore.js";
+import { encodePathString } from "./pathbytes.js";
+import { isKeyMaterialContent, redactSecretSpans } from "./secrets.js";
 import {
   assertNoCaseCollisions,
   comparePathsBytewise,
@@ -44,10 +48,34 @@ export type DenyClass =
   | "policy_excluded"
   | "snapshot_file_cap"
   | "submodule_metadata_only"
+  | "hardlink_alias"
   | "unverifiable";
 
-const KEY_EXTENSIONS = new Set([".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"]);
-const CREDENTIAL_DIRS = new Set([".aws", ".gcloud", ".azure", ".kube"]);
+const KEY_EXTENSIONS = new Set([
+  ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore",
+  // Apple keychain exports and PKCS#8/PKCS#12 variants (spec 4.2 items 2, 4).
+  ".keychain", ".keychain-db", ".p8", ".pkcs12", ".ppk",
+]);
+const CREDENTIAL_DIRS = new Set([
+  ".aws", ".gcloud", ".azure", ".kube",
+  // Equivalents in the spirit of spec 4.2 item 3 ("or equivalents").
+  ".ssh", ".gnupg", ".password-store", ".chef", ".terraform",
+]);
+// Browser and OS credential stores that show up in home-directory-rooted or
+// accidentally-committed workspaces (spec 4.2 item 4: "browser/keychain
+// exports"). Matched on the basename at any depth.
+const BROWSER_KEYCHAIN_EXPORTS = new Set([
+  "login data",
+  "login data for account",
+  "cookies.sqlite",
+  "logins.json",
+  "key3.db",
+  "key4.db",
+  "signons.sqlite",
+  "cert9.db",
+  "keychain-db",
+  "keepass.kdbx",
+]);
 const VCS_DIRS = new Set([".git", ".hg", ".svn"]);
 const DEPENDENCY_DIRS = new Set([
   "node_modules",
@@ -60,7 +88,12 @@ const DEPENDENCY_DIRS = new Set([
   ".cache",
 ]);
 const BUILD_DIRS = new Set(["dist", "build", ".next", "out", "coverage"]);
-const TOKEN_STORE_NAMES = new Set([".npmrc", ".netrc", ".pypirc", ".git-credentials"]);
+const TOKEN_STORE_NAMES = new Set([
+  ".npmrc", ".netrc", "_netrc", ".pypirc", ".git-credentials",
+  // Postgres password file and other well-known credential files.
+  ".pgpass", ".my.cnf", ".dockercfg", ".s3cfg", ".boto", "credentials.json",
+  ".htpasswd", ".rediscli_auth", ".pgservicefile",
+]);
 const BINARY_EXTENSIONS = new Set([
   ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".icns", ".pdf",
   ".zip", ".gz", ".tgz", ".bz2", ".xz", ".zst", ".tar", ".7z", ".jar",
@@ -92,18 +125,23 @@ export function pathDenyClass(relPath: string): DenyClass | null {
     if (dirClass !== null) return dirClass;
   }
   // Deny class 1: environment files, at any depth, no override.
-  if (base === ".env" || base.startsWith(".env.")) return "env_file";
-  // Deny class 2: private keys and signing material by name.
+  // `.envrc` (direnv) is included: it is an environment file in every sense
+  // that matters here, and exclusion is always the safe failure mode.
+  if (base === ".env" || base === ".envrc" || base.startsWith(".env.")) return "env_file";
+  // Deny class 2: private keys and signing material by name, at any depth.
   const ext = extensionOf(base);
   if (KEY_EXTENSIONS.has(ext)) return "key_material";
-  if (base.startsWith("id_rsa") || base.startsWith("id_ed25519")) return "key_material";
+  if (/^id_(rsa|dsa|ecdsa|ed25519|ecdsa_sk|ed25519_sk)/.test(base)) return "key_material";
   // Deny class 3: cloud credential paths not caught by directory segments.
   if (relPath.includes(".config/gcloud/")) return "credential_dir";
   if (relPath.endsWith(".docker/config.json")) return "credential_dir";
   if (segments.includes(".terraform")) return "credential_dir";
   // Deny class 4 (name-based part): auth and token stores.
   if (TOKEN_STORE_NAMES.has(base)) return "token_store";
-  if (ext === ".tfstate") return "token_store";
+  if (ext === ".tfstate" || ext === ".tfvars" || ext === ".kdbx") return "token_store";
+  if (BROWSER_KEYCHAIN_EXPORTS.has(base.toLowerCase())) return "token_store";
+  // Terraform state backups (`terraform.tfstate.backup`) and rotated secrets.
+  if (base.includes(".tfstate.")) return "token_store";
   // Deny class 5 covered by directoryDenyClass; also a bare file named .git.
   if (VCS_DIRS.has(base)) return "vcs_metadata";
   // Deny class 7: generated single-file artifacts.
@@ -128,12 +166,6 @@ export function isValidUtf8(bytes: Buffer): boolean {
   return Buffer.compare(Buffer.from(bytes.toString("utf8"), "utf8"), bytes) === 0;
 }
 
-const PEM_PRIVATE_KEY = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----/;
-
-export function isKeyMaterialContent(text: string): boolean {
-  return PEM_PRIVATE_KEY.test(text);
-}
-
 const LFS_POINTER_PREFIX = "version https://git-lfs.github.com/spec/v1";
 
 export function isLfsPointer(text: string): boolean {
@@ -141,122 +173,17 @@ export function isLfsPointer(text: string): boolean {
 }
 
 // --- Token redaction (deny class 4, content part) ---
-// Pattern parity with src/lib/secret-redaction.ts; the server applies the
-// same rules as defense in depth (spec 4.3).
+// The rules themselves live in secrets.ts; the first two are byte-for-byte
+// parity with src/lib/secret-redaction.ts, which the server applies as
+// defense in depth (spec 4.3).
 
-const TOKEN_RULES: Array<{ rule: string; pattern: RegExp; replace: (m: string) => string }> = [
-  {
-    rule: "token.known-prefix",
-    pattern: /\b(?:gh[opsu]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g,
-    replace: () => "[REDACTED]",
-  },
-  {
-    rule: "token.authorization-bearer",
-    pattern: /(authorization\s*:\s*bearer\s+)[^\s]+/gi,
-    replace: (m) => m.replace(/(authorization\s*:\s*bearer\s+)[^\s]+/gi, "$1[REDACTED]"),
-  },
-];
-
-export function redactTokens(text: string): {
-  text: string;
-  spans: Array<{ rule: string; count: number }>;
-} {
-  let out = text;
-  const spans: Array<{ rule: string; count: number }> = [];
-  for (const { rule, pattern, replace } of TOKEN_RULES) {
-    const matches = out.match(pattern);
-    if (matches !== null && matches.length > 0) {
-      out = out.replace(pattern, (m) => replace(m));
-      spans.push({ rule, count: matches.length });
-    }
-  }
-  return { text: out, spans };
-}
+export { isKeyMaterialContent, keyMaterialRule, redactSecretSpans } from "./secrets.js";
 
 // --- Ignore files (.gitignore / .ternaryignore) ---
-// Deliberately small glob subset for the alpha: blank lines and comments,
-// `!` negation, leading `/` anchoring, trailing `/` directory patterns,
-// `*`, `?`, and `**`. Full gitignore fidelity is TER-36. In Git capture
-// modes Git itself already honors .gitignore (--exclude-standard /
-// porcelain status); this matcher covers non-Git walks and .ternaryignore.
+// Full gitignore semantics live in ignore.ts, pinned against Git itself.
 
-export interface IgnoreRule {
-  pattern: string;
-  negated: boolean;
-  dirOnly: boolean;
-  regex: RegExp;
-}
-
-export function parseIgnoreFile(content: string): IgnoreRule[] {
-  const rules: IgnoreRule[] = [];
-  for (const rawLine of content.split("\n")) {
-    const line = rawLine.replace(/\r$/, "").trimEnd();
-    if (line === "" || line.startsWith("#")) continue;
-    let body = line;
-    let negated = false;
-    if (body.startsWith("!")) {
-      negated = true;
-      body = body.slice(1);
-    }
-    let dirOnly = false;
-    if (body.endsWith("/")) {
-      dirOnly = true;
-      body = body.slice(0, -1);
-    }
-    if (body === "") continue;
-    const anchored = body.startsWith("/") || body.slice(0, -1).includes("/");
-    if (body.startsWith("/")) body = body.slice(1);
-    const regex = globToRegex(body, anchored);
-    rules.push({ pattern: line, negated, dirOnly, regex });
-  }
-  return rules;
-}
-
-function globToRegex(glob: string, anchored: boolean): RegExp {
-  let re = "";
-  for (let i = 0; i < glob.length; i++) {
-    const ch = glob[i] as string;
-    if (ch === "*") {
-      if (glob[i + 1] === "*") {
-        re += "(?:.*)";
-        i++;
-        if (glob[i + 1] === "/") i++;
-      } else {
-        re += "[^/]*";
-      }
-    } else if (ch === "?") {
-      re += "[^/]";
-    } else {
-      re += ch.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-    }
-  }
-  const prefix = anchored ? "^" : "(?:^|/)";
-  return new RegExp(`${prefix}${re}$`);
-}
-
-// Matches a normalized relative path against rules; last match wins.
-// Pass isDir when the path names a directory so `dir/` rules can match it.
-export function isIgnored(rules: readonly IgnoreRule[], relPath: string, isDir = false): boolean {
-  let ignored = false;
-  const parents = relPath.split("/");
-  for (const rule of rules) {
-    let matched = rule.regex.test(relPath) && (!rule.dirOnly || isDir);
-    if (!matched) {
-      // Directory rules (and plain rules matching a parent directory).
-      let prefix = "";
-      for (let i = 0; i < parents.length - 1; i++) {
-        prefix = prefix === "" ? (parents[i] as string) : `${prefix}/${parents[i] as string}`;
-        if (rule.regex.test(prefix)) {
-          matched = true;
-          break;
-        }
-      }
-      if (!matched && rule.dirOnly) continue;
-    }
-    if (matched) ignored = !rule.negated;
-  }
-  return ignored;
-}
+export { isIgnored, orderRules, parseIgnoreFile } from "./ignore.js";
+export type { IgnoreRule, LoadedPolicy } from "./ignore.js";
 
 // --- Pipeline ---
 
@@ -266,11 +193,6 @@ export interface PipelineOutcome {
   snapshot?: SnapshotEntry[];
   redaction: RedactionMetadata;
   totalSourceBytes: number;
-}
-
-export interface LoadedPolicy {
-  excludeRules: IgnoreRule[]; // .ternaryignore (+ .gitignore on non-Git walks)
-  excludePatterns: string[]; // for EffectiveLocalPolicy, sorted
 }
 
 export function runExclusionPipeline(
@@ -287,7 +209,7 @@ export function runExclusionPipeline(
   const snapshot: SnapshotEntry[] = [];
   const isChangeset = capture.kind === "changeset";
   for (const pre of capture.preExcluded) {
-    withheldFiles.push({ path: escapeIllFormed(pre.path), class: pre.class });
+    withheldFiles.push({ path: encodePathString(pre.path).path, class: pre.class });
   }
   let totalSourceBytes = 0;
   let contentCharsUsed = 0;
@@ -298,7 +220,13 @@ export function runExclusionPipeline(
   const normalized: Array<{ candidate: Candidate; path: string }> = [];
   for (const candidate of capture.candidates) {
     if (!candidate.path.isWellFormed()) {
-      withheldFiles.push({ path: escapeIllFormed(candidate.path), class: "invalid_path" });
+      // A path string that is not well-formed Unicode (lone surrogates) is
+      // re-encoded losslessly rather than dropped (spec 7.2).
+      const encoded = encodePathString(candidate.path);
+      normalized.push({
+        candidate: { ...candidate, path: encoded.path, pathEncoded: true },
+        path: normalizePath(encoded.path),
+      });
       continue;
     }
     normalized.push({ candidate, path: normalizePath(candidate.path) });
@@ -319,6 +247,21 @@ export function runExclusionPipeline(
       continue;
     }
     // Stage 3: shape-specific handling.
+    if (candidate.pathEncoded === true) {
+      // Invalid UTF-8 in the path (spec 7.2): the manifest carries the
+      // lossless escaped path, the content is excluded, and the exclusion is
+      // recorded. The file is never opened — the escaped string does not name
+      // it on disk.
+      manifest.push({
+        path,
+        status: candidate.status,
+        size: 0,
+        mode: candidate.mode,
+        contentIncluded: false,
+      });
+      withheldFiles.push({ path, class: "invalid_path" });
+      continue;
+    }
     if (candidate.kind === "deleted") {
       manifest.push({
         path,
@@ -404,7 +347,7 @@ export function runExclusionPipeline(
     }
     const lfs = isLfsPointer(text);
     // Deny class 4 (content part): token spans are redacted and recorded.
-    const redacted = redactTokens(text);
+    const redacted = redactSecretSpans(text);
     text = redacted.text;
     for (const span of redacted.spans) {
       redactedSpans.push({ path, rule: span.rule, count: span.count });
@@ -412,7 +355,11 @@ export function runExclusionPipeline(
 
     // Stage 5: budgets, deterministic in sorted path order.
     if (isChangeset) {
-      const entry = buildChangesetEntry(candidate, path, text, readers);
+      const built = buildChangesetEntry(candidate, path, text, readers);
+      const entry = built.entry;
+      for (const span of built.spans) {
+        redactedSpans.push({ path, rule: span.rule, count: span.count });
+      }
       const cost = entry.patch?.length ?? entry.content?.length ?? 0;
       let included = true;
       if (contentCharsUsed + cost > caps.changesetChars) {
@@ -497,33 +444,37 @@ export function runExclusionPipeline(
   };
 }
 
+// A unified diff carries the HEAD-side lines verbatim, so the base blob is
+// transmitted content and gets the same treatment as the worktree bytes:
+// key material withholds the patch entirely (the new text is carried instead)
+// and token spans are redacted, both recorded against the entry's path.
 function buildChangesetEntry(
   candidate: Candidate,
   path: string,
   text: string,
   readers: ContentReaders,
-): ChangesetEntry {
+): { entry: ChangesetEntry; spans: Array<{ rule: string; count: number }> } {
+  const from = candidate.from !== undefined ? { from: normalizePath(candidate.from) } : {};
   if (candidate.status === "added" || candidate.baseSha === undefined) {
-    return { path, status: "added", content: text };
+    return { entry: { path, status: "added", content: text }, spans: [] };
   }
   const status = candidate.status === "renamed" ? "renamed" : "modified";
   const baseBytes = readers.readBlob(candidate.baseSha);
   if (baseBytes === null || isBinaryContent(path, baseBytes)) {
     // No usable text base: carry the full new text instead of a patch.
+    return { entry: { path, status, content: text, ...from }, spans: [] };
+  }
+  const baseText = baseBytes.toString("utf8");
+  if (isKeyMaterialContent(baseText)) {
+    // Deny class 2 applies to the base side too: no patch may exist.
     return {
-      path,
-      status,
-      content: text,
-      ...(candidate.from !== undefined ? { from: normalizePath(candidate.from) } : {}),
+      entry: { path, status, content: text, ...from },
+      spans: [{ rule: "patch.base-withheld", count: 1 }],
     };
   }
-  const patch = unifiedDiff(path, baseBytes.toString("utf8"), text);
-  return {
-    path,
-    status,
-    patch,
-    ...(candidate.from !== undefined ? { from: normalizePath(candidate.from) } : {}),
-  };
+  const redactedBase = redactSecretSpans(baseText);
+  const patch = unifiedDiff(path, redactedBase.text, text);
+  return { entry: { path, status, patch, ...from }, spans: redactedBase.spans };
 }
 
 // Truncate a string so its UTF-8 encoding fits maxBytes without splitting a
@@ -537,17 +488,3 @@ function sliceUtf8(text: string, maxBytes: number): string {
   return sliced.isWellFormed() ? sliced : text.slice(0, Math.max(0, end - 1));
 }
 
-// Ill-formed path strings (invalid UTF-8 on disk) are excluded; the recorded
-// path escapes each lone surrogate so the record itself stays well-formed.
-// Byte-lossless encoding of invalid paths is TER-36.
-export function escapeIllFormed(path: string): string {
-  let out = "";
-  for (const unit of path.split("")) {
-    const code = unit.charCodeAt(0);
-    out +=
-      code >= 0xd800 && code <= 0xdfff && !unit.isWellFormed()
-        ? `\\u${code.toString(16).padStart(4, "0")}`
-        : unit;
-  }
-  return out;
-}
