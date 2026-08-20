@@ -40,7 +40,13 @@ export const WORKSPACE_PROMPT_BUDGETS = {
   maxEvidenceOutputChars: 1_500,
 } as const;
 
-export type WorkspacePromptBudgets = typeof WORKSPACE_PROMPT_BUDGETS;
+// Declared with `number` fields, not `typeof WORKSPACE_PROMPT_BUDGETS`: the
+// budgets above are documented as tunable defaults (spec §4.4), and callers
+// (including tests) must be able to pass any number for each budget, not
+// just the specific literal each default happens to be today.
+export type WorkspacePromptBudgets = {
+  [K in keyof typeof WORKSPACE_PROMPT_BUDGETS]: number;
+};
 
 const sharedFindingContract = `Return strict JSON with: summary and findings. Each finding has a ruleId for its stable review-rule family (for example security-authorization or correctness-concurrency), plus a unique findingKey that combines that rule with the affected symbol and remains stable when line numbers or wording change. Each finding also has severity (blocking|warning|suggestion), file, optional line, title, explanation, and optional suggestedFix. Every finding's file must be a path that appears in the provided material — never invent or guess file locations; if you cannot place a problem in a provided path, omit the finding. Report at most ${WORKSPACE_MAX_FINDINGS} findings, most material first. Do not report style preferences.`;
 

@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { runCli } from "./main.js";
@@ -47,16 +49,42 @@ function run(argv: string[], cwd: string): RunResult {
     stderr: (l) => err.push(l),
     cwd,
   });
+  if (code instanceof Promise) {
+    throw new Error("run() got an async (submit-path) result; use runAsync() instead");
+  }
+  return { code, out, err };
+}
+
+async function runAsync(
+  argv: string[],
+  cwd: string,
+  ioOverrides: Partial<Pick<Parameters<typeof runCli>[1], "env" | "stdin" | "signal">> = {},
+): Promise<RunResult> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const code = await runCli(argv, {
+    stdout: (l) => out.push(l),
+    stderr: (l) => err.push(l),
+    cwd,
+    ...ioOverrides,
+  });
   return { code, out, err };
 }
 
 describe("argv wiring", () => {
   const dir = makeDir();
 
-  it("requires --dry-run or --manifest in this phase", () => {
-    const r = run(["review", "."], dir);
+  it("without --yes and without a TTY, the submit path refuses non-interactively (no hangs in CI)", async () => {
+    // No --dry-run/--manifest now means "submit". Inject a non-TTY stdin
+    // explicitly (rather than relying on ambient process.stdin, which is a
+    // TTY when this suite is run interactively) so the refusal is
+    // deterministic: fail fast with a usage/config error (exit 2) rather
+    // than hang waiting for a confirmation that will never come.
+    const fakeStdin = { isTTY: false } as unknown as NodeJS.ReadableStream & { isTTY?: boolean };
+    const r = await runAsync(["review", "."], dir, { stdin: fakeStdin, env: {} });
     expect(r.code).toBe(2);
-    expect(r.err.join("\n")).toContain("transmission is not implemented");
+    expect(r.err.join("\n")).toMatch(/TTY/);
+    expect(r.err.join("\n")).toContain("--yes");
   });
 
   it("rejects unknown flags and commands", () => {
@@ -232,5 +260,129 @@ describe("ternary review . --dry-run (end to end, offline)", () => {
     const text = r.out.join("\n");
     expect(text).not.toContain("\x1b");
     expect(text).toContain("zero​width.ts");
+  });
+});
+
+describe("ternary review . --yes (end to end submit, fake server)", () => {
+  it("captures a real workspace, submits it, and neutralizes a hostile finding title in the rendered result", async () => {
+    const dir = makeDir();
+    g(dir, "init", "-q", "-b", "main");
+    writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
+    g(dir, "add", "-A");
+    g(dir, "commit", "-q", "-m", "base");
+    writeFileSync(join(dir, "a.ts"), "export const a = 2;\n");
+
+    let receivedBody = "";
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        receivedBody = Buffer.concat(chunks).toString("utf8");
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            verdict: "findings",
+            summary: "one finding",
+            findings: [
+              {
+                ruleId: "rule-1",
+                findingKey: "key-1",
+                severity: "warning",
+                file: "a.ts",
+                title: "evil\x1b[31mtitle\x1b[0m",
+                explanation: "explanation text",
+              },
+            ],
+            evidence: [],
+            redactionApplied: 0,
+            droppedFindings: { unknownPath: 0 },
+          }),
+        );
+      });
+    });
+    await new Promise<void>((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("no server address");
+    const endpoint = `http://127.0.0.1:${address.port}/api/workspace-reviews`;
+
+    try {
+      const r = await runAsync(["review", ".", "--yes"], dir, {
+        env: { TERNARY_ENDPOINT: endpoint, TERNARY_CLI_TOKEN: "test-token-canary" },
+      });
+      expect(r.code).toBe(1); // verdict "findings"
+      const text = r.out.join("\n");
+      expect(text).toContain("verdict: findings");
+      // The hostile title is neutralized: no raw ESC byte in the output, but
+      // its escaped form is visible.
+      expect(text).not.toContain("\x1b");
+      expect(text).toContain("\\x1b[31mtitle\\x1b[0m");
+      expect(receivedBody.length).toBeGreaterThan(0);
+    } finally {
+      await new Promise<void>((resolvePromise) => server.close(() => resolvePromise()));
+    }
+  });
+});
+
+describe("ternary review . --yes (SIGINT during an in-flight submission)", () => {
+  it("aborts quietly with exit 130 and no Ternary-branded error text — never a config/usage message", async () => {
+    const dir = makeDir();
+    g(dir, "init", "-q", "-b", "main");
+    writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
+    g(dir, "add", "-A");
+    g(dir, "commit", "-q", "-m", "base");
+
+    // A server that never responds: only the (simulated) interrupt ends
+    // the request — proving the abort path, not a slow-server timeout.
+    const server = http.createServer(() => {
+      /* never call res.end() */
+    });
+    await new Promise<void>((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("no server address");
+    const endpoint = `http://127.0.0.1:${address.port}/api/workspace-reviews`;
+
+    const controller = new AbortController();
+    // Simulates the CLI entry's SIGINT handler firing once the request is
+    // already in flight.
+    setTimeout(() => controller.abort(), 20);
+
+    try {
+      const r = await runAsync(["review", ".", "--yes"], dir, {
+        env: { TERNARY_ENDPOINT: endpoint, TERNARY_CLI_TOKEN: "test-token-canary" },
+        signal: controller.signal,
+      });
+      expect(r.code).toBe(130);
+      expect(r.err).toEqual([]);
+      expect(r.out.join("\n")).not.toContain("ternary:");
+    } finally {
+      await new Promise<void>((resolvePromise) => server.close(() => resolvePromise()));
+    }
+  });
+
+  it("also aborts quietly with exit 130 when SIGINT fires while the confirmation prompt is still pending (no --yes)", async () => {
+    const dir = makeDir();
+    g(dir, "init", "-q", "-b", "main");
+    writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
+    g(dir, "add", "-A");
+    g(dir, "commit", "-q", "-m", "base");
+
+    // A TTY-like stdin that never sends an answer: only the (simulated)
+    // interrupt should end the wait, not the 60s confirmation timeout and
+    // not a server round-trip (no server is even started here — the abort
+    // must happen before transmit is ever reached).
+    const stdin = new PassThrough() as PassThrough & { isTTY?: boolean };
+    stdin.isTTY = true;
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 20);
+
+    const r = await runAsync(["review", "."], dir, {
+      stdin,
+      env: {},
+      signal: controller.signal,
+    });
+    expect(r.code).toBe(130);
+    expect(r.err).toEqual([]);
+    expect(r.out.join("\n")).not.toContain("ternary:");
   });
 });

@@ -9,6 +9,7 @@ import {
   WorkspaceReviewTimeoutError,
   WorkspaceSandboxEvidenceRejectedError,
   type WorkspaceModelRequest,
+  type WorkspaceModelResponse,
 } from "./workspace-analysis";
 import { getWorkspaceSystemPrompt, workspaceReviewSchema } from "./workspace-review-prompts";
 import {
@@ -129,7 +130,7 @@ describe("analyzeWorkspaceReview", () => {
 
   it("aborts an in-flight model request at the deadline and reports a timeout", async () => {
     vi.useFakeTimers();
-    const requestModel: WorkspaceModelRequest = vi.fn((request) => new Promise((_resolve, reject) => {
+    const requestModel: WorkspaceModelRequest = vi.fn((request) => new Promise<WorkspaceModelResponse>((_resolve, reject) => {
       request.signal.addEventListener("abort", () => {
         reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
       });
@@ -145,7 +146,7 @@ describe("analyzeWorkspaceReview", () => {
     vi.useFakeTimers();
     // Deliberately ignores request.signal: the deadline timer, not provider
     // cooperation, must be what ends the review.
-    const requestModel: WorkspaceModelRequest = vi.fn(() => new Promise(() => {}));
+    const requestModel: WorkspaceModelRequest = vi.fn(() => new Promise<WorkspaceModelResponse>(() => {}));
     const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 5_000 }), { requestModel });
     const expectation = expect(pending).rejects.toBeInstanceOf(WorkspaceReviewTimeoutError);
     await vi.advanceTimersByTimeAsync(5_000);
