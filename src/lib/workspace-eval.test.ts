@@ -45,6 +45,8 @@ function labelEchoAnalyzer(cases: LoadedWorkspaceEvalCase[]): WorkspaceEvalAnaly
       summary: `Fixture review for ${evalCase.id}.`,
       findings,
       evidence: input.evidence,
+      redactionApplied: 0,
+      droppedFindings: { unknownPath: 0 },
     };
   };
 }

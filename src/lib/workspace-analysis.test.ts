@@ -7,10 +7,16 @@ import {
   requestOpenRouterWorkspaceModel,
   WORKSPACE_MAX_OUTPUT_TOKENS,
   WorkspaceReviewTimeoutError,
+  WorkspaceSandboxEvidenceRejectedError,
   type WorkspaceModelRequest,
 } from "./workspace-analysis";
 import { getWorkspaceSystemPrompt, workspaceReviewSchema } from "./workspace-review-prompts";
-import { localCheckEvidence, type CheckEvidence, type WorkspaceAnalysisInput } from "./workspace-review-types";
+import {
+  checkEvidenceFromSandboxResult,
+  localCheckEvidence,
+  type CheckEvidence,
+  type WorkspaceAnalysisInput,
+} from "./workspace-review-types";
 
 function changesetInput(overrides: Partial<WorkspaceAnalysisInput> = {}): WorkspaceAnalysisInput {
   return {
@@ -174,6 +180,115 @@ describe("analyzeWorkspaceReview", () => {
     );
     expect(result.findings).toHaveLength(2);
     expect(result.summary).toContain("Policy omitted 3 findings");
+  });
+
+  it("rejects shape-valid sandbox-origin evidence before calling the model (spec §3.2)", async () => {
+    const requestModel = fakeModel({ summary: "ok", findings: [] });
+    const sandboxEvidence = checkEvidenceFromSandboxResult({
+      ok: true,
+      commands: [{ command: "npm test", exitCode: 0, output: "ok" }],
+      durationMs: 10,
+      sandboxId: "sbx_1",
+    });
+    // Shape-valid: origin/trust pairing invariant holds (origin "sandbox" implies trust "isolated").
+    expect(sandboxEvidence.origin).toBe("sandbox");
+    expect(sandboxEvidence.trust).toBe("isolated");
+
+    await expect(analyzeWorkspaceReview(changesetInput({ evidence: [sandboxEvidence] }), { requestModel }))
+      .rejects.toBeInstanceOf(WorkspaceSandboxEvidenceRejectedError);
+    expect(requestModel).not.toHaveBeenCalled();
+  });
+
+  it("accepts local evidence and labels it client-reported in the prompt, never as sandbox evidence", async () => {
+    const requestModel = fakeModel({ summary: "ok", findings: [] });
+    const input = changesetInput({
+      evidence: [localCheckEvidence("npm test", [{ command: "npm test", exitCode: 0, output: "42 passing" }])],
+    });
+
+    await analyzeWorkspaceReview(input, { requestModel });
+
+    const call = vi.mocked(requestModel).mock.calls[0][0];
+    expect(call.input).toContain("\"trust\":\"unverified_client\"");
+    expect(call.input).not.toContain("\"trust\":\"isolated\"");
+  });
+
+  it("redacts secrets in changeset content and evidence output before the model call, and counts the change", async () => {
+    const requestModel = fakeModel({ summary: "ok", findings: [] });
+    const input = changesetInput({
+      changeSet: {
+        kind: "changeset",
+        workspaceLabel: "ternary-agent",
+        vcs: "git",
+        baseState: { headSha: "abc1234" },
+        changeset: [{
+          path: "src/auth.ts",
+          status: "modified",
+          patch: "@@ -1 +1 @@\n-const t = \"x\"\n+const t = \"ghp_aaaaaaaaaaaaaaaaaaaaaaaa\"",
+        }],
+      },
+      evidence: [localCheckEvidence("npm test", [{
+        command: "npm test",
+        exitCode: 1,
+        output: "Authorization: Bearer supersecrettoken123",
+      }])],
+    });
+
+    const result = await analyzeWorkspaceReview(input, { requestModel });
+
+    const call = vi.mocked(requestModel).mock.calls[0][0];
+    expect(call.input).not.toContain("ghp_aaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(call.input).not.toContain("supersecrettoken123");
+    expect(call.input).toContain("[REDACTED]");
+    expect(result.redactionApplied).toBeGreaterThan(0);
+  });
+
+  it("passes clean input through byte-identical and reports zero redactions", async () => {
+    const requestModel = fakeModel({ summary: "ok", findings: [] });
+    const input = changesetInput();
+
+    const result = await analyzeWorkspaceReview(input, { requestModel });
+
+    const call = vi.mocked(requestModel).mock.calls[0][0];
+    expect(call.input).toContain(input.changeSet.changeset![0].patch!);
+    expect(result.redactionApplied).toBe(0);
+  });
+
+  it("drops a finding citing a path outside the submitted material and counts it", async () => {
+    const requestModel = fakeModel({
+      summary: "One issue.",
+      findings: [{ ...blockingFinding, file: "src/lib/hallucinated.ts" }],
+    });
+    const result = await analyzeWorkspaceReview(changesetInput(), { requestModel });
+
+    expect(result.findings).toEqual([]);
+    expect(result.droppedFindings).toEqual({ unknownPath: 1 });
+    expect(result.verdict).toBe("pass");
+  });
+
+  it("retains a finding whose path matches the submitted material, normalizing a leading ./", async () => {
+    const requestModel = fakeModel({
+      summary: "One issue.",
+      findings: [{ ...blockingFinding, file: "./src/auth.ts" }],
+    });
+    const result = await analyzeWorkspaceReview(changesetInput(), { requestModel });
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].file).toBe("src/auth.ts");
+    expect(result.droppedFindings).toEqual({ unknownPath: 0 });
+  });
+
+  it("rejects absolute and traversal finding paths as unknown-path drops", async () => {
+    const requestModel = fakeModel({
+      summary: "Two issues.",
+      findings: [
+        { ...blockingFinding, findingKey: "security-authorization:absolute", file: "/etc/passwd" },
+        { ...blockingFinding, findingKey: "security-authorization:traversal", file: "../../etc/passwd" },
+      ],
+    });
+    const result = await analyzeWorkspaceReview(changesetInput(), { requestModel });
+
+    expect(result.findings).toEqual([]);
+    expect(result.droppedFindings).toEqual({ unknownPath: 2 });
   });
 });
 

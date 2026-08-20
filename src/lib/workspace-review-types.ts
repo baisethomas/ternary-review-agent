@@ -99,6 +99,20 @@ export type WorkspaceReviewResult = {
   summary: string;
   findings: WorkspaceFinding[];
   evidence: CheckEvidence[];
+  /**
+   * Count of inbound text fields (changeset/snapshot content, repository
+   * context, evidence output, workspace label) that `redactSecrets` actually
+   * changed before prompt construction (spec §4.3 defense in depth). Zero
+   * means redaction ran and found nothing to withhold.
+   */
+  redactionApplied: number;
+  /**
+   * Findings dropped by the wrapper's finding-path boundary check (Phase-4
+   * finding hygiene): a finding whose `file` does not normalize to a path
+   * present in the submitted changeset/snapshot material is dropped, never
+   * silently returned.
+   */
+  droppedFindings: { unknownPath: number };
   ai?: {
     model: string;
     latencyMs: number;
