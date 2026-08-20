@@ -1,0 +1,76 @@
+{
+  "schemaVersion": "workspace-review/1",
+  "kind": "snapshot",
+  "captureMode": "all",
+  "tool": {
+    "name": "ternary-cli",
+    "version": "0.1.0"
+  },
+  "workspace": {
+    "label": "fixture-snapshot",
+    "vcs": "none"
+  },
+  "manifest": [
+    {
+      "path": "README.md",
+      "status": "unchanged",
+      "size": 15,
+      "mode": "regular",
+      "contentIncluded": true
+    },
+    {
+      "path": "bin/run",
+      "status": "unchanged",
+      "size": 20,
+      "mode": "executable",
+      "contentIncluded": true
+    },
+    {
+      "path": "docs-link",
+      "status": "unchanged",
+      "size": 9,
+      "mode": "symlink",
+      "linkTarget": "README.md",
+      "contentIncluded": false
+    }
+  ],
+  "snapshot": [
+    {
+      "path": "README.md",
+      "content": "# Fixture repo\n"
+    },
+    {
+      "path": "bin/run",
+      "content": "#!/bin/sh\nexit 0\n"
+    }
+  ],
+  "context": [],
+  "localPolicy": {
+    "captureMode": "all",
+    "include": [
+      "**"
+    ],
+    "exclude": [],
+    "denyRulesVersion": "ternary-deny/1",
+    "caps": {
+      "payloadBytes": 2000000,
+      "changesetChars": 160000,
+      "contextExcerpts": 8,
+      "contextChars": 20000,
+      "snapshotBytes": 400000,
+      "snapshotFiles": 500,
+      "snapshotChunks": 500,
+      "fileBytes": 200000,
+      "evidenceCapturedChars": 24000,
+      "evidenceModelChars": 1500,
+      "manifestEntries": 5000
+    }
+  },
+  "redaction": {
+    "rulesVersion": "ternary-redaction/1",
+    "withheldFiles": [],
+    "redactedSpans": [],
+    "truncated": [],
+    "omittedManifestEntries": 0
+  }
+}

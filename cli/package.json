@@ -1,0 +1,20 @@
+{
+  "name": "ternary-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Offline Workspace Review collector for Ternary. Zero network, zero execution of repository code.",
+  "type": "module",
+  "bin": {
+    "ternary": "./bin/ternary.mjs"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "^5",
+    "vitest": "^3.2.7"
+  }
+}
