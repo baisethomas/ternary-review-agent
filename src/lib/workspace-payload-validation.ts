@@ -324,7 +324,12 @@ function validateContextExcerpt(value: unknown, field: string): PayloadContextEx
   const endLine = requireNonNegativeInteger(raw.endLine, `${field}.endLine`);
   if (startLine < 1) fail(`${field}.startLine`, `${field}.startLine is 1-based`);
   if (endLine < startLine) fail(`${field}.endLine`, `${field}.endLine must be >= ${field}.startLine`);
-  return { path: raw.path as string, startLine, endLine, content: requireString(raw.content, `${field}.content`) };
+  return {
+    path: requireString(raw.path, `${field}.path`),
+    startLine,
+    endLine,
+    content: requireString(raw.content, `${field}.content`),
+  };
 }
 
 function validateEvidence(value: unknown, field: string): PayloadCheckEvidence {

@@ -205,7 +205,10 @@ describe("abuse gate (contract §3)", () => {
     // the gate keyed off the presented token, each token would get its own
     // rate-limit window and concurrency slot — double the allowance. Assert
     // the two authentications enter the gate with the identical identity.
-    const enterGate = vi.fn(async () => ({ status: "allowed" as const, release: async () => {} }));
+    const enterGate = vi.fn(async (principalId: string) => {
+      void principalId;
+      return { status: "allowed" as const, release: async () => {} };
+    });
     const { deps } = makeDeps({
       authEnv: () => ({ TERNARY_CLI_TOKEN: TOKEN, TERNARY_CLI_TOKEN_NEXT: "next-token" }),
       enterGate,
@@ -337,6 +340,19 @@ describe("payload validation and digest (contract §4 step 4)", () => {
     const response = await createWorkspaceReviewHandler(deps)(buildRequest({ body }));
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({ error: "invalid_payload", field: "payload.kind" });
+  });
+
+  it("returns 400 invalid_payload naming a malformed context excerpt path", async () => {
+    const { deps } = makeDeps();
+    const body = JSON.stringify(
+      payloadWith({ context: [{ path: 42, startLine: 1, endLine: 1, content: "x" }] }),
+    );
+    const response = await createWorkspaceReviewHandler(deps)(buildRequest({ body }));
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "invalid_payload",
+      field: "payload.context[0].path",
+    });
   });
 
   it("returns 400 for malformed JSON", async () => {

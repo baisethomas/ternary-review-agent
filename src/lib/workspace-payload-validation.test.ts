@@ -293,6 +293,14 @@ describe("conditional shape rules", () => {
     zeroBased.context = [{ path: "src/a.ts", startLine: 0, endLine: 3, content: "x" }];
     expectInvalid(zeroBased, "payload.context[0].startLine");
   });
+
+  it("rejects a context excerpt whose path is not a string", () => {
+    for (const badPath of [null, 42, { nested: true }, ["a"], true]) {
+      const payload = basePayload();
+      payload.context = [{ path: badPath, startLine: 1, endLine: 3, content: "x" }];
+      expectInvalid(payload, "payload.context[0].path");
+    }
+  });
 });
 
 describe("evidence provenance", () => {
