@@ -49,8 +49,15 @@ function moduleGraph(entry: string): Set<string> {
   return visited;
 }
 
-describe("structural zero-network (module graph)", () => {
-  const graph = moduleGraph(join(SRC_DIR, "main.ts"));
+describe("structural zero-network (module graph): the dry-run/manifest path", () => {
+  // collect.ts is the actual dry-run/manifest code path — capture through
+  // finalized canonical payload — shared by main.ts's --dry-run/--manifest
+  // branch. It must never reach the transmit module. (main.ts itself now
+  // also wires the submit path, which legitimately does reach transmit.ts,
+  // so the module graph rooted at main.ts is no longer the right thing to
+  // assert "no transmit" against — see the "submit path" describe block
+  // below for that positive check.)
+  const graph = moduleGraph(join(SRC_DIR, "collect.ts"));
   const files = [...graph].filter((f) => !f.startsWith("external:")).map((f) => basename(f));
   const externals = [...graph]
     .filter((f) => f.startsWith("external:"))
@@ -58,14 +65,14 @@ describe("structural zero-network (module graph)", () => {
 
   it("covers the collector modules (sanity: the walk is real)", () => {
     for (const expected of [
-      "main.ts", "capture.ts", "deny.ts", "payload.ts", "render.ts", "types.ts",
+      "collect.ts", "capture.ts", "deny.ts", "payload.ts", "types.ts",
       "diff.ts", "ignore.ts", "pathbytes.ts", "secrets.ts",
     ]) {
       expect(files).toContain(expected);
     }
   });
 
-  it("imports no networking transport anywhere in the entry path", () => {
+  it("imports no networking transport anywhere in the dry-run/manifest path", () => {
     for (const external of externals) {
       expect(ALLOWED_EXTERNAL_IMPORTS.has(external), `unexpected import: ${external}`).toBe(true);
     }
@@ -81,6 +88,22 @@ describe("structural zero-network (module graph)", () => {
       expect(source, file).not.toMatch(/\bfetch\s*\(/);
       expect(source, file).not.toMatch(/XMLHttpRequest|WebSocket/);
     }
+  });
+});
+
+describe("structural: the submit path may reach transmit", () => {
+  it("submit.ts's module graph does include the transmit module", () => {
+    const graph = moduleGraph(join(SRC_DIR, "submit.ts"));
+    const files = [...graph].filter((f) => !f.startsWith("external:")).map((f) => basename(f));
+    expect(files).toContain("transmit.ts");
+  });
+
+  it("main.ts wires both the dry-run/manifest path and the submit path", () => {
+    const graph = moduleGraph(join(SRC_DIR, "main.ts"));
+    const files = [...graph].filter((f) => !f.startsWith("external:")).map((f) => basename(f));
+    expect(files).toContain("collect.ts");
+    expect(files).toContain("submit.ts");
+    expect(files).toContain("transmit.ts");
   });
 });
 
