@@ -249,6 +249,67 @@ export function captureWorkspace(rootPath: string, mode: CaptureMode): CaptureRe
   };
 }
 
+// --- Nested-repository detection, shared by every enumeration mode ---
+//
+// A directory holding its own `.git` is excluded entirely unless it is a
+// registered submodule (gitlink), which stays metadata-only instead of
+// vanishing (spec 7.2). This is the same logic `enumerateGitSnapshot` used
+// for `--all`; `enumerateDefault` and `enumerateStaged` reuse it verbatim so
+// a directory that was TRACKED before it gained a `.git` cannot smuggle its
+// descendants past the boundary via git-status/diff-index records instead of
+// the untracked-directory-entry path (TER-40).
+
+// Repo-relative paths (`ls-files -s` scope) recorded as gitlinks (mode
+// 160000): the submodule registry that keeps a real submodule from being
+// misclassified as a nested repository.
+function loadGitlinks(toplevel: string): Map<string, string> {
+  const gitlinks = new Map<string, string>();
+  for (const line of splitNulBuffer(git(toplevel, ["ls-files", "-s", "-z"]))) {
+    if (line.length === 0) continue;
+    const tab = line.indexOf(0x09);
+    const meta = line.subarray(0, tab).toString("latin1").split(" ");
+    if (meta[0] === "160000") {
+      gitlinks.set(encodePathBytes(line.subarray(tab + 1)).path, meta[1] as string);
+    }
+  }
+  return gitlinks;
+}
+
+interface NestedRepoChecker {
+  // Directory (workspace-relative) that itself holds a `.git` and is not a
+  // registered submodule.
+  isNestedRepoDir(rel: string): boolean;
+  // The shallowest nested-repository ancestor of a workspace-relative path,
+  // or null when none of its proper ancestor directories is one.
+  nestedRepoAncestor(rel: string): string | null;
+}
+
+function makeNestedRepoChecker(
+  rootAbs: string,
+  prefix: string,
+  gitlinks: ReadonlyMap<string, string>,
+): NestedRepoChecker {
+  const nestedRepoDirs = new Map<string, boolean>();
+  const isNestedRepoDir = (rel: string): boolean => {
+    const cached = nestedRepoDirs.get(rel);
+    if (cached !== undefined) return cached;
+    const repoRel = prefix === "" ? rel : `${prefix}/${rel}`;
+    // A registered submodule also holds a `.git`; it stays metadata-only.
+    const nested = !gitlinks.has(repoRel) && existsSync(join(rootAbs, rel, ".git"));
+    nestedRepoDirs.set(rel, nested);
+    return nested;
+  };
+  const nestedRepoAncestor = (rel: string): string | null => {
+    const segments = rel.split("/");
+    for (let i = 1; i <= segments.length - 1; i++) {
+      const dir = segments.slice(0, i).join("/");
+      if (isNestedRepoDir(dir)) return dir;
+    }
+    return null;
+  };
+  return { isNestedRepoDir, nestedRepoAncestor };
+}
+
 // --- Default mode: HEAD vs combined index + worktree, worktree wins ---
 
 export interface StatusRecord {
@@ -290,6 +351,11 @@ function enumerateDefault(rootAbs: string): {
 } {
   const toplevel = gitToplevel(rootAbs);
   const prefix = relative(toplevel, rootAbs).split(sep).join("/");
+  const { isNestedRepoDir, nestedRepoAncestor } = makeNestedRepoChecker(
+    rootAbs,
+    prefix,
+    loadGitlinks(toplevel),
+  );
   const out = git(toplevel, [
     "status",
     "--porcelain=v2",
@@ -359,6 +425,13 @@ function enumerateDefault(rootAbs: string): {
     }
   }
 
+  const excludedNested = new Set<string>();
+  const excludeNested = (dir: string): void => {
+    if (excludedNested.has(dir)) return;
+    excludedNested.add(dir);
+    preExcluded.push({ path: dir, class: "nested_repository" });
+  };
+
   const candidates: Candidate[] = [];
   for (const record of byPath.values()) {
     if (renameSources.has(record.path)) continue;
@@ -366,9 +439,15 @@ function enumerateDefault(rootAbs: string): {
       // Untracked directory entry: only embedded (nested) repositories
       // surface this way under --untracked-files=all.
       const dirRel = record.path.slice(0, -1);
-      if (existsSync(join(rootAbs, dirRel, ".git"))) {
-        preExcluded.push({ path: dirRel, class: "nested_repository" });
-      }
+      if (isNestedRepoDir(dirRel)) excludeNested(dirRel);
+      continue;
+    }
+    // A directory TRACKED by the parent before it gained its own `.git`
+    // still surfaces its descendants as ordinary status records — prune them
+    // here, before classification, exactly as `--all` does (TER-40).
+    const nestedAncestor = nestedRepoAncestor(record.path);
+    if (nestedAncestor !== null) {
+      excludeNested(nestedAncestor);
       continue;
     }
     const inHead = !ZERO_SHA.test(record.headSha);
@@ -534,11 +613,14 @@ function enumerateStaged(
 ): { candidates: Candidate[]; preExcluded: Array<{ path: string; class: string }> } {
   const toplevel = gitToplevel(rootAbs);
   const prefix = relative(toplevel, rootAbs).split(sep).join("/");
+  const { nestedRepoAncestor } = makeNestedRepoChecker(rootAbs, prefix, loadGitlinks(toplevel));
   const base = workspace.unborn ? EMPTY_TREE_SHA : (workspace.headSha as string);
   // --no-textconv/--no-ext-diff: same rationale as parseDiffIndexRenames
   // above — raw plumbing output only, but the flags make zero-driver
   // execution unconditional rather than incidental.
   const out = git(toplevel, ["diff-index", "--cached", "-M", "-z", "--no-textconv", "--no-ext-diff", base]);
+  const preExcluded: Array<{ path: string; class: string }> = [];
+  const excludedNested = new Set<string>();
   const candidates: Candidate[] = [];
   for (const record of parseDiffIndexZ(out)) {
     const rel = toWorkspaceRelative(record.path, prefix);
@@ -564,6 +646,18 @@ function enumerateStaged(
             source: "index",
           });
         }
+      }
+      continue;
+    }
+    // A directory TRACKED by the parent before it gained its own `.git`
+    // still surfaces its index blobs as ordinary diff-index records — prune
+    // them here, before classification, exactly as `--all` and default mode
+    // do (TER-40).
+    const nestedAncestor = nestedRepoAncestor(rel);
+    if (nestedAncestor !== null) {
+      if (!excludedNested.has(nestedAncestor)) {
+        excludedNested.add(nestedAncestor);
+        preExcluded.push({ path: nestedAncestor, class: "nested_repository" });
       }
       continue;
     }
@@ -637,7 +731,7 @@ function enumerateStaged(
         : {}),
     });
   }
-  return { candidates, preExcluded: [] };
+  return { candidates, preExcluded };
 }
 
 // --- Snapshot in a Git repository (--all) ---
@@ -650,15 +744,7 @@ function enumerateGitSnapshot(rootAbs: string): {
   const prefix = relative(toplevel, rootAbs).split(sep).join("/");
   const preExcluded: Array<{ path: string; class: string }> = [];
   // Tracked entry metadata (detects gitlinks/submodules without touching them).
-  const gitlinks = new Map<string, string>();
-  for (const line of splitNulBuffer(git(toplevel, ["ls-files", "-s", "-z"]))) {
-    if (line.length === 0) continue;
-    const tab = line.indexOf(0x09);
-    const meta = line.subarray(0, tab).toString("latin1").split(" ");
-    if (meta[0] === "160000") {
-      gitlinks.set(encodePathBytes(line.subarray(tab + 1)).path, meta[1] as string);
-    }
-  }
+  const gitlinks = loadGitlinks(toplevel);
   const names = splitNulBuffer(
     git(toplevel, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]),
   )
@@ -668,25 +754,7 @@ function enumerateGitSnapshot(rootAbs: string): {
   // 7.2). `ls-files` prunes nothing: an embedded repository surfaces as the
   // untracked directory entry `nested/`, and files that were tracked before
   // their directory became a repository keep surfacing individually.
-  const nestedRepoDirs = new Map<string, boolean>();
-  const isNestedRepoDir = (rel: string): boolean => {
-    const cached = nestedRepoDirs.get(rel);
-    if (cached !== undefined) return cached;
-    const repoRel = prefix === "" ? rel : `${prefix}/${rel}`;
-    // A registered submodule also holds a `.git`; it stays metadata-only.
-    const nested = !gitlinks.has(repoRel) && existsSync(join(rootAbs, rel, ".git"));
-    nestedRepoDirs.set(rel, nested);
-    return nested;
-  };
-  // The shallowest nested-repository ancestor of a path, or null.
-  const nestedRepoAncestor = (rel: string): string | null => {
-    const segments = rel.split("/");
-    for (let i = 1; i <= segments.length - 1; i++) {
-      const dir = segments.slice(0, i).join("/");
-      if (isNestedRepoDir(dir)) return dir;
-    }
-    return null;
-  };
+  const { isNestedRepoDir, nestedRepoAncestor } = makeNestedRepoChecker(rootAbs, prefix, gitlinks);
   const excludedNested = new Set<string>();
   const excludeNested = (dir: string): void => {
     if (excludedNested.has(dir)) return;

@@ -881,6 +881,83 @@ describe("capture edge cases (spec 7.2/7.3)", () => {
     });
   });
 
+  it("default mode: a directory TRACKED before it became a nested repo excludes its tracked descendants (TER-40)", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "a.ts"), "a\n");
+    mkdirSync(join(dir, "sub"));
+    writeFileSync(join(dir, "sub", "file.ts"), `TRACKED_CANARY=${NESTED_CANARY}\n`);
+    commitAll(dir, "base");
+    // sub/ was tracked by the parent repo; it now gains its own .git.
+    g(join(dir, "sub"), "init", "-q", "-b", "main");
+    // Modify the already-tracked file so it surfaces as a git-status record
+    // (an unmodified tracked file never appears in `git status` output).
+    writeFileSync(join(dir, "sub", "file.ts"), `TRACKED_CANARY=${NESTED_CANARY}-changed\n`);
+    const { text, outcome } = canonicalOf(captureWorkspace(dir, "default"));
+    expect(text).not.toContain(NESTED_CANARY);
+    expect(outcome.manifest.some((m) => m.path.startsWith("sub/"))).toBe(false);
+    expect(outcome.redaction.withheldFiles).toContainEqual({
+      path: "sub",
+      class: "nested_repository",
+    });
+  });
+
+  it("staged mode: a directory TRACKED before it became a nested repo excludes its tracked descendants (TER-40)", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "a.ts"), "a\n");
+    mkdirSync(join(dir, "sub"));
+    writeFileSync(join(dir, "sub", "file.ts"), `TRACKED_CANARY=${NESTED_CANARY}\n`);
+    commitAll(dir, "base");
+    g(join(dir, "sub"), "init", "-q", "-b", "main");
+    writeFileSync(join(dir, "sub", "file.ts"), `TRACKED_CANARY=${NESTED_CANARY}-changed\n`);
+    g(dir, "add", "sub/file.ts");
+    const { text, outcome } = canonicalOf(captureWorkspace(dir, "staged"));
+    expect(text).not.toContain(NESTED_CANARY);
+    expect(outcome.manifest.some((m) => m.path.startsWith("sub/"))).toBe(false);
+    expect(outcome.redaction.withheldFiles).toContainEqual({
+      path: "sub",
+      class: "nested_repository",
+    });
+  });
+
+  it("default mode: a registered submodule stays metadata-only, not misclassified as nested", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "a.ts"), "a\n");
+    commitAll(dir, "base");
+    const headSha = g(dir, "rev-parse", "HEAD").trim();
+    g(dir, "update-index", "--add", "--cacheinfo", `160000,${headSha},vendor-lib`);
+    // A checked-out submodule has a real `.git`, exactly like a nested repo —
+    // it must be a genuine repository (not a dangling gitdir pointer) so
+    // `git status` in the parent doesn't choke walking it.
+    mkdirSync(join(dir, "vendor-lib"));
+    g(join(dir, "vendor-lib"), "init", "-q", "-b", "main");
+    const result = captureWorkspace(dir, "default");
+    const sub = candidate(result, "vendor-lib");
+    expect(sub?.kind).toBe("submodule");
+    expect(sub?.blobSha).toBe(headSha);
+    expect(result.preExcluded).not.toContainEqual({
+      path: "vendor-lib",
+      class: "nested_repository",
+    });
+  });
+
+  it("staged mode: a registered submodule stays metadata-only, not misclassified as nested", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "a.ts"), "a\n");
+    commitAll(dir, "base");
+    const headSha = g(dir, "rev-parse", "HEAD").trim();
+    g(dir, "update-index", "--add", "--cacheinfo", `160000,${headSha},vendor-lib`);
+    mkdirSync(join(dir, "vendor-lib"));
+    g(join(dir, "vendor-lib"), "init", "-q", "-b", "main");
+    const result = captureWorkspace(dir, "staged");
+    const sub = candidate(result, "vendor-lib");
+    expect(sub?.kind).toBe("submodule");
+    expect(sub?.blobSha).toBe(headSha);
+    expect(result.preExcluded).not.toContainEqual({
+      path: "vendor-lib",
+      class: "nested_repository",
+    });
+  });
+
   it("case-collision in the index is a hard error (deterministic across platforms)", () => {
     const dir = makeRepo();
     const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], {
