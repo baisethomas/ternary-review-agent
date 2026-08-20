@@ -193,11 +193,160 @@ describe("workspace fixture parsing", () => {
       kind: "changeset",
       workspaceLabel: "x",
       vcs: "git",
+      baseState: { headSha: "abc" },
       changeset: [{ path: "a.ts", status: "added", patch: "p", content: "c" }],
     })).toThrow(/mutually exclusive/);
   });
 
   it("rejects a snapshot workspace without snapshot entries", () => {
     expect(() => parseWorkspaceChangeSet({ kind: "snapshot", workspaceLabel: "x", vcs: "none" })).toThrow(/snapshot/);
+  });
+
+  it("rejects an unknown top-level field", () => {
+    expect(() => parseWorkspaceChangeSet({
+      kind: "snapshot",
+      workspaceLabel: "x",
+      vcs: "none",
+      snapshot: [{ path: "a.ts", content: "c" }],
+      unknownTopLevelField: "should not be allowed",
+    })).toThrow(/unknownTopLevelField/);
+  });
+
+  it("rejects an unknown nested field on a changeset entry", () => {
+    expect(() => parseWorkspaceChangeSet({
+      kind: "changeset",
+      workspaceLabel: "x",
+      vcs: "git",
+      baseState: { headSha: "abc" },
+      changeset: [{ path: "a.ts", status: "added", content: "c", unexpected: true }],
+    })).toThrow(/unexpected/);
+  });
+
+  it("rejects an unknown nested field on baseState", () => {
+    expect(() => parseWorkspaceChangeSet({
+      kind: "changeset",
+      workspaceLabel: "x",
+      vcs: "git",
+      baseState: { headSha: "abc", extra: "nope" },
+      changeset: [{ path: "a.ts", status: "added", content: "c" }],
+    })).toThrow(/baseState/);
+  });
+
+  it("rejects an out-of-enum vcs value", () => {
+    expect(() => parseWorkspaceChangeSet({
+      kind: "snapshot",
+      workspaceLabel: "x",
+      vcs: "svn",
+      snapshot: [{ path: "a.ts", content: "c" }],
+    })).toThrow(/vcs/);
+  });
+
+  it("rejects a wrong-typed field", () => {
+    expect(() => parseWorkspaceChangeSet({
+      kind: "snapshot",
+      workspaceLabel: 42,
+      vcs: "none",
+      snapshot: [{ path: "a.ts", content: "c" }],
+    })).toThrow(/workspaceLabel/);
+  });
+
+  it("rejects vcs \"none\" on a changeset case (a non-Git directory can only ever produce a snapshot)", () => {
+    expect(() => parseWorkspaceChangeSet({
+      kind: "changeset",
+      workspaceLabel: "x",
+      vcs: "none",
+      baseState: { headSha: "abc" },
+      changeset: [{ path: "a.ts", status: "added", content: "c" }],
+    })).toThrow(/vcs/);
+  });
+
+  it("rejects a changeset case missing baseState", () => {
+    expect(() => parseWorkspaceChangeSet({
+      kind: "changeset",
+      workspaceLabel: "x",
+      vcs: "git",
+      changeset: [{ path: "a.ts", status: "added", content: "c" }],
+    })).toThrow(/baseState/);
+  });
+
+  it("rejects a snapshot case that carries baseState (changeset-only field)", () => {
+    expect(() => parseWorkspaceChangeSet({
+      kind: "snapshot",
+      workspaceLabel: "x",
+      vcs: "git",
+      baseState: { headSha: "abc" },
+      snapshot: [{ path: "a.ts", content: "c" }],
+    })).toThrow(/baseState/);
+  });
+
+  it("rejects a snapshot case that carries a changeset array", () => {
+    expect(() => parseWorkspaceChangeSet({
+      kind: "snapshot",
+      workspaceLabel: "x",
+      vcs: "git",
+      snapshot: [{ path: "a.ts", content: "c" }],
+      changeset: [{ path: "b.ts", status: "added", content: "c" }],
+    })).toThrow(/changeset/);
+  });
+
+  it("rejects a changeset case that carries a snapshot array", () => {
+    expect(() => parseWorkspaceChangeSet({
+      kind: "changeset",
+      workspaceLabel: "x",
+      vcs: "git",
+      baseState: { headSha: "abc" },
+      changeset: [{ path: "a.ts", status: "added", content: "c" }],
+      snapshot: [{ path: "b.ts", content: "c" }],
+    })).toThrow(/snapshot/);
+  });
+
+  it("rejects a renamed changeset entry missing \"from\"", () => {
+    expect(() => parseWorkspaceChangeSet({
+      kind: "changeset",
+      workspaceLabel: "x",
+      vcs: "git",
+      baseState: { headSha: "abc" },
+      changeset: [{ path: "a.ts", status: "renamed" }],
+    })).toThrow(/from/);
+  });
+
+  it("rejects a non-renamed changeset entry carrying \"from\"", () => {
+    expect(() => parseWorkspaceChangeSet({
+      kind: "changeset",
+      workspaceLabel: "x",
+      vcs: "git",
+      baseState: { headSha: "abc" },
+      changeset: [{ path: "a.ts", status: "added", content: "c", from: "old.ts" }],
+    })).toThrow(/from/);
+  });
+
+  it("still loads every valid on-disk fixture through the strict validator", async () => {
+    const cases = await loadWorkspaceEvalCases(casesDir);
+    expect(cases.length).toBe(10);
+  });
+
+  it("aborts suite loading with a file-identifying error when a fixture is invalid", async () => {
+    const fs = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "workspace-eval-fixture-"));
+    const caseDir = path.join(tmpRoot, "bad-case");
+    await fs.mkdir(caseDir, { recursive: true });
+    await fs.writeFile(path.join(caseDir, "case.json"), JSON.stringify({
+      id: "bad-case",
+      title: "t",
+      kind: "snapshot",
+      tags: [],
+      expectedFindings: [],
+      expectedNonFindings: [],
+    }));
+    await fs.writeFile(path.join(caseDir, "workspace.json"), JSON.stringify({
+      kind: "snapshot",
+      workspaceLabel: "x",
+      vcs: "bogus",
+      snapshot: [{ path: "a.ts", content: "c" }],
+    }));
+    await expect(loadWorkspaceEvalCases(tmpRoot)).rejects.toThrow(/workspace\.json/);
+    await fs.rm(tmpRoot, { recursive: true, force: true });
   });
 });

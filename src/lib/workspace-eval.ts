@@ -49,6 +49,12 @@ function assertString(value: unknown, path: string): string {
   return value;
 }
 
+/** Fail closed on any key not in `allowed`: fixture parsing is a trust boundary, so unknown shape is rejected, not ignored. */
+function assertNoUnknownKeys(value: Record<string, unknown>, allowed: readonly string[], path: string): void {
+  const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unknown.length > 0) throw new Error(`${path} has unknown field(s): ${unknown.join(", ")}`);
+}
+
 /** Parse a workspace Eval Case label document: the shared EvalCase labels plus a review kind. */
 export function parseWorkspaceEvalCase(value: unknown): WorkspaceEvalCase {
   const labels = parseEvalCase(value);
@@ -57,11 +63,19 @@ export function parseWorkspaceEvalCase(value: unknown): WorkspaceEvalCase {
   return { ...labels, kind };
 }
 
+const CHANGESET_ENTRY_KEYS = ["path", "status", "from", "patch", "content"] as const;
+const SNAPSHOT_ENTRY_KEYS = ["path", "content"] as const;
+const BASE_STATE_KEYS = ["headSha"] as const;
+const WORKSPACE_TOP_LEVEL_KEYS = ["kind", "workspaceLabel", "vcs", "baseState", "branch", "changeset", "snapshot"] as const;
+
 function parseChangesetEntry(value: unknown, path: string): ChangesetEntry {
   if (!isRecord(value)) throw new Error(`${path} must be an object`);
+  assertNoUnknownKeys(value, CHANGESET_ENTRY_KEYS, path);
   const status = assertString(value.status, `${path}.status`);
   if (!["added", "modified", "renamed"].includes(status)) throw new Error(`${path}.status is invalid`);
   if (value.patch !== undefined && value.content !== undefined) throw new Error(`${path} patch and content are mutually exclusive`);
+  if (value.from !== undefined && status !== "renamed") throw new Error(`${path}.from is only valid when status is "renamed"`);
+  if (status === "renamed" && value.from === undefined) throw new Error(`${path}.from is required when status is "renamed"`);
   const entry: ChangesetEntry = { path: assertString(value.path, `${path}.path`), status: status as ChangesetEntry["status"] };
   if (value.from !== undefined) entry.from = assertString(value.from, `${path}.from`);
   if (value.patch !== undefined) entry.patch = assertString(value.patch, `${path}.patch`);
@@ -71,31 +85,49 @@ function parseChangesetEntry(value: unknown, path: string): ChangesetEntry {
 
 function parseSnapshotEntry(value: unknown, path: string): SnapshotEntry {
   if (!isRecord(value)) throw new Error(`${path} must be an object`);
+  assertNoUnknownKeys(value, SNAPSHOT_ENTRY_KEYS, path);
   return { path: assertString(value.path, `${path}.path`), content: assertString(value.content, `${path}.content`) };
 }
 
-/** Parse and validate a `workspace.json` fixture into a WorkspaceChangeSet. */
+/**
+ * Parse and strictly validate a `workspace.json` fixture into a WorkspaceChangeSet.
+ *
+ * This is the trust boundary for fixture files (spec §8.2): every field is checked
+ * against its declared type/enum, unknown fields (top-level and nested) are rejected,
+ * and kind/vcs/baseState/array-presence are cross-checked for consistency so a
+ * snapshot case can never smuggle in changeset-only fields (or vice versa).
+ */
 export function parseWorkspaceChangeSet(value: unknown): WorkspaceChangeSet {
   if (!isRecord(value)) throw new Error("workspace must be an object");
+  assertNoUnknownKeys(value, WORKSPACE_TOP_LEVEL_KEYS, "workspace");
   const kind = value.kind;
   if (kind !== "changeset" && kind !== "snapshot") throw new Error("workspace.kind must be \"changeset\" or \"snapshot\"");
   const vcs = value.vcs;
   if (vcs !== "git" && vcs !== "none") throw new Error("workspace.vcs must be \"git\" or \"none\"");
+  // Spec §7.1: only a non-Git directory yields vcs "none", and that path always
+  // produces a snapshot — a changeset review requires a Git worktree to diff against.
+  if (kind === "changeset" && vcs !== "git") throw new Error("workspace.vcs must be \"git\" when workspace.kind is \"changeset\"");
   const changeSet: WorkspaceChangeSet = {
     kind,
     workspaceLabel: assertString(value.workspaceLabel, "workspace.workspaceLabel"),
     vcs,
   };
   if (value.branch !== undefined) changeSet.branch = assertString(value.branch, "workspace.branch");
-  if (value.baseState !== undefined) {
-    if (value.baseState === "unborn") changeSet.baseState = "unborn";
-    else if (isRecord(value.baseState)) changeSet.baseState = { headSha: assertString(value.baseState.headSha, "workspace.baseState.headSha") };
-    else throw new Error("workspace.baseState must be \"unborn\" or { headSha }");
-  }
   if (kind === "changeset") {
+    // Spec §7.1: every changeset row (default/staged/unborn) carries a baseState.
+    if (value.baseState === undefined) throw new Error("workspace.baseState is required when workspace.kind is \"changeset\"");
+    if (value.baseState === "unborn") changeSet.baseState = "unborn";
+    else if (isRecord(value.baseState)) {
+      assertNoUnknownKeys(value.baseState, BASE_STATE_KEYS, "workspace.baseState");
+      changeSet.baseState = { headSha: assertString(value.baseState.headSha, "workspace.baseState.headSha") };
+    } else throw new Error("workspace.baseState must be \"unborn\" or { headSha }");
+    if (value.snapshot !== undefined) throw new Error("workspace.snapshot must not be present when workspace.kind is \"changeset\"");
     if (!Array.isArray(value.changeset)) throw new Error("workspace.changeset must be an array for changeset reviews");
     changeSet.changeset = value.changeset.map((entry, index) => parseChangesetEntry(entry, `workspace.changeset[${index}]`));
   } else {
+    // Spec §8.2: baseState is changeset-only.
+    if (value.baseState !== undefined) throw new Error("workspace.baseState must not be present when workspace.kind is \"snapshot\"");
+    if (value.changeset !== undefined) throw new Error("workspace.changeset must not be present when workspace.kind is \"snapshot\"");
     if (!Array.isArray(value.snapshot)) throw new Error("workspace.snapshot must be an array for snapshot reviews");
     changeSet.snapshot = value.snapshot.map((entry, index) => parseSnapshotEntry(entry, `workspace.snapshot[${index}]`));
   }
@@ -109,9 +141,19 @@ export async function loadWorkspaceEvalCases(casesDir: string): Promise<LoadedWo
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (!entry.isDirectory()) continue;
     const directory = join(casesDir, entry.name);
-    const labels = parseWorkspaceEvalCase(JSON.parse(await readFile(join(directory, "case.json"), "utf8")) as unknown);
+    const casePath = join(directory, "case.json");
+    const workspacePath = join(directory, "workspace.json");
+    const labels = parseWorkspaceEvalCase(JSON.parse(await readFile(casePath, "utf8")) as unknown);
     if (labels.id !== entry.name) throw new Error(`Workspace Eval Case id "${labels.id}" must match directory "${entry.name}"`);
-    const changeSet = parseWorkspaceChangeSet(JSON.parse(await readFile(join(directory, "workspace.json"), "utf8")) as unknown);
+    // Fixture validation happens exactly once, here, at load: a fixture that fails
+    // strict validation aborts loading the whole suite (no skip-and-continue).
+    let changeSet: WorkspaceChangeSet;
+    try {
+      changeSet = parseWorkspaceChangeSet(JSON.parse(await readFile(workspacePath, "utf8")) as unknown);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Invalid workspace fixture at ${workspacePath}: ${message}`);
+    }
     if (changeSet.kind !== labels.kind) throw new Error(`Workspace Eval Case "${labels.id}" kind "${labels.kind}" does not match workspace.json kind "${changeSet.kind}"`);
     let context = "";
     try {
