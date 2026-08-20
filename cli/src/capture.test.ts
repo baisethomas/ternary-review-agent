@@ -960,3 +960,98 @@ describe("capture edge cases (spec 7.2/7.3)", () => {
     expect(outcome.redaction.withheldFiles).toEqual([]);
   });
 });
+
+describe("adversarial: sanitized Git subprocess environment (spec 4.2 item 10)", () => {
+  // No inherited GIT_* variable may redirect where the collector's `git`
+  // subprocess resolves the repository, index, or object database. If it
+  // could, `git cat-file blob <sha>` (or the status/diff-index calls that
+  // enumerate candidates) could pull bytes from an object store outside the
+  // Workspace Root into the payload — breaching the Workspace Root boundary.
+  const CANARY = "GIT_ENV_CANARY_7f2c19";
+
+  function hashObject(repoDir: string, content: string): string {
+    return execFileSync("git", ["hash-object", "-w", "--stdin"], {
+      cwd: repoDir,
+      input: content,
+      env: { ...process.env, ...GIT_ENV },
+      encoding: "utf8",
+    }).trim();
+  }
+
+  function withEnv<T>(vars: Record<string, string>, fn: () => T): T {
+    const prior: Record<string, string | undefined> = {};
+    for (const key of Object.keys(vars)) prior[key] = process.env[key];
+    Object.assign(process.env, vars);
+    try {
+      return fn();
+    } finally {
+      for (const key of Object.keys(vars)) {
+        if (prior[key] === undefined) delete process.env[key];
+        else process.env[key] = prior[key] as string;
+      }
+    }
+  }
+
+  it("readBlob never resolves an inherited GIT_ALTERNATE_OBJECT_DIRECTORIES redirect", () => {
+    const victim = makeRepo();
+    writeFileSync(join(victim, "a.ts"), "a\n");
+    commitAll(victim, "base");
+    const result = captureWorkspace(victim, "default");
+    const readers = makeContentReaders(result.workspace.rootAbs, result.workspace);
+
+    const attacker = makeRepo();
+    const canarySha = hashObject(attacker, CANARY);
+    const attackerObjects = join(attacker, ".git", "objects");
+
+    const blob = withEnv({ GIT_ALTERNATE_OBJECT_DIRECTORIES: attackerObjects }, () =>
+      readers.readBlob(canarySha),
+    );
+    // The canary sha does not exist in the victim's own object database.
+    // If the child process ever sees the inherited env var, it resolves the
+    // sha via the attacker's alternates and returns the canary bytes instead
+    // of correctly reporting "object not found".
+    expect(blob).toBeNull();
+  });
+
+  it("staged and default capture ignore inherited GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY redirects: canary bytes never enter the payload", () => {
+    const victim = makeRepo();
+    writeFileSync(join(victim, "tracked.ts"), "tracked\n");
+    commitAll(victim, "base");
+    const baselineStaged = canonicalOf(captureWorkspace(victim, "staged"));
+    const baselineDefault = canonicalOf(captureWorkspace(victim, "default"));
+
+    // A scratch repo the collector never targets: it forges an index that
+    // stages a file the victim never staged, backed by a canary blob only it
+    // knows about.
+    const scratch = makeRepo();
+    const canarySha = hashObject(scratch, CANARY);
+    const forgedIndex = join(scratch, "forged-index");
+    execFileSync(
+      "git",
+      ["update-index", "--add", "--cacheinfo", `100644,${canarySha},leak.txt`],
+      {
+        cwd: scratch,
+        env: { ...process.env, ...GIT_ENV, GIT_INDEX_FILE: forgedIndex },
+        encoding: "utf8",
+      },
+    );
+
+    withEnv(
+      {
+        GIT_INDEX_FILE: forgedIndex,
+        GIT_ALTERNATE_OBJECT_DIRECTORIES: join(scratch, ".git", "objects"),
+      },
+      () => {
+        const staged = canonicalOf(captureWorkspace(victim, "staged"));
+        expect(staged.text).not.toContain(CANARY);
+        expect(staged.text).not.toContain("leak.txt");
+        expect(staged.outcome.manifest).toEqual(baselineStaged.outcome.manifest);
+
+        const def = canonicalOf(captureWorkspace(victim, "default"));
+        expect(def.text).not.toContain(CANARY);
+        expect(def.text).not.toContain("leak.txt");
+        expect(def.outcome.manifest).toEqual(baselineDefault.outcome.manifest);
+      },
+    );
+  });
+});

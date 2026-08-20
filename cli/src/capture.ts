@@ -52,6 +52,34 @@ const ZERO_SHA = /^0+$/;
 const MAX_GIT_OUTPUT = 128 * 1024 * 1024;
 
 // --- Hook-safe git invocation ---
+//
+// The child environment is built from an ALLOWLIST, never by spreading
+// `process.env`. An inherited `GIT_*` variable (`GIT_DIR`, `GIT_WORK_TREE`,
+// `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`,
+// `GIT_COMMON_DIR`, `GIT_CONFIG*`, `GIT_CEILING_DIRECTORIES`, `GIT_NAMESPACE`,
+// etc.) can redirect where Git resolves the repository, index, or object
+// database — `git cat-file blob <sha>` would then read bytes from an
+// externally selected object store into the payload, breaching the
+// Workspace Root boundary (spec 4.2 item 10). No inherited `GIT_*` variable
+// is ever passed through: only `PATH` (to find the `git` binary and any
+// helpers it shells out to) and `TMPDIR` (for Git's own temp/pack usage) are
+// carried from the parent process; everything else the child needs is set
+// explicitly here. `HOME` is deliberately excluded — testing without it
+// changed nothing in this suite, and excluding it means a user's global
+// `~/.gitconfig` can no longer influence what the collector captures, which
+// is a determinism win, not a regression.
+function gitChildEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    // Pinned, not inherited: deterministic output for the porcelain/plumbing
+    // parsers above, regardless of the operator's shell locale.
+    LC_ALL: "C",
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_TERMINAL_PROMPT: "0",
+  };
+  if (process.env.PATH !== undefined) env.PATH = process.env.PATH;
+  if (process.env.TMPDIR !== undefined) env.TMPDIR = process.env.TMPDIR;
+  return env;
+}
 
 function git(cwd: string, args: string[]): Buffer {
   return execFileSync(
@@ -59,11 +87,7 @@ function git(cwd: string, args: string[]): Buffer {
     ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args],
     {
       cwd,
-      env: {
-        ...process.env,
-        GIT_OPTIONAL_LOCKS: "0",
-        GIT_TERMINAL_PROMPT: "0",
-      },
+      env: gitChildEnv(),
       maxBuffer: MAX_GIT_OUTPUT,
       stdio: ["ignore", "pipe", "pipe"],
     },
