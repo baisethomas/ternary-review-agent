@@ -26,7 +26,7 @@ export interface CliIo {
   cwd: string;
   // Optional seams for the submit path; default to the real process env/stdin
   // when omitted so existing dry-run/manifest callers need not supply them.
-  env?: NodeJS.ProcessEnv;
+  env?: Record<string, string | undefined>;
   stdin?: NodeJS.ReadableStream & { isTTY?: boolean };
   // Optional external abort signal (the CLI entry's SIGINT handler); see
   // SubmitIo.signal in submit.ts for how it reaches the transmit boundary.

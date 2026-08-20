@@ -74,6 +74,11 @@ const MAX_GIT_OUTPUT = 128 * 1024 * 1024;
 // is a determinism win, not a regression.
 function gitChildEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
+    // Carried through, not part of the security-relevant allowlist above:
+    // NODE_ENV has no bearing on Git's behavior or the boundaries this
+    // function enforces, and the ambient NodeJS.ProcessEnv type (as
+    // augmented by Next's generated env types) requires it.
+    NODE_ENV: process.env.NODE_ENV,
     // Pinned, not inherited: deterministic output for the porcelain/plumbing
     // parsers above, regardless of the operator's shell locale.
     LC_ALL: "C",
