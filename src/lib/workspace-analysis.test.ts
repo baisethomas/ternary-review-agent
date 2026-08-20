@@ -135,6 +135,18 @@ describe("analyzeWorkspaceReview", () => {
     expect(requestModel).toHaveBeenCalledOnce();
   });
 
+  it("terminates a provider that never resolves and never rejects at the deadline", async () => {
+    vi.useFakeTimers();
+    // Deliberately ignores request.signal: the deadline timer, not provider
+    // cooperation, must be what ends the review.
+    const requestModel: WorkspaceModelRequest = vi.fn(() => new Promise(() => {}));
+    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 5_000 }), { requestModel });
+    const expectation = expect(pending).rejects.toBeInstanceOf(WorkspaceReviewTimeoutError);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expectation;
+    expect(requestModel).toHaveBeenCalledOnce();
+  });
+
   it("makes exactly one model attempt: a failed call is not retried on another model", async () => {
     const requestModel: WorkspaceModelRequest = vi.fn(async () => {
       throw new Error("Workspace review model call failed (503): overloaded");

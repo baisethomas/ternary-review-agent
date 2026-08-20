@@ -144,7 +144,8 @@ export function buildWorkspaceReviewInput(
 type JsonSchema =
   | { type: "string"; enum?: readonly string[] }
   | { type: "number" }
-  | { type: readonly ("string" | "number" | "null")[] }
+  | { type: "integer" }
+  | { type: readonly ("string" | "number" | "integer" | "null")[] }
   | { type: "array"; items: JsonSchema }
   | { type: "object"; additionalProperties: false; required: readonly string[]; properties: Record<string, JsonSchema> };
 
@@ -164,7 +165,7 @@ export const workspaceReviewSchema = {
           ruleId: { type: "string" },
           findingKey: { type: "string" },
           severity: { type: "string", enum: ["blocking", "warning", "suggestion"] },
-          file: { type: "string" }, line: { type: ["number", "null"] }, title: { type: "string" },
+          file: { type: "string" }, line: { type: ["integer", "null"] }, title: { type: "string" },
           explanation: { type: "string" }, suggestedFix: { type: ["string", "null"] },
         },
       },
@@ -176,12 +177,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function includesSchemaType(schema: JsonSchema, type: "number" | "integer"): boolean {
+  return Array.isArray(schema.type) ? schema.type.includes(type) : schema.type === type;
+}
+
 function assertMatchesSchema(value: unknown, schema: JsonSchema, path = "review") {
   const allowedTypes = Array.isArray(schema.type) ? schema.type : [schema.type];
   const actualType = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
-  if (!allowedTypes.includes(actualType as never)) throw new Error(`${path} has invalid type`);
+  // A JSON number satisfies either a "number" or an "integer" schema type -
+  // the two are distinguished below once we know the value is numeric.
+  const typeMatches = allowedTypes.includes(actualType as never)
+    || (actualType === "number" && includesSchemaType(schema, "integer"));
+  if (!typeMatches) throw new Error(`${path} has invalid type`);
   if ("enum" in schema && schema.enum && !schema.enum.includes(value as string)) throw new Error(`${path} has invalid value`);
-  if (schema.type === "number" && !Number.isFinite(value)) throw new Error(`${path} has invalid number`);
+  if (actualType === "number") {
+    if (!Number.isFinite(value)) throw new Error(`${path} has invalid number`);
+    if (includesSchemaType(schema, "integer") && (!Number.isInteger(value) || (value as number) < 0)) {
+      throw new Error(`${path} has invalid integer`);
+    }
+  }
   if (schema.type === "array") {
     (value as unknown[]).forEach((item, index) => assertMatchesSchema(item, schema.items, `${path}[${index}]`));
   }

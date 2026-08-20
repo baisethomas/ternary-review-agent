@@ -83,30 +83,43 @@ export const requestOpenRouterWorkspaceModel: WorkspaceModelRequest = async (req
     }),
     signal: request.signal,
   });
-  if (!response.ok) {
-    const message = `Workspace review model call failed (${response.status}): ${await response.text()}`;
-    throw isRetryableHttpStatus(response.status) ? new Error(message) : new NonRetryableReviewError(message);
+  try {
+    if (!response.ok) {
+      const message = `Workspace review model call failed (${response.status}): ${await response.text()}`;
+      throw isRetryableHttpStatus(response.status) ? new Error(message) : new NonRetryableReviewError(message);
+    }
+    const payload = await response.json() as {
+      model?: string;
+      error?: { message?: string };
+      choices?: Array<{ message?: { content?: string | null }; error?: { message?: string } }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
+    };
+    const choice = payload.choices?.[0];
+    const providerError = choice?.error ?? payload.error;
+    if (providerError) throw new NonRetryableReviewError(`Workspace review model call failed: ${providerError.message ?? "generation ended with an error"}`);
+    const text = choice?.message?.content;
+    if (!text) throw new NonRetryableReviewError("Workspace review model response did not include output");
+    return {
+      text,
+      ...(payload.model ? { model: payload.model } : {}),
+      usage: {
+        ...(payload.usage?.prompt_tokens !== undefined ? { inputTokens: payload.usage.prompt_tokens } : {}),
+        ...(payload.usage?.completion_tokens !== undefined ? { outputTokens: payload.usage.completion_tokens } : {}),
+        ...(payload.usage?.cost !== undefined ? { estimatedCostUsd: payload.usage.cost } : {}),
+      },
+    };
+  } catch (error) {
+    // On the deadline-abort path (and any other failure before the body is fully
+    // read) the response body can still be pending. Cancel it so the underlying
+    // connection is released instead of leaking; never let cleanup mask the real
+    // error (e.g. the timeout) that's about to propagate.
+    try {
+      await response.body?.cancel();
+    } catch {
+      // ignore: body cleanup is best-effort
+    }
+    throw error;
   }
-  const payload = await response.json() as {
-    model?: string;
-    error?: { message?: string };
-    choices?: Array<{ message?: { content?: string | null }; error?: { message?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
-  };
-  const choice = payload.choices?.[0];
-  const providerError = choice?.error ?? payload.error;
-  if (providerError) throw new NonRetryableReviewError(`Workspace review model call failed: ${providerError.message ?? "generation ended with an error"}`);
-  const text = choice?.message?.content;
-  if (!text) throw new NonRetryableReviewError("Workspace review model response did not include output");
-  return {
-    text,
-    ...(payload.model ? { model: payload.model } : {}),
-    usage: {
-      ...(payload.usage?.prompt_tokens !== undefined ? { inputTokens: payload.usage.prompt_tokens } : {}),
-      ...(payload.usage?.completion_tokens !== undefined ? { outputTokens: payload.usage.completion_tokens } : {}),
-      ...(payload.usage?.cost !== undefined ? { estimatedCostUsd: payload.usage.cost } : {}),
-    },
-  };
 };
 
 /**
@@ -132,22 +145,37 @@ export async function analyzeWorkspaceReview(
   const systemPrompt = getWorkspaceSystemPrompt(input.reviewKind);
   const modelInput = buildWorkspaceReviewInput(input);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let deadlineReached = false;
+  let timer: ReturnType<typeof setTimeout>;
+  // Racing a deadline promise (not just aborting the signal) means the deadline
+  // is enforced deterministically even if a provider ignores the abort signal
+  // and never settles its own promise.
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      deadlineReached = true;
+      controller.abort();
+      reject(new WorkspaceReviewTimeoutError(timeoutMs));
+    }, timeoutMs);
+  });
   let response: WorkspaceModelResponse;
   try {
-    response = await requestModel({
-      model: input.policy.model,
-      systemPrompt,
-      input: modelInput,
-      schema: workspaceReviewSchema,
-      maxOutputTokens: WORKSPACE_MAX_OUTPUT_TOKENS,
-      signal: controller.signal,
-    });
+    response = await Promise.race([
+      requestModel({
+        model: input.policy.model,
+        systemPrompt,
+        input: modelInput,
+        schema: workspaceReviewSchema,
+        maxOutputTokens: WORKSPACE_MAX_OUTPUT_TOKENS,
+        signal: controller.signal,
+      }),
+      deadline,
+    ]);
   } catch (error) {
-    if (isAbortError(error) || controller.signal.aborted) throw new WorkspaceReviewTimeoutError(timeoutMs);
+    if (error instanceof WorkspaceReviewTimeoutError) throw error;
+    if (isAbortError(error) || deadlineReached || controller.signal.aborted) throw new WorkspaceReviewTimeoutError(timeoutMs);
     throw error;
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timer!);
   }
 
   let review: ReturnType<typeof parseWorkspaceReviewOutput>;

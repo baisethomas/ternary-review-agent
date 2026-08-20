@@ -170,9 +170,19 @@ describe("parseWorkspaceReviewOutput", () => {
     ["missing required finding fields", { summary: "s", findings: [{ ruleId: "r" }] }],
     ["invalid severity", { summary: "s", findings: [{ ...validFinding, severity: "critical" }] }],
     ["non-numeric line", { summary: "s", findings: [{ ...validFinding, line: "4" }] }],
+    ["fractional line", { summary: "s", findings: [{ ...validFinding, line: 1.5 }] }],
+    ["negative line", { summary: "s", findings: [{ ...validFinding, line: -1 }] }],
     ["blank finding identity", { summary: "s", findings: [{ ...validFinding, findingKey: "  " }] }],
   ])("rejects %s", (_label, payload) => {
     expect(() => parseWorkspaceReviewOutput(JSON.stringify(payload))).toThrow();
+  });
+
+  it("accepts a non-negative integer line", () => {
+    const parsed = parseWorkspaceReviewOutput(JSON.stringify({
+      summary: "s",
+      findings: [{ ...validFinding, line: 0 }],
+    }));
+    expect(parsed.findings[0].line).toBe(0);
   });
 
   it("rejects duplicated finding keys", () => {
