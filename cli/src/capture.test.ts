@@ -351,6 +351,60 @@ describe("capture-mode matrix (spec 7.1)", () => {
   });
 });
 
+describe("cross-root renames (Workspace Root below the repo root, spec 4.1/4.2-10)", () => {
+  const CANARY_DIR = "secretdir";
+  const CANARY_FILE = "leak.ts";
+  const CANARY_PATH = `${CANARY_DIR}/${CANARY_FILE}`;
+
+  function makeSubrootRepo(): { dir: string; root: string } {
+    const dir = makeRepo();
+    mkdirSync(join(dir, CANARY_DIR), { recursive: true });
+    mkdirSync(join(dir, "packages", "app"), { recursive: true });
+    writeFileSync(join(dir, CANARY_DIR, CANARY_FILE), "outside content\n");
+    writeFileSync(join(dir, "packages", "app", "keep.ts"), "keep\n");
+    commitAll(dir, "base");
+    return { dir, root: join(dir, "packages", "app") };
+  }
+
+  for (const mode of ["default", "staged"] as CaptureMode[]) {
+    it(`${mode} mode: a staged rename whose origin lies outside the Workspace Root is captured as an addition, never a rename`, () => {
+      const { dir, root } = makeSubrootRepo();
+      g(dir, "mv", `${CANARY_DIR}/${CANARY_FILE}`, "packages/app/config.ts");
+      const result = captureWorkspace(root, mode);
+      const config = candidate(result, "config.ts");
+      expect(config?.status).toBe("added");
+      expect(config?.from).toBeUndefined();
+      expect(config?.similarity).toBeUndefined();
+      expect((config as { baseSha?: string } | undefined)?.baseSha).toBeUndefined();
+      const { text, outcome } = canonicalOf(result);
+      // The canonical bytes must never name the out-of-root origin path, in
+      // any field — path, from, or otherwise.
+      expect(text).not.toContain(CANARY_PATH);
+      expect(text).not.toContain(CANARY_DIR);
+      const changesetEntry = outcome.changeset?.find((c) => c.path === "config.ts");
+      expect(changesetEntry?.status).toBe("added");
+      expect(changesetEntry?.from).toBeUndefined();
+      expect(changesetEntry?.patch).toBeUndefined();
+      expect(changesetEntry?.content).toContain("outside content");
+    });
+
+    it(`${mode} mode: a staged rename whose destination lies outside the Workspace Root is captured as a deletion of the in-root source`, () => {
+      const { dir, root } = makeSubrootRepo();
+      writeFileSync(join(dir, "packages", "app", "leaving.ts"), "leaving content\n");
+      commitAll(dir, "add leaving");
+      g(dir, "mv", "packages/app/leaving.ts", `${CANARY_DIR}/gone.ts`);
+      const result = captureWorkspace(root, mode);
+      const source = candidate(result, "leaving.ts");
+      expect(source?.status).toBe("deleted");
+      expect(source?.kind).toBe("deleted");
+      const { text } = canonicalOf(result);
+      // The out-of-root destination path must never appear.
+      expect(text).not.toContain(`${CANARY_DIR}/gone.ts`);
+      expect(text).not.toContain("gone.ts");
+    });
+  }
+});
+
 // Canonical bytes of a full capture, for byte-absence assertions.
 function canonicalOf(result: CaptureResult): { text: string; outcome: ReturnType<typeof runExclusionPipeline> } {
   const outcome = runExclusionPipeline(

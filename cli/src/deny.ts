@@ -19,7 +19,7 @@ import {
   comparePathsBytewise,
   normalizePath,
 } from "./payload.js";
-import { DENY_RULES_VERSION, REDACTION_RULES_VERSION } from "./types.js";
+import { CollectorError, DENY_RULES_VERSION, REDACTION_RULES_VERSION } from "./types.js";
 import type {
   Candidate,
   Caps,
@@ -185,6 +185,30 @@ export { isKeyMaterialContent, keyMaterialRule, redactSecretSpans } from "./secr
 export { isIgnored, orderRules, parseIgnoreFile } from "./ignore.js";
 export type { IgnoreRule, LoadedPolicy } from "./ignore.js";
 
+// --- Choke point for the `from` field (spec 4.1/4.2-10) ---
+//
+// Every candidate that reaches this pipeline is about to become the
+// payload's only representation of a file. Only a "renamed" entry — or a
+// "deleted" entry recording a rename collapse (TER-41) — may carry `from`.
+// Any other status carrying `from` is exactly the leak shape that let a
+// cross-Workspace-Root rename origin (a Git subdirectory review) reach the
+// payload via a stale fallback: reject rather than transmit, so a future
+// capture regression cannot reintroduce this class of leak silently.
+function finalizeFrom(
+  candidate: Candidate,
+  path: string,
+  effectiveStatus: string,
+): string | undefined {
+  if (candidate.from === undefined) return undefined;
+  if (effectiveStatus !== "renamed" && effectiveStatus !== "deleted") {
+    throw new CollectorError(
+      "rename_metadata_leak",
+      `candidate ${JSON.stringify(path)} has status ${JSON.stringify(effectiveStatus)} but carries a "from" field; only "renamed" or "deleted" candidates may`,
+    );
+  }
+  return normalizePath(candidate.from);
+}
+
 // --- Pipeline ---
 
 export interface PipelineOutcome {
@@ -263,13 +287,14 @@ export function runExclusionPipeline(
       continue;
     }
     if (candidate.kind === "deleted") {
+      const from = finalizeFrom(candidate, path, "deleted");
       manifest.push({
         path,
         status: "deleted",
         size: 0,
         mode: "regular",
         contentIncluded: false,
-        ...(candidate.from !== undefined ? { from: normalizePath(candidate.from) } : {}),
+        ...(from !== undefined ? { from } : {}),
       });
       continue;
     }
@@ -319,13 +344,14 @@ export function runExclusionPipeline(
       bytes = result.bytes;
     }
     const size = bytes.byteLength;
+    const from = finalizeFrom(candidate, path, candidate.status);
     const baseEntry: ManifestEntry = {
       path,
       status: candidate.status,
       size,
       mode: candidate.mode,
       contentIncluded: false,
-      ...(candidate.from !== undefined ? { from: normalizePath(candidate.from) } : {}),
+      ...(from !== undefined ? { from } : {}),
       ...(candidate.similarity !== undefined ? { similarity: candidate.similarity } : {}),
       ...(candidate.blobSha !== undefined ? { blobSha: candidate.blobSha } : {}),
     };
@@ -454,27 +480,32 @@ function buildChangesetEntry(
   text: string,
   readers: ContentReaders,
 ): { entry: ChangesetEntry; spans: Array<{ rule: string; count: number }> } {
-  const from = candidate.from !== undefined ? { from: normalizePath(candidate.from) } : {};
   if (candidate.status === "added" || candidate.baseSha === undefined) {
-    return { entry: { path, status: "added", content: text }, spans: [] };
+    const from = finalizeFrom(candidate, path, "added");
+    return {
+      entry: { path, status: "added", content: text, ...(from !== undefined ? { from } : {}) },
+      spans: [],
+    };
   }
   const status = candidate.status === "renamed" ? "renamed" : "modified";
+  const from = finalizeFrom(candidate, path, status);
+  const fromField = from !== undefined ? { from } : {};
   const baseBytes = readers.readBlob(candidate.baseSha);
   if (baseBytes === null || isBinaryContent(path, baseBytes)) {
     // No usable text base: carry the full new text instead of a patch.
-    return { entry: { path, status, content: text, ...from }, spans: [] };
+    return { entry: { path, status, content: text, ...fromField }, spans: [] };
   }
   const baseText = baseBytes.toString("utf8");
   if (isKeyMaterialContent(baseText)) {
     // Deny class 2 applies to the base side too: no patch may exist.
     return {
-      entry: { path, status, content: text, ...from },
+      entry: { path, status, content: text, ...fromField },
       spans: [{ rule: "patch.base-withheld", count: 1 }],
     };
   }
   const redactedBase = redactSecretSpans(baseText);
   const patch = unifiedDiff(path, redactedBase.text, text);
-  return { entry: { path, status, patch, ...from }, spans: redactedBase.spans };
+  return { entry: { path, status, patch, ...fromField }, spans: redactedBase.spans };
 }
 
 // Truncate a string so its UTF-8 encoding fits maxBytes without splitting a

@@ -260,10 +260,15 @@ function enumerateDefault(rootAbs: string): {
   for (const [to, rename] of parseDiffIndexRenames(toplevel)) {
     const toRel = toWorkspaceRelative(to, prefix);
     if (toRel === null) continue;
-    stagedRenames.set(toRel, {
-      ...rename,
-      from: toWorkspaceRelative(rename.from, prefix) ?? rename.from,
-    });
+    const fromRel = toWorkspaceRelative(rename.from, prefix);
+    // Rename origin outside the Workspace Root (a Git subdirectory review):
+    // the destination is captured as an addition, never a rename — leaving
+    // it out of `stagedRenames` means the candidate loop below falls through
+    // to `status: "added"` with no `from`/`similarity`/`baseSha` (spec
+    // 4.1/4.2-10). The repo-relative origin path must never enter the
+    // payload.
+    if (fromRel === null) continue;
+    stagedRenames.set(toRel, { ...rename, from: fromRel });
   }
   const preExcluded: Array<{ path: string; class: string }> = [];
   const byPath = new Map<string, StatusRecord>();
@@ -485,11 +490,38 @@ function enumerateStaged(
   const candidates: Candidate[] = [];
   for (const record of parseDiffIndexZ(out)) {
     const rel = toWorkspaceRelative(record.path, prefix);
-    if (rel === null) continue;
-    const from =
-      record.fromPath !== undefined
-        ? (toWorkspaceRelative(record.fromPath, prefix) ?? record.fromPath)
-        : undefined;
+    if (rel === null) {
+      // The destination lies outside the Workspace Root (a Git subdirectory
+      // review). A rename/copy pair whose source is inside the root has, net
+      // of the root, only the effect of removing the source — represent that
+      // as a deletion (spec 7.2). A copy leaves the source untouched, so only
+      // renames (not copies) synthesize a deletion here.
+      if (
+        !record.pathEncoded &&
+        record.fromPath !== undefined &&
+        record.status.startsWith("R")
+      ) {
+        const fromRel = toWorkspaceRelative(record.fromPath, prefix);
+        if (fromRel !== null) {
+          candidates.push({
+            path: fromRel,
+            status: "deleted",
+            kind: "deleted",
+            mode: "regular",
+            size: 0,
+            source: "index",
+          });
+        }
+      }
+      continue;
+    }
+    // Rename origin outside the Workspace Root: the destination is captured
+    // as an addition, never a rename — `from`, `similarity`, and the
+    // origin's base blob (`baseSha`) must never enter the payload (spec
+    // 4.1/4.2-10). The repo-relative origin path itself must never appear.
+    const fromRel =
+      record.fromPath !== undefined ? toWorkspaceRelative(record.fromPath, prefix) : undefined;
+    const renameOriginOutsideRoot = record.fromPath !== undefined && fromRel === null;
     const letter = record.status[0] as string;
     if (record.pathEncoded) {
       candidates.push(invalidPathCandidate(rel, letter === "A" ? "added" : "modified"));
@@ -533,7 +565,11 @@ function enumerateStaged(
       continue;
     }
     const status: ManifestStatus =
-      letter === "A" || letter === "C" ? "added" : letter === "R" ? "renamed" : "modified";
+      letter === "A" || letter === "C" || renameOriginOutsideRoot
+        ? "added"
+        : letter === "R"
+          ? "renamed"
+          : "modified";
     candidates.push({
       path: rel,
       status,
@@ -543,7 +579,7 @@ function enumerateStaged(
       source: "index",
       blobSha: record.newSha,
       ...(status !== "added" && !ZERO_SHA.test(record.oldSha) ? { baseSha: record.oldSha } : {}),
-      ...(from !== undefined ? { from } : {}),
+      ...(status === "renamed" && fromRel !== undefined && fromRel !== null ? { from: fromRel } : {}),
       ...(status === "renamed"
         ? { similarity: Number.parseInt(record.status.slice(1), 10) || 0 }
         : {}),
