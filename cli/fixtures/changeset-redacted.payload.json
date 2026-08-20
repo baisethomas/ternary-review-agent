@@ -1,0 +1,93 @@
+{
+  "schemaVersion": "workspace-review/1",
+  "kind": "changeset",
+  "captureMode": "default",
+  "tool": {
+    "name": "ternary-cli",
+    "version": "0.1.0"
+  },
+  "workspace": {
+    "label": "fixture-redacted",
+    "vcs": "git",
+    "baseState": {
+      "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  "manifest": [
+    {
+      "path": "src/client.ts",
+      "status": "added",
+      "size": 85,
+      "mode": "regular",
+      "contentIncluded": true
+    },
+    {
+      "path": "src/notes.md",
+      "status": "added",
+      "size": 64,
+      "mode": "regular",
+      "contentIncluded": true
+    }
+  ],
+  "changeset": [
+    {
+      "path": "src/client.ts",
+      "status": "added",
+      "content": "const token = \"[REDACTED]\";\nexport const client = { token };\n"
+    },
+    {
+      "path": "src/notes.md",
+      "status": "added",
+      "content": "Deploy with postgres://svc:[REDACTED]@db.internal:5432/app\n"
+    }
+  ],
+  "context": [],
+  "localPolicy": {
+    "captureMode": "default",
+    "include": [
+      "**"
+    ],
+    "exclude": [],
+    "denyRulesVersion": "ternary-deny/2",
+    "caps": {
+      "payloadBytes": 2000000,
+      "changesetChars": 160000,
+      "contextExcerpts": 8,
+      "contextChars": 20000,
+      "snapshotBytes": 400000,
+      "snapshotFiles": 500,
+      "snapshotChunks": 500,
+      "fileBytes": 200000,
+      "evidenceCapturedChars": 24000,
+      "evidenceModelChars": 1500,
+      "manifestEntries": 5000
+    }
+  },
+  "redaction": {
+    "rulesVersion": "ternary-redaction/2",
+    "withheldFiles": [
+      {
+        "path": ".env",
+        "class": "env_file"
+      },
+      {
+        "path": "certs/server.pem",
+        "class": "key_material"
+      }
+    ],
+    "redactedSpans": [
+      {
+        "path": "src/client.ts",
+        "rule": "token.known-prefix",
+        "count": 1
+      },
+      {
+        "path": "src/notes.md",
+        "rule": "token.connection-string-password",
+        "count": 1
+      }
+    ],
+    "truncated": [],
+    "omittedManifestEntries": 0
+  }
+}

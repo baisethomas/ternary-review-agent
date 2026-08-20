@@ -154,8 +154,11 @@ const REDACTION_RULES: RedactionRule[] = [
     replace: () => "[REDACTED]",
   },
   {
-    // Connection strings with an embedded password: scheme://user:pass@host.
-    // Only the password is replaced — the host stays reviewable.
+    // Connection strings with an embedded password (scheme, user, password,
+    // then host). Only the password is replaced — the host stays reviewable.
+    // Note: this rule fires on prose too, e.g. a README line showing a sample
+    // connection URL. That is the intended bias — a sample credential in a
+    // README is still a credential-shaped string.
     rule: "token.connection-string-password",
     pattern: /\b([a-z][a-z0-9+.-]*:\/\/[^\s:/@"']+:)([^\s@/"']+)(@)/gi,
     replace: (_m, g) => `${g[0] ?? ""}[REDACTED]${g[2] ?? ""}`,

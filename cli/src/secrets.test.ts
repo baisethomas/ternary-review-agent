@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   isKeyMaterialContent,
@@ -156,6 +159,29 @@ describe("redaction rules (deny class 4)", () => {
     expect(redactSecretSpans(two).spans).toEqual([{ rule: "token.known-prefix", count: 2 }]);
     const clean = "export const ok = 1;\n";
     expect(redactSecretSpans(clean)).toEqual({ text: clean, spans: [] });
+  });
+});
+
+describe("false-positive rate on a real codebase", () => {
+  // The collector's own source is a realistic corpus: TypeScript with regexes,
+  // hex constants, base64 examples, URLs, and secret-shaped identifier names.
+  // Any redaction here would be a false positive, and false positives are the
+  // cost side of these heuristics — so the budget is zero.
+  it("redacts nothing in the collector's own source", () => {
+    const srcDir = dirname(fileURLToPath(import.meta.url));
+    const offenders: Array<{ file: string; rules: string[] }> = [];
+    let files = 0;
+    for (const name of readdirSync(srcDir).filter((f) => f.endsWith(".ts"))) {
+      files += 1;
+      const { spans } = redactSecretSpans(readFileSync(join(srcDir, name), "utf8"));
+      // The test files deliberately contain sample credentials; only the
+      // modules themselves must be clean.
+      if (spans.length > 0 && !name.endsWith(".test.ts")) {
+        offenders.push({ file: name, rules: spans.map((s) => s.rule) });
+      }
+    }
+    expect(files).toBeGreaterThan(8);
+    expect(offenders).toEqual([]);
   });
 });
 
