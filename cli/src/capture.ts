@@ -223,6 +223,23 @@ interface StatusRecord {
   untracked: boolean;
 }
 
+// True when the path named by this record is absent from the final
+// (worktree-wins) worktree: either the worktree side directly reports "D",
+// or it's a staged deletion (`git rm`, index side "D") with no untracked
+// file recreated at the path — porcelain then reports it as "D."
+// (worktreeChar ".", not "D") rather than the direct worktree-delete shape.
+// Worktree-wins still applies: if an untracked file was recreated at the
+// path, this record was already merged with that untracked record (see the
+// merge loop above), worktreeChar stays "." but `untracked` is set, so this
+// returns false and the record falls through to the normal worktree-read
+// path so the recreated content wins.
+function isWorktreeAbsent(record: StatusRecord): boolean {
+  const worktreeDeleted = record.worktreeChar === "D";
+  const stagedDeleted =
+    !worktreeDeleted && !record.untracked && record.stagedChar === "D" && ZERO_SHA.test(record.indexSha);
+  return worktreeDeleted || stagedDeleted;
+}
+
 function enumerateDefault(rootAbs: string): {
   candidates: Candidate[];
   preExcluded: Array<{ path: string; class: string }>;
@@ -269,10 +286,28 @@ function enumerateDefault(rootAbs: string): {
   }
 
   // Rename sources are represented on the renamed entry ({from, to}), never
-  // duplicated as a separate deletion (spec 7.2).
+  // duplicated as a separate deletion (spec 7.2) — but only when both sides
+  // of the pair still look like a plain rename in the final worktree:
+  //   - the destination survives to be emitted as that renamed entry. If it
+  //     was itself deleted from the worktree (and never recreated),
+  //     suppressing the source too would drop the change entirely: the
+  //     rename then collapses to a deletion of the source (TER-41), left to
+  //     flow through the normal deletion path below instead of being
+  //     suppressed here.
+  //   - the source itself was not recreated. `--no-renames` reports a rename
+  //     as a delete+add pair, so the source normally carries its own
+  //     "absent from the worktree" record; if it was instead recreated as an
+  //     untracked file after the rename, that record merges with `untracked:
+  //     true` (see the merge loop above) and no longer represents a mere
+  //     deletion — it must flow through and be captured as content.
   const renameSources = new Set<string>();
   for (const [to, rename] of stagedRenames) {
-    if (byPath.has(to)) renameSources.add(rename.from);
+    const destRecord = byPath.get(to);
+    if (destRecord === undefined || isWorktreeAbsent(destRecord)) continue;
+    const sourceRecord = byPath.get(rename.from);
+    if (sourceRecord === undefined || isWorktreeAbsent(sourceRecord)) {
+      renameSources.add(rename.from);
+    }
   }
 
   const candidates: Candidate[] = [];
@@ -306,18 +341,7 @@ function enumerateDefault(rootAbs: string): {
       });
       continue;
     }
-    const worktreeDeleted = record.worktreeChar === "D";
-    // A staged deletion (`git rm`, index side "D") with no untracked file
-    // recreated at the path: the worktree agrees with the index that the
-    // path is gone, so porcelain reports it as "D." (worktreeChar ".", not
-    // "D") rather than the worktree-delete shape above. Worktree-wins still
-    // applies: if an untracked file was recreated at the path, this record
-    // was already merged with that untracked record above (worktreeChar
-    // stays "." but `untracked` is set), and it falls through to the normal
-    // worktree-read path below so the recreated content wins.
-    const stagedDeleted =
-      !worktreeDeleted && !record.untracked && record.stagedChar === "D" && ZERO_SHA.test(record.indexSha);
-    if (worktreeDeleted || stagedDeleted) {
+    if (isWorktreeAbsent(record)) {
       // Worktree wins: absent from the worktree means deleted vs HEAD —
       // unless HEAD never had it, in which case there is nothing to report.
       if (inHead) {

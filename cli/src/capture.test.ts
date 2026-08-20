@@ -165,16 +165,81 @@ describe("capture-mode matrix (spec 7.1)", () => {
     expect(changesetEntry?.content ?? changesetEntry?.patch).toContain("recreated");
   });
 
-  it("default mode: staged rename whose target is then deleted in the worktree (documents current behavior)", () => {
+  it("default mode: staged rename whose target is then deleted in the worktree collapses to a deletion of the source (TER-41)", () => {
     const dir = makeRepo();
     writeFileSync(join(dir, "before.ts"), "line one\nline two\nline three\n");
     commitAll(dir, "base");
     g(dir, "mv", "before.ts", "after.ts");
     rmSync(join(dir, "after.ts"));
     const result = captureWorkspace(dir, "default");
-    // Documents current behavior for a neighboring case surfaced while fixing
-    // the staged-deletion finding; not itself part of that fix (see report).
-    expect(capturedPaths(result)).toEqual([]);
+    // The final worktree differs from HEAD only by the deletion of
+    // before.ts; the destination (after.ts) is gone from both the worktree
+    // and (as a rename target) never lands, so it must not silently
+    // disappear on both ends — it collapses to a deletion of the source.
+    expect(capturedPaths(result)).toEqual(["before.ts"]);
+    const deleted = candidate(result, "before.ts");
+    expect(deleted?.status).toBe("deleted");
+    expect(deleted?.kind).toBe("deleted");
+    const outcome = runExclusionPipeline(
+      result,
+      result.policy ?? { excludeRules: [], excludePatterns: [] },
+      DEFAULT_CAPS,
+      makeContentReaders(result.workspace.rootAbs, result.workspace),
+    );
+    const entry = outcome.manifest.find((m) => m.path === "before.ts");
+    expect(entry?.status).toBe("deleted");
+    expect(entry?.contentIncluded).toBe(false);
+    expect(entry?.size).toBe(0);
+  });
+
+  it("default mode: staged rename whose target is deleted then recreated as an untracked file — worktree wins, no spurious deletion", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "before.ts"), "line one\nline two\nline three\n");
+    commitAll(dir, "base");
+    g(dir, "mv", "before.ts", "after.ts");
+    rmSync(join(dir, "after.ts"));
+    writeFileSync(join(dir, "after.ts"), "recreated content\n");
+    const result = captureWorkspace(dir, "default");
+    expect(capturedPaths(result)).toEqual(["after.ts"]);
+    const renamed = candidate(result, "after.ts");
+    expect(renamed?.status).toBe("renamed");
+    expect(renamed?.from).toBe("before.ts");
+    const outcome = runExclusionPipeline(
+      result,
+      result.policy ?? { excludeRules: [], excludePatterns: [] },
+      DEFAULT_CAPS,
+      makeContentReaders(result.workspace.rootAbs, result.workspace),
+    );
+    expect(outcome.manifest.some((m) => m.status === "deleted")).toBe(false);
+    const changesetEntry = outcome.changeset?.find((c) => c.path === "after.ts");
+    expect(changesetEntry?.content ?? changesetEntry?.patch).toContain("recreated content");
+  });
+
+  it("default mode: staged rename source recreated as an untracked file after the rename — both paths represented, no spurious deletion", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "before.ts"), "line one\nline two\nline three\n");
+    commitAll(dir, "base");
+    g(dir, "mv", "before.ts", "after.ts");
+    writeFileSync(join(dir, "before.ts"), "recreated source\n");
+    const result = captureWorkspace(dir, "default");
+    expect(capturedPaths(result)).toEqual(["after.ts", "before.ts"]);
+    const renamed = candidate(result, "after.ts");
+    expect(renamed?.status).toBe("renamed");
+    expect(renamed?.from).toBe("before.ts");
+    const recreatedSource = candidate(result, "before.ts");
+    // before.ts existed in HEAD (it's the rename's origin), so the recreated
+    // worktree content compares against that HEAD blob as a modification —
+    // not a fresh addition, and not a deletion.
+    expect(recreatedSource?.status).toBe("modified");
+    const outcome = runExclusionPipeline(
+      result,
+      result.policy ?? { excludeRules: [], excludePatterns: [] },
+      DEFAULT_CAPS,
+      makeContentReaders(result.workspace.rootAbs, result.workspace),
+    );
+    expect(outcome.manifest.some((m) => m.status === "deleted")).toBe(false);
+    const sourceEntry = outcome.changeset?.find((c) => c.path === "before.ts");
+    expect(sourceEntry?.content ?? sourceEntry?.patch).toContain("recreated source");
   });
 
   it("default mode: staged renames are represented as renames, not delete+add", () => {
