@@ -2,6 +2,8 @@
 // The canonical payload shapes below implement docs/workspace-review-spec.md
 // sections 8.2 and 8.4 exactly; any change here is a schema-version change.
 
+import type { LoadedPolicy } from "./ignore.js";
+
 export const SCHEMA_VERSION = "workspace-review/1";
 export const TOOL_NAME = "ternary-cli";
 export const TOOL_VERSION = "0.1.0";
@@ -171,6 +173,10 @@ export interface CaptureResult {
   kind: ReviewKind;
   captureMode: CaptureMode;
   candidates: Candidate[];
+  // The Local Policy resolved while enumerating (root and nested ignore
+  // files). Capture owns it because only capture knows which directories
+  // contributed candidates, and it must be read exactly once.
+  policy?: LoadedPolicy;
   // Exclusions decided during enumeration (pruned deny-class directories,
   // nested repositories); merged into redaction.withheldFiles by the pipeline.
   preExcluded: Array<{ path: string; class: string }>;

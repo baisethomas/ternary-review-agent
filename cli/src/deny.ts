@@ -10,6 +10,8 @@
 // Pure module: all filesystem/git reads are injected via ContentReaders.
 
 import { unifiedDiff } from "./diff.js";
+import { isIgnored } from "./ignore.js";
+import type { LoadedPolicy } from "./ignore.js";
 import { isKeyMaterialContent, redactSecretSpans } from "./secrets.js";
 import {
   assertNoCaseCollisions,
@@ -176,89 +178,10 @@ export function isLfsPointer(text: string): boolean {
 export { isKeyMaterialContent, keyMaterialRule, redactSecretSpans } from "./secrets.js";
 
 // --- Ignore files (.gitignore / .ternaryignore) ---
-// Deliberately small glob subset for the alpha: blank lines and comments,
-// `!` negation, leading `/` anchoring, trailing `/` directory patterns,
-// `*`, `?`, and `**`. Full gitignore fidelity is TER-36. In Git capture
-// modes Git itself already honors .gitignore (--exclude-standard /
-// porcelain status); this matcher covers non-Git walks and .ternaryignore.
+// Full gitignore semantics live in ignore.ts, pinned against Git itself.
 
-export interface IgnoreRule {
-  pattern: string;
-  negated: boolean;
-  dirOnly: boolean;
-  regex: RegExp;
-}
-
-export function parseIgnoreFile(content: string): IgnoreRule[] {
-  const rules: IgnoreRule[] = [];
-  for (const rawLine of content.split("\n")) {
-    const line = rawLine.replace(/\r$/, "").trimEnd();
-    if (line === "" || line.startsWith("#")) continue;
-    let body = line;
-    let negated = false;
-    if (body.startsWith("!")) {
-      negated = true;
-      body = body.slice(1);
-    }
-    let dirOnly = false;
-    if (body.endsWith("/")) {
-      dirOnly = true;
-      body = body.slice(0, -1);
-    }
-    if (body === "") continue;
-    const anchored = body.startsWith("/") || body.slice(0, -1).includes("/");
-    if (body.startsWith("/")) body = body.slice(1);
-    const regex = globToRegex(body, anchored);
-    rules.push({ pattern: line, negated, dirOnly, regex });
-  }
-  return rules;
-}
-
-function globToRegex(glob: string, anchored: boolean): RegExp {
-  let re = "";
-  for (let i = 0; i < glob.length; i++) {
-    const ch = glob[i] as string;
-    if (ch === "*") {
-      if (glob[i + 1] === "*") {
-        re += "(?:.*)";
-        i++;
-        if (glob[i + 1] === "/") i++;
-      } else {
-        re += "[^/]*";
-      }
-    } else if (ch === "?") {
-      re += "[^/]";
-    } else {
-      re += ch.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-    }
-  }
-  const prefix = anchored ? "^" : "(?:^|/)";
-  return new RegExp(`${prefix}${re}$`);
-}
-
-// Matches a normalized relative path against rules; last match wins.
-// Pass isDir when the path names a directory so `dir/` rules can match it.
-export function isIgnored(rules: readonly IgnoreRule[], relPath: string, isDir = false): boolean {
-  let ignored = false;
-  const parents = relPath.split("/");
-  for (const rule of rules) {
-    let matched = rule.regex.test(relPath) && (!rule.dirOnly || isDir);
-    if (!matched) {
-      // Directory rules (and plain rules matching a parent directory).
-      let prefix = "";
-      for (let i = 0; i < parents.length - 1; i++) {
-        prefix = prefix === "" ? (parents[i] as string) : `${prefix}/${parents[i] as string}`;
-        if (rule.regex.test(prefix)) {
-          matched = true;
-          break;
-        }
-      }
-      if (!matched && rule.dirOnly) continue;
-    }
-    if (matched) ignored = !rule.negated;
-  }
-  return ignored;
-}
+export { isIgnored, orderRules, parseIgnoreFile } from "./ignore.js";
+export type { IgnoreRule, LoadedPolicy } from "./ignore.js";
 
 // --- Pipeline ---
 
@@ -268,11 +191,6 @@ export interface PipelineOutcome {
   snapshot?: SnapshotEntry[];
   redaction: RedactionMetadata;
   totalSourceBytes: number;
-}
-
-export interface LoadedPolicy {
-  excludeRules: IgnoreRule[]; // .ternaryignore (+ .gitignore on non-Git walks)
-  excludePatterns: string[]; // for EffectiveLocalPolicy, sorted
 }
 
 export function runExclusionPipeline(

@@ -219,6 +219,48 @@ describe("capture-mode matrix (spec 7.1)", () => {
   });
 });
 
+describe("Local Policy resolution (nested ignore files)", () => {
+  it("Git mode: a nested .ternaryignore excludes only inside its own directory", () => {
+    const dir = makeRepo();
+    mkdirSync(join(dir, "pkg", "app"), { recursive: true });
+    writeFileSync(join(dir, "pkg", "app", ".ternaryignore"), "*.gen.ts\n");
+    writeFileSync(join(dir, "pkg", "app", "a.gen.ts"), "generated\n");
+    writeFileSync(join(dir, "pkg", "app", "a.ts"), "source\n");
+    writeFileSync(join(dir, "other.gen.ts"), "not covered by the nested rule\n");
+    const result = captureWorkspace(dir, "default");
+    const outcome = runExclusionPipeline(
+      result,
+      result.policy ?? { excludeRules: [], excludePatterns: [] },
+      DEFAULT_CAPS,
+      makeContentReaders(result.workspace.rootAbs, result.workspace),
+    );
+    const included = outcome.changeset?.map((c) => c.path) ?? [];
+    expect(included).toContain("pkg/app/a.ts");
+    expect(included).toContain("other.gen.ts");
+    expect(included).not.toContain("pkg/app/a.gen.ts");
+    expect(outcome.redaction.withheldFiles).toContainEqual({
+      path: "pkg/app/a.gen.ts",
+      class: "policy_excluded",
+    });
+    expect(result.policy?.excludePatterns).toEqual(["pkg/app/:*.gen.ts"]);
+  });
+
+  it("non-Git walk: a deeper ignore file's negation wins over a shallower rule", () => {
+    const dir = makeDir();
+    writeFileSync(join(dir, ".gitignore"), "*.log\n");
+    mkdirSync(join(dir, "pkg"), { recursive: true });
+    writeFileSync(join(dir, "pkg", ".gitignore"), "!important.log\n");
+    writeFileSync(join(dir, "noise.log"), "n\n");
+    writeFileSync(join(dir, "pkg", "important.log"), "keep me\n");
+    writeFileSync(join(dir, "pkg", "other.log"), "drop me\n");
+    const result = captureWorkspace(dir, "all");
+    const paths = capturedPaths(result);
+    expect(paths).toContain("pkg/important.log");
+    expect(paths).not.toContain("pkg/other.log");
+    expect(paths).not.toContain("noise.log");
+  });
+});
+
 describe("capture edge cases (spec 7.2/7.3)", () => {
   it("ignored files never become untracked candidates in default mode", () => {
     const dir = makeRepo();

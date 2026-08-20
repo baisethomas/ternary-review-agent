@@ -79,7 +79,9 @@ export function runCli(argv: string[], io: CliIo): number {
     const args = parseArgs(argv);
     const capture = captureWorkspace(resolve(io.cwd, args.path), args.mode);
     const rootAbs = capture.workspace.rootAbs;
-    const policy = loadLocalPolicy(rootAbs, capture.workspace.vcs);
+    // Capture resolves the Local Policy while enumerating (root and nested
+    // ignore files); loadLocalPolicy is the root-only fallback.
+    const policy = capture.policy ?? loadLocalPolicy(rootAbs, capture.workspace.vcs);
     const readers = makeContentReaders(rootAbs, capture.workspace);
     const outcome = runExclusionPipeline(capture, policy, DEFAULT_CAPS, readers);
 

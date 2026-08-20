@@ -28,8 +28,10 @@ import {
   realpathSync,
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { directoryDenyClass, isIgnored, parseIgnoreFile } from "./deny.js";
-import type { IgnoreRule, LoadedPolicy } from "./deny.js";
+import { directoryDenyClass } from "./deny.js";
+import type { LoadedPolicy } from "./deny.js";
+import { isIgnored, orderRules, parseIgnoreFile } from "./ignore.js";
+import type { IgnoreRule } from "./ignore.js";
 import { CollectorError } from "./types.js";
 import type {
   Candidate,
@@ -129,19 +131,30 @@ export function captureWorkspace(rootPath: string, mode: CaptureMode): CaptureRe
         `--staged requires a Git repository; ${rootAbs} is not inside one`,
       );
     }
-    const { candidates, preExcluded } = walkWorkspace(rootAbs, loadWalkRules(rootAbs));
-    return { workspace, kind: "snapshot", captureMode: mode, candidates, preExcluded };
+    const { candidates, preExcluded, policy } = walkWorkspace(rootAbs);
+    return { workspace, kind: "snapshot", captureMode: mode, candidates, preExcluded, policy };
   }
-  if (mode === "all") {
-    const { candidates, preExcluded } = enumerateGitSnapshot(rootAbs);
-    return { workspace, kind: "snapshot", captureMode: mode, candidates, preExcluded };
-  }
-  if (mode === "staged") {
-    const { candidates, preExcluded } = enumerateStaged(rootAbs, workspace);
-    return { workspace, kind: "changeset", captureMode: mode, candidates, preExcluded };
-  }
-  const { candidates, preExcluded } = enumerateDefault(rootAbs);
-  return { workspace, kind: "changeset", captureMode: mode, candidates, preExcluded };
+  const enumerated =
+    mode === "all"
+      ? enumerateGitSnapshot(rootAbs)
+      : mode === "staged"
+        ? enumerateStaged(rootAbs, workspace)
+        : enumerateDefault(rootAbs);
+  // Nested .ternaryignore files anywhere a candidate lives are part of the
+  // effective Local Policy; Git already applied .gitignore for us.
+  const policy = loadLocalPolicy(
+    rootAbs,
+    "git",
+    directoriesOf(enumerated.candidates.map((c) => c.path)),
+  );
+  return {
+    workspace,
+    kind: mode === "all" ? "snapshot" : "changeset",
+    captureMode: mode,
+    candidates: enumerated.candidates,
+    preExcluded: enumerated.preExcluded,
+    policy,
+  };
 }
 
 // --- Default mode: HEAD vs combined index + worktree, worktree wins ---
@@ -523,22 +536,32 @@ function enumerateGitSnapshot(rootAbs: string): {
 
 // --- Non-Git bounded snapshot walk ---
 
-function loadWalkRules(rootAbs: string): IgnoreRule[] {
+// Ignore files that live in one directory, parsed with that directory as
+// their base so their rules stay scoped to it (spec: Local Policy is
+// resolved locally and recorded verbatim).
+function loadIgnoreFilesIn(rootAbs: string, relDir: string, vcs: "git" | "none"): IgnoreRule[] {
   const rules: IgnoreRule[] = [];
-  for (const name of [".gitignore", ".ternaryignore"]) {
-    const file = join(rootAbs, name);
-    if (existsSync(file)) rules.push(...parseIgnoreFile(readFileSync(file, "utf8")));
+  for (const name of ignoreFileNames(vcs)) {
+    const file = relDir === "" ? join(rootAbs, name) : join(rootAbs, relDir, name);
+    if (existsSync(file)) rules.push(...parseIgnoreFile(readFileSync(file, "utf8"), relDir));
   }
   return rules;
 }
 
-function walkWorkspace(
-  rootAbs: string,
-  rules: IgnoreRule[],
-): { candidates: Candidate[]; preExcluded: Array<{ path: string; class: string }> } {
+function walkWorkspace(rootAbs: string): {
+  candidates: Candidate[];
+  preExcluded: Array<{ path: string; class: string }>;
+  policy: LoadedPolicy;
+} {
   const candidates: Candidate[] = [];
   const preExcluded: Array<{ path: string; class: string }> = [];
-  const visit = (dirAbs: string, relPrefix: string): void => {
+  const allRules: IgnoreRule[] = [];
+  const visit = (dirAbs: string, relPrefix: string, inherited: IgnoreRule[]): void => {
+    // Nested ignore files are loaded on the way down, so a deeper file's
+    // rules already win for everything below it.
+    const own = loadIgnoreFilesIn(rootAbs, relPrefix, "none");
+    allRules.push(...own);
+    const rules = own.length === 0 ? inherited : [...inherited, ...own];
     const entries = readdirSync(dirAbs, { withFileTypes: true }).sort((a, b) =>
       a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
     );
@@ -558,7 +581,7 @@ function walkWorkspace(
           preExcluded.push({ path: rel, class: "policy_excluded" });
           continue;
         }
-        visit(join(dirAbs, entry.name), rel);
+        visit(join(dirAbs, entry.name), rel, rules);
       } else if (isIgnored(rules, rel)) {
         // Ignored files never surface, matching Git's own behavior for
         // ignored untracked files in the Git capture modes.
@@ -586,8 +609,12 @@ function walkWorkspace(
       // Sockets, FIFOs, devices: never captured.
     }
   };
-  visit(rootAbs, "");
-  return { candidates, preExcluded };
+  visit(rootAbs, "", []);
+  const ordered = orderRules(allRules);
+  const excludePatterns = allRules
+    .map((rule) => (rule.base === "" ? rule.pattern : `${rule.base}/:${rule.pattern}`))
+    .sort();
+  return { candidates, preExcluded, policy: { excludeRules: ordered, excludePatterns } };
 }
 
 // --- Worktree classification and race-safe reading (spec 7.3) ---
@@ -700,18 +727,49 @@ function readWorktreeVerified(
 }
 
 // --- Local Policy loading ---
+//
+// `.ternaryignore` is always ours to interpret (Git knows nothing about it).
+// `.gitignore` is Git's in Git capture modes — ignored files never become
+// candidates there — and ours only in a non-Git workspace.
+//
+// Nested ignore files are honored: every directory that contributes a
+// candidate is checked for its own ignore files, and a deeper file's rules
+// win (ignore.ts orderRules).
 
-export function loadLocalPolicy(rootAbs: string, vcs: "git" | "none"): LoadedPolicy {
-  const sources = vcs === "git" ? [".ternaryignore"] : [".gitignore", ".ternaryignore"];
+export function ignoreFileNames(vcs: "git" | "none"): string[] {
+  return vcs === "git" ? [".ternaryignore"] : [".gitignore", ".ternaryignore"];
+}
+
+/** Every directory prefix of the given relative paths, including "" (root). */
+export function directoriesOf(relPaths: readonly string[]): string[] {
+  const dirs = new Set<string>([""]);
+  for (const rel of relPaths) {
+    const segments = rel.split("/");
+    for (let i = 0; i < segments.length - 1; i++) {
+      dirs.add(segments.slice(0, i + 1).join("/"));
+    }
+  }
+  return [...dirs].sort();
+}
+
+export function loadLocalPolicy(
+  rootAbs: string,
+  vcs: "git" | "none",
+  dirs: readonly string[] = [""],
+): LoadedPolicy {
   const excludeRules: IgnoreRule[] = [];
   const excludePatterns: string[] = [];
-  for (const name of sources) {
-    const file = join(rootAbs, name);
-    if (!existsSync(file)) continue;
-    const rules = parseIgnoreFile(readFileSync(file, "utf8"));
-    excludeRules.push(...rules);
-    for (const rule of rules) excludePatterns.push(rule.pattern);
+  for (const dir of [...dirs].sort()) {
+    for (const name of ignoreFileNames(vcs)) {
+      const file = dir === "" ? join(rootAbs, name) : join(rootAbs, dir, name);
+      if (!existsSync(file)) continue;
+      const rules = parseIgnoreFile(readFileSync(file, "utf8"), dir);
+      excludeRules.push(...rules);
+      for (const rule of rules) {
+        excludePatterns.push(dir === "" ? rule.pattern : `${dir}/:${rule.pattern}`);
+      }
+    }
   }
   excludePatterns.sort();
-  return { excludeRules, excludePatterns };
+  return { excludeRules: orderRules(excludeRules), excludePatterns };
 }
