@@ -1,3 +1,5 @@
+import { chunkSourceFile, selectBoundedContext, selectCandidates } from "./source-context";
+
 export type RepositoryScope = {
   installationId: number;
   owner: string;
@@ -71,34 +73,12 @@ const defaultBudgets: RepositoryIndexBudgets = {
   maxChunks: 500,
 };
 
-const sourceExtension = /\.(?:[cm]?[jt]sx?|py|rb|go|rs|java|kt|swift|php|cs|sh|sql|ya?ml|json|toml|md)$/i;
-const symbolPattern = /\b(?:class|interface|type|enum|function|def|func|const|let|var|export\s+function|export\s+class)\s+([A-Za-z_$][\w$]*)/g;
-const ignoredTokens = new Set(["const", "function", "return", "export", "import", "from", "class", "interface", "this", "that", "with", "into"]);
-
 function repositoryScope(request: RepositoryScope) {
   return `${request.installationId}:${request.owner.toLowerCase()}/${request.repo.toLowerCase()}`;
 }
 
-function tokenize(value: string) {
-  return new Set(value.toLowerCase().match(/[a-z_$][a-z0-9_$]{2,}/g)?.filter((token) => !ignoredTokens.has(token)) ?? []);
-}
-
-function symbols(content: string) {
-  return [...content.matchAll(symbolPattern)].map((match) => match[1]);
-}
-
 function chunkFile(file: RepositoryFileDescriptor, content: string, budgets: RepositoryIndexBudgets): RepositoryIndexFile {
-  const lines = content.split("\n");
-  const chunks: RepositoryIndexChunk[] = [];
-  const step = Math.max(1, budgets.chunkLines - budgets.chunkOverlapLines);
-  for (let start = 0; start < lines.length; start += step) {
-    const chunkLines = lines.slice(start, start + budgets.chunkLines);
-    if (!chunkLines.length) break;
-    const chunkContent = chunkLines.join("\n");
-    chunks.push({ path: file.path, startLine: start + 1, endLine: start + chunkLines.length, symbols: symbols(chunkContent), content: chunkContent });
-    if (start + budgets.chunkLines >= lines.length) break;
-  }
-  return { ...file, chunks };
+  return { ...file, chunks: chunkSourceFile(file.path, content, budgets) };
 }
 
 async function mapWithConcurrency<T, R>(values: T[], concurrency: number, transform: (value: T) => Promise<R>) {
@@ -204,16 +184,7 @@ export class RepositoryIndexer {
     const [descriptors, previous] = await Promise.all([this.source.listFiles(request), this.store.getLatest(request)]);
     assertWithinDeadline();
     const reusable = new Map(previous?.files.map((file) => [`${file.path}:${file.blobSha}`, file]) ?? []);
-    const candidates = descriptors
-      .filter((file) => sourceExtension.test(file.path) && file.size <= this.budgets.maxFileBytes)
-      .sort((a, b) => a.path.localeCompare(b.path))
-      .slice(0, this.budgets.maxFiles);
-    let selectedBytes = 0;
-    const selected = candidates.filter((file) => {
-      if (selectedBytes + file.size > this.budgets.maxSourceBytes) return false;
-      selectedBytes += file.size;
-      return true;
-    });
+    const selected = selectCandidates(descriptors, this.budgets);
     const files = await mapWithConcurrency(selected, this.budgets.fileReadConcurrency, async (file) => {
       assertWithinDeadline();
       const existing = reusable.get(`${file.path}:${file.blobSha}`);
@@ -244,26 +215,7 @@ export class RepositoryIndexer {
         ? { status: "stale" as const, chunks: [], text: "", indexedCommitSha: latest.commitSha }
         : { status: "missing" as const, chunks: [], text: "", indexedCommitSha: null };
     }
-    const queryTokens = tokenize(query);
-    const ranked = snapshot.files.flatMap((file) => file.chunks).map((chunk) => {
-      const contentTokens = tokenize(`${chunk.path} ${chunk.symbols.join(" ")} ${chunk.content}`);
-      let score = 0;
-      for (const token of queryTokens) if (contentTokens.has(token)) score += chunk.symbols.some((symbol) => symbol.toLowerCase() === token) ? 4 : 1;
-      return { chunk, score };
-    }).filter(({ score }) => score > 0).sort((a, b) => b.score - a.score || a.chunk.path.localeCompare(b.chunk.path));
-
-    const chunks: RepositoryIndexChunk[] = [];
-    let text = "";
-    for (const { chunk } of ranked) {
-      if (chunks.length >= this.budgets.maxContextChunks) break;
-      const header = `### ${chunk.path}:${chunk.startLine}-${chunk.endLine}${chunk.symbols.length ? ` [${chunk.symbols.join(", ")}]` : ""}\n`;
-      const remaining = this.budgets.maxContextChars - text.length;
-      if (remaining <= header.length) break;
-      const excerpt = `${header}${chunk.content}\n`;
-      text += excerpt.slice(0, remaining);
-      chunks.push(chunk);
-      if (text.length >= this.budgets.maxContextChars) break;
-    }
+    const { chunks, text } = selectBoundedContext(snapshot.files.flatMap((file) => file.chunks), query, this.budgets);
     return { status: "fresh" as const, chunks, text, indexedCommitSha: snapshot.commitSha };
   }
 }
