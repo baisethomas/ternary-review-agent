@@ -11,6 +11,16 @@
 // server explicitly names (e.g. invalid_payload's `field`), never from an
 // unfiltered echo of request state.
 
+import { TransmitError } from "./types.js";
+import type { TransmitErrorCode } from "./types.js";
+
+// TransmitError/TransmitErrorCode are defined in types.ts (transport-free)
+// so that main.ts's offline dispatch can catch/inspect them without a
+// static import reaching this module. Re-exported here so every existing
+// "./transmit.js" importer (submit.ts, tests) keeps working unchanged.
+export { TransmitError };
+export type { TransmitErrorCode };
+
 export const DEFAULT_TIMEOUT_MS = 130_000;
 
 export type WorkspaceSeverity = "blocking" | "warning" | "suggestion";
@@ -57,39 +67,6 @@ export interface WorkspaceReviewResult {
     outputTokens?: number;
     estimatedCostUsd?: number;
   };
-}
-
-// Every stable error code from endpoint contract §5, plus the CLI's own
-// config/transport-local codes.
-export type TransmitErrorCode =
-  | "usage_missing_endpoint"
-  | "usage_missing_token"
-  | "unauthorized"
-  | "unsupported_encoding"
-  | "payload_too_large"
-  | "unsupported_schema_version"
-  | "invalid_payload"
-  | "digest_mismatch"
-  | "rate_limited"
-  | "concurrency_ceiling"
-  | "workspace_review_timeout"
-  | "model_failure"
-  | "gate_unavailable"
-  | "client_timeout"
-  | "aborted"
-  | "network_error"
-  | "malformed_response"
-  | "unexpected_status";
-
-export class TransmitError extends Error {
-  readonly code: TransmitErrorCode;
-  readonly httpStatus?: number;
-  constructor(code: TransmitErrorCode, message: string, httpStatus?: number) {
-    super(message);
-    this.name = "TransmitError";
-    this.code = code;
-    this.httpStatus = httpStatus;
-  }
 }
 
 export interface TransmitConfig {
@@ -384,17 +361,92 @@ function parseNonNegativeInt(value: string | null): number | undefined {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
+// Deep validation of a 200 response body against WorkspaceReviewResult
+// (mirrored from src/lib/workspace-review-types.ts's WorkspaceReviewResult).
+// A shallow check (top-level arrays/scalars only) lets malformed elements
+// through — findings: [null], a finding missing `file`, ai: null — which
+// renderResult (submit.ts) then dereferences, throwing a raw TypeError
+// instead of the TransmitError("malformed_response", ...) main.ts knows how
+// to map to an exit code. Every field the renderer or the contract touches
+// is checked here.
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isWorkspaceSeverity(value: unknown): value is WorkspaceSeverity {
+  return value === "blocking" || value === "warning" || value === "suggestion";
+}
+
+function isWorkspaceFinding(value: unknown): value is WorkspaceFinding {
+  if (typeof value !== "object" || value === null) return false;
+  const f = value as Record<string, unknown>;
+  if (typeof f.ruleId !== "string") return false;
+  if (typeof f.findingKey !== "string") return false;
+  if (!isWorkspaceSeverity(f.severity)) return false;
+  if (typeof f.file !== "string") return false;
+  if (f.line !== undefined && !Number.isInteger(f.line)) return false;
+  if (typeof f.title !== "string") return false;
+  if (typeof f.explanation !== "string") return false;
+  if (f.suggestedFix !== undefined && typeof f.suggestedFix !== "string") return false;
+  return true;
+}
+
+function isWorkspaceCommandEvidence(value: unknown): value is WorkspaceCommandEvidence {
+  if (typeof value !== "object" || value === null) return false;
+  const c = value as Record<string, unknown>;
+  if (typeof c.command !== "string") return false;
+  if (c.exitCode !== undefined && !Number.isInteger(c.exitCode)) return false;
+  if (c.output !== undefined && typeof c.output !== "string") return false;
+  return true;
+}
+
+function isWorkspaceCheckEvidence(value: unknown): value is WorkspaceCheckEvidence {
+  if (typeof value !== "object" || value === null) return false;
+  const e = value as Record<string, unknown>;
+  if (e.origin !== "local" && e.origin !== "sandbox") return false;
+  if (e.trust !== "unverified_client" && e.trust !== "isolated") return false;
+  if (e.status !== "complete" && e.status !== "partial" && e.status !== "unavailable") return false;
+  if (typeof e.label !== "string") return false;
+  if (!Array.isArray(e.commands) || !e.commands.every(isWorkspaceCommandEvidence)) return false;
+  if (e.truncation !== undefined) {
+    if (typeof e.truncation !== "object" || e.truncation === null) return false;
+    const skipped = (e.truncation as Record<string, unknown>).skippedCommands;
+    if (!Array.isArray(skipped) || !skipped.every((s) => typeof s === "string")) return false;
+  }
+  if (e.redaction !== undefined) {
+    if (typeof e.redaction !== "object" || e.redaction === null) return false;
+    if (!isFiniteNumber((e.redaction as Record<string, unknown>).redactedSpans)) return false;
+  }
+  if (e.unavailableReason !== undefined && typeof e.unavailableReason !== "string") return false;
+  return true;
+}
+
+function isDroppedFindings(value: unknown): value is { unknownPath: number } {
+  if (typeof value !== "object" || value === null) return false;
+  return isFiniteNumber((value as Record<string, unknown>).unknownPath);
+}
+
+function isAiMeta(value: unknown): value is NonNullable<WorkspaceReviewResult["ai"]> {
+  if (typeof value !== "object" || value === null) return false;
+  const a = value as Record<string, unknown>;
+  if (typeof a.model !== "string") return false;
+  if (!isFiniteNumber(a.latencyMs)) return false;
+  if (a.inputTokens !== undefined && !isFiniteNumber(a.inputTokens)) return false;
+  if (a.outputTokens !== undefined && !isFiniteNumber(a.outputTokens)) return false;
+  if (a.estimatedCostUsd !== undefined && !isFiniteNumber(a.estimatedCostUsd)) return false;
+  return true;
+}
+
 function isWorkspaceReviewResult(value: unknown): value is WorkspaceReviewResult {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
   if (v.verdict !== "pass" && v.verdict !== "findings") return false;
   if (typeof v.summary !== "string") return false;
-  if (!Array.isArray(v.findings)) return false;
-  if (!Array.isArray(v.evidence)) return false;
-  if (typeof v.redactionApplied !== "number") return false;
-  const dropped = v.droppedFindings as Record<string, unknown> | undefined;
-  if (typeof dropped !== "object" || dropped === null || typeof dropped.unknownPath !== "number") {
-    return false;
-  }
+  if (!Array.isArray(v.findings) || !v.findings.every(isWorkspaceFinding)) return false;
+  if (!Array.isArray(v.evidence) || !v.evidence.every(isWorkspaceCheckEvidence)) return false;
+  if (!isFiniteNumber(v.redactionApplied)) return false;
+  if (!isDroppedFindings(v.droppedFindings)) return false;
+  if (v.ai !== undefined && !isAiMeta(v.ai)) return false;
   return true;
 }

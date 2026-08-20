@@ -3,8 +3,10 @@
 // Two code paths live here:
 //  - --dry-run / --manifest: the offline path. It (and everything it
 //    transitively imports via collect.ts) never imports the transmit module
-//    or any networking transport, which the zero-network module-graph test
-//    asserts structurally by walking the graph rooted at collect.ts.
+//    or any networking transport. This file's own static module graph must
+//    also never reach submit.ts/transmit.ts (see the comment by the dynamic
+//    `import("./submit.js")` below) — the zero-network module-graph test
+//    asserts both, rooted at collect.ts and at this file (main.ts).
 //  - plain `ternary review .`: the submit path (submit.ts), which performs
 //    capture, prints the same summary as --dry-run, asks for interactive
 //    confirmation (or accepts --yes), then transmits and renders the result.
@@ -14,11 +16,20 @@
 import { resolve } from "node:path";
 import { collectWorkspaceReview } from "./collect.js";
 import { neutralizeControlSequences, renderReport } from "./render.js";
-import { runSubmit } from "./submit.js";
 import type { SubmitIo } from "./submit.js";
-import { TransmitError } from "./transmit.js";
-import { CollectorError } from "./types.js";
+import { CollectorError, TransmitError } from "./types.js";
 import type { CaptureMode } from "./types.js";
+
+// `runSubmit` is imported dynamically (below, only once argument parsing has
+// determined this is a real submit invocation) rather than statically at the
+// top of this module. A static `import { runSubmit } from "./submit.js"`
+// would pull submit.ts's module graph — which does reach transmit.ts, the
+// one module allowed to import an HTTP client — into every invocation of
+// this entry point, including --dry-run and --manifest. Those two flags are
+// the structurally-offline paths (spec fixed decision 7); the module graph
+// actually reachable from *this* file must never include transmit.ts (or,
+// outside a real submit, submit.ts) for that offline path. `SubmitIo` above
+// is a type-only import, erased at compile time, so it adds no runtime edge.
 
 export interface CliIo {
   stdout: (line: string) => void;
@@ -144,9 +155,9 @@ export function runCli(argv: string[], io: CliIo): number | Promise<number> {
       stdin: io.stdin ?? process.stdin,
       signal: io.signal,
     };
-    return runSubmit(rootAbs, args.mode, args.yes, submitIo).catch((error: unknown) =>
-      handleError(error, io),
-    );
+    return import("./submit.js")
+      .then(({ runSubmit }) => runSubmit(rootAbs, args.mode, args.yes, submitIo))
+      .catch((error: unknown) => handleError(error, io));
   } catch (error) {
     return handleError(error, io);
   }

@@ -293,6 +293,185 @@ describe("transmitCanonicalPayload: error status mappings", () => {
   });
 });
 
+// isWorkspaceReviewResult must deep-validate every field renderResult (and
+// the CLI↔server contract) touches, not just the top-level arrays/scalars —
+// a shallow check lets a malformed 200 body (e.g. findings: [null], a
+// finding missing `file`, ai: null) through as if it were a valid result,
+// and renderResult then dereferences it and throws a raw TypeError instead
+// of a TransmitError the CLI knows how to report (see main.ts's
+// error-to-exit-code mapping). Every case below must reject with
+// TransmitError code "malformed_response", never resolve and never throw
+// anything else.
+describe("transmitCanonicalPayload: 200 responses are deep-validated against the result shape", () => {
+  let server: RunningServer | undefined;
+  afterEach(async () => {
+    await server?.close();
+    server = undefined;
+  });
+
+  async function expectMalformed(body: unknown): Promise<void> {
+    server = await startServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+    });
+    await expect(
+      transmitCanonicalPayload(Buffer.from("{}"), "sha256:" + "55".repeat(32), config(server.url)),
+    ).rejects.toMatchObject({ code: "malformed_response" });
+  }
+
+  it("a null entry in findings", async () => {
+    await expectMalformed({ ...VALID_RESULT_BODY, findings: [null] });
+  });
+
+  it("a finding missing file", async () => {
+    await expectMalformed({
+      ...VALID_RESULT_BODY,
+      verdict: "findings",
+      findings: [
+        {
+          ruleId: "r1",
+          findingKey: "k1",
+          severity: "blocking",
+          // file is missing
+          title: "t",
+          explanation: "e",
+        },
+      ],
+    });
+  });
+
+  it("a finding with a non-integer line", async () => {
+    await expectMalformed({
+      ...VALID_RESULT_BODY,
+      verdict: "findings",
+      findings: [
+        {
+          ruleId: "r1",
+          findingKey: "k1",
+          severity: "blocking",
+          file: "a.ts",
+          line: 3.5,
+          title: "t",
+          explanation: "e",
+        },
+      ],
+    });
+  });
+
+  it("a finding with an out-of-enum severity", async () => {
+    await expectMalformed({
+      ...VALID_RESULT_BODY,
+      verdict: "findings",
+      findings: [
+        {
+          ruleId: "r1",
+          findingKey: "k1",
+          severity: "critical", // not blocking | warning | suggestion
+          file: "a.ts",
+          title: "t",
+          explanation: "e",
+        },
+      ],
+    });
+  });
+
+  it("ai: null", async () => {
+    await expectMalformed({ ...VALID_RESULT_BODY, ai: null });
+  });
+
+  it("ai missing latencyMs", async () => {
+    await expectMalformed({ ...VALID_RESULT_BODY, ai: { model: "m" } });
+  });
+
+  it("malformed droppedFindings (unknownPath as a string)", async () => {
+    await expectMalformed({ ...VALID_RESULT_BODY, droppedFindings: { unknownPath: "0" } });
+  });
+
+  it("malformed droppedFindings (missing entirely)", async () => {
+    const rest: Record<string, unknown> = { ...VALID_RESULT_BODY };
+    delete rest.droppedFindings;
+    await expectMalformed(rest);
+  });
+
+  it("an evidence entry with an invalid origin/trust combination shape", async () => {
+    await expectMalformed({
+      ...VALID_RESULT_BODY,
+      evidence: [
+        {
+          origin: "local",
+          trust: "isolated", // wrong pairing per spec, but shape-wise: still must have commands
+          status: "complete",
+          label: "npm test",
+          commands: "not-an-array",
+        },
+      ],
+    });
+  });
+
+  it("an evidence entry with a command missing `command`", async () => {
+    await expectMalformed({
+      ...VALID_RESULT_BODY,
+      evidence: [
+        {
+          origin: "local",
+          trust: "unverified_client",
+          status: "complete",
+          label: "npm test",
+          commands: [{ exitCode: 0, output: "ok" }],
+        },
+      ],
+    });
+  });
+
+  it("redactionApplied as a non-number", async () => {
+    await expectMalformed({ ...VALID_RESULT_BODY, redactionApplied: "0" });
+  });
+
+  it("a well-formed result with every optional field present still passes through", async () => {
+    server = await startServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          verdict: "findings",
+          summary: "one finding",
+          findings: [
+            {
+              ruleId: "r1",
+              findingKey: "k1",
+              severity: "warning",
+              file: "a.ts",
+              line: 3,
+              title: "t",
+              explanation: "e",
+              suggestedFix: "fix it",
+            },
+          ],
+          evidence: [
+            {
+              origin: "sandbox",
+              trust: "isolated",
+              status: "complete",
+              label: "sandbox sbx_1",
+              commands: [{ command: "npm test", exitCode: 0, output: "ok" }],
+              truncation: { skippedCommands: ["npm run lint"] },
+              redaction: { redactedSpans: 2 },
+            },
+          ],
+          redactionApplied: 1,
+          droppedFindings: { unknownPath: 2 },
+          ai: { model: "m", latencyMs: 10, inputTokens: 1, outputTokens: 2, estimatedCostUsd: 0.01 },
+        }),
+      );
+    });
+    const result = await transmitCanonicalPayload(
+      Buffer.from("{}"),
+      "sha256:" + "66".repeat(32),
+      config(server.url),
+    );
+    expect(result.verdict).toBe("findings");
+  });
+});
+
 describe("transmitCanonicalPayload: timeout", () => {
   let server: RunningServer | undefined;
   afterEach(async () => {

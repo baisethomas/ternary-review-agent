@@ -208,3 +208,47 @@ export class CollectorError extends Error {
     this.code = code;
   }
 }
+
+// --- Transmit error (transport-free) ---
+//
+// TransmitError itself carries no networking: it's a plain Error subclass
+// with a stable code. It lives here (not in transmit.ts) so that main.ts's
+// offline dispatch (--dry-run / --manifest) can do its
+// `error instanceof TransmitError` handling without any static import
+// reaching transmit.ts, the one module allowed to import an HTTP client
+// (spec fixed decision 7; docs/workspace-review-spec.md §1.7). transmit.ts
+// re-exports both names so existing importers of "./transmit.js" are
+// unaffected.
+
+// Every stable error code from endpoint contract §5, plus the CLI's own
+// config/transport-local codes.
+export type TransmitErrorCode =
+  | "usage_missing_endpoint"
+  | "usage_missing_token"
+  | "unauthorized"
+  | "unsupported_encoding"
+  | "payload_too_large"
+  | "unsupported_schema_version"
+  | "invalid_payload"
+  | "digest_mismatch"
+  | "rate_limited"
+  | "concurrency_ceiling"
+  | "workspace_review_timeout"
+  | "model_failure"
+  | "gate_unavailable"
+  | "client_timeout"
+  | "aborted"
+  | "network_error"
+  | "malformed_response"
+  | "unexpected_status";
+
+export class TransmitError extends Error {
+  readonly code: TransmitErrorCode;
+  readonly httpStatus?: number;
+  constructor(code: TransmitErrorCode, message: string, httpStatus?: number) {
+    super(message);
+    this.name = "TransmitError";
+    this.code = code;
+    this.httpStatus = httpStatus;
+  }
+}
