@@ -6,7 +6,6 @@ import {
   isLfsPointer,
   parseIgnoreFile,
   pathDenyClass,
-  redactTokens,
   runExclusionPipeline,
 } from "./deny.js";
 import { canonicalBytes } from "./payload.js";
@@ -56,10 +55,19 @@ describe("pathDenyClass (spec 4.2)", () => {
     expect(pathDenyClass("env.ts")).toBeNull();
   });
 
-  it("denies key material by name", () => {
-    for (const p of ["server.pem", "signing.key", "app.p12", "cert.pfx", "release.jks", "release.keystore", ".ssh/id_rsa", ".ssh/id_ed25519.pub"]) {
+  it("denies key material by name at any depth", () => {
+    for (const p of [
+      "server.pem", "signing.key", "app.p12", "cert.pfx", "release.jks",
+      "release.keystore", "apple.p8", "putty.ppk", "login.keychain-db",
+      "id_rsa", "deep/nested/dir/id_rsa", "backup/id_ed25519",
+      "keys/id_ecdsa.pub", "id_dsa.bak",
+    ]) {
       expect(pathDenyClass(p), p).toBe("key_material");
     }
+    // Anything under a .ssh directory is denied as a credential directory —
+    // still denied, just a more specific class.
+    expect(pathDenyClass(".ssh/id_rsa")).toBe("credential_dir");
+    expect(pathDenyClass(".ssh/known_hosts")).toBe("credential_dir");
   });
 
   it("denies credential directories", () => {
@@ -115,27 +123,8 @@ describe("content classification", () => {
   });
 });
 
-describe("redactTokens (parity with src/lib/secret-redaction.ts)", () => {
-  it("redacts known token prefixes and bearer headers", () => {
-    const input = `token=ghp_${"a".repeat(30)}\nAuthorization: Bearer abc.def.ghi\nsk-${"b".repeat(24)}`;
-    const { text, spans } = redactTokens(input);
-    expect(text).not.toContain("ghp_");
-    expect(text).not.toContain("abc.def.ghi");
-    expect(text).not.toContain("sk-" + "b".repeat(24));
-    expect(text).toContain("[REDACTED]");
-    expect(text).toContain("Authorization: Bearer [REDACTED]");
-    expect(spans.map((s) => s.rule).sort()).toEqual([
-      "token.authorization-bearer",
-      "token.known-prefix",
-    ]);
-  });
-
-  it("leaves clean text untouched", () => {
-    const { text, spans } = redactTokens("nothing secret here");
-    expect(text).toBe("nothing secret here");
-    expect(spans).toEqual([]);
-  });
-});
+// The rule set itself (every pattern, positive and negative) is exercised in
+// secrets.test.ts; this file proves the pipeline applies it.
 
 describe("ignore files (.gitignore / .ternaryignore subset)", () => {
   const rules = parseIgnoreFile(
@@ -353,6 +342,54 @@ describe("exclusion pipeline", () => {
     expect(mod?.content).toBeUndefined();
     expect(added?.content).toBe("brand new\n");
     expect(added?.patch).toBeUndefined();
+  });
+
+  it("redacts the HEAD side of a patch: a secret removed in this change never ships", () => {
+    // The base blob is not "content the user is sending" in any intuitive
+    // sense, but a unified diff carries its removed lines verbatim. A file
+    // that HELD a credential at HEAD and no longer does must still not put
+    // that credential in the payload.
+    const baseSha = "e".repeat(40);
+    const token = `ghp_${"q".repeat(30)}`;
+    const capture = fakeCapture([{ ...worktreeFile("config.ts", "modified"), baseSha }]);
+    const outcome = runExclusionPipeline(
+      capture,
+      NO_POLICY,
+      DEFAULT_CAPS,
+      fakeReaders(
+        { "config.ts": "const token = process.env.GH_TOKEN;\n" },
+        { [baseSha]: `const token = "${token}";\n` },
+      ),
+    );
+    const bytes = canonicalBytes(payloadFromOutcome(outcome)).toString("utf8");
+    expect(bytes).not.toContain(token);
+    expect(outcome.redaction.redactedSpans).toContainEqual({
+      path: "config.ts",
+      rule: "token.known-prefix",
+      count: 1,
+    });
+  });
+
+  it("never emits a patch whose base side is private key material", () => {
+    const baseSha = "f".repeat(40);
+    const key = "-----BEGIN RSA PRIVATE KEY-----\nMIIsecretkeybytes\n-----END RSA PRIVATE KEY-----\n";
+    const capture = fakeCapture([{ ...worktreeFile("deploy.txt", "modified"), baseSha }]);
+    const outcome = runExclusionPipeline(
+      capture,
+      NO_POLICY,
+      DEFAULT_CAPS,
+      fakeReaders({ "deploy.txt": "no key here anymore\n" }, { [baseSha]: key }),
+    );
+    const bytes = canonicalBytes(payloadFromOutcome(outcome)).toString("utf8");
+    expect(bytes).not.toContain("PRIVATE KEY");
+    expect(bytes).not.toContain("MIIsecretkeybytes");
+    expect(outcome.changeset?.[0]?.patch).toBeUndefined();
+    expect(outcome.changeset?.[0]?.content).toBe("no key here anymore\n");
+    expect(outcome.redaction.redactedSpans).toContainEqual({
+      path: "deploy.txt",
+      rule: "patch.base-withheld",
+      count: 1,
+    });
   });
 
   it("keeps LFS pointer text and marks it lfs (never smudges)", () => {

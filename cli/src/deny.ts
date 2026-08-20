@@ -10,6 +10,7 @@
 // Pure module: all filesystem/git reads are injected via ContentReaders.
 
 import { unifiedDiff } from "./diff.js";
+import { isKeyMaterialContent, redactSecretSpans } from "./secrets.js";
 import {
   assertNoCaseCollisions,
   comparePathsBytewise,
@@ -46,8 +47,31 @@ export type DenyClass =
   | "submodule_metadata_only"
   | "unverifiable";
 
-const KEY_EXTENSIONS = new Set([".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"]);
-const CREDENTIAL_DIRS = new Set([".aws", ".gcloud", ".azure", ".kube"]);
+const KEY_EXTENSIONS = new Set([
+  ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore",
+  // Apple keychain exports and PKCS#8/PKCS#12 variants (spec 4.2 items 2, 4).
+  ".keychain", ".keychain-db", ".p8", ".pkcs12", ".ppk",
+]);
+const CREDENTIAL_DIRS = new Set([
+  ".aws", ".gcloud", ".azure", ".kube",
+  // Equivalents in the spirit of spec 4.2 item 3 ("or equivalents").
+  ".ssh", ".gnupg", ".password-store", ".chef", ".terraform",
+]);
+// Browser and OS credential stores that show up in home-directory-rooted or
+// accidentally-committed workspaces (spec 4.2 item 4: "browser/keychain
+// exports"). Matched on the basename at any depth.
+const BROWSER_KEYCHAIN_EXPORTS = new Set([
+  "login data",
+  "login data for account",
+  "cookies.sqlite",
+  "logins.json",
+  "key3.db",
+  "key4.db",
+  "signons.sqlite",
+  "cert9.db",
+  "keychain-db",
+  "keepass.kdbx",
+]);
 const VCS_DIRS = new Set([".git", ".hg", ".svn"]);
 const DEPENDENCY_DIRS = new Set([
   "node_modules",
@@ -60,7 +84,12 @@ const DEPENDENCY_DIRS = new Set([
   ".cache",
 ]);
 const BUILD_DIRS = new Set(["dist", "build", ".next", "out", "coverage"]);
-const TOKEN_STORE_NAMES = new Set([".npmrc", ".netrc", ".pypirc", ".git-credentials"]);
+const TOKEN_STORE_NAMES = new Set([
+  ".npmrc", ".netrc", "_netrc", ".pypirc", ".git-credentials",
+  // Postgres password file and other well-known credential files.
+  ".pgpass", ".my.cnf", ".dockercfg", ".s3cfg", ".boto", "credentials.json",
+  ".htpasswd", ".rediscli_auth", ".pgservicefile",
+]);
 const BINARY_EXTENSIONS = new Set([
   ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".icns", ".pdf",
   ".zip", ".gz", ".tgz", ".bz2", ".xz", ".zst", ".tar", ".7z", ".jar",
@@ -92,18 +121,23 @@ export function pathDenyClass(relPath: string): DenyClass | null {
     if (dirClass !== null) return dirClass;
   }
   // Deny class 1: environment files, at any depth, no override.
-  if (base === ".env" || base.startsWith(".env.")) return "env_file";
-  // Deny class 2: private keys and signing material by name.
+  // `.envrc` (direnv) is included: it is an environment file in every sense
+  // that matters here, and exclusion is always the safe failure mode.
+  if (base === ".env" || base === ".envrc" || base.startsWith(".env.")) return "env_file";
+  // Deny class 2: private keys and signing material by name, at any depth.
   const ext = extensionOf(base);
   if (KEY_EXTENSIONS.has(ext)) return "key_material";
-  if (base.startsWith("id_rsa") || base.startsWith("id_ed25519")) return "key_material";
+  if (/^id_(rsa|dsa|ecdsa|ed25519|ecdsa_sk|ed25519_sk)/.test(base)) return "key_material";
   // Deny class 3: cloud credential paths not caught by directory segments.
   if (relPath.includes(".config/gcloud/")) return "credential_dir";
   if (relPath.endsWith(".docker/config.json")) return "credential_dir";
   if (segments.includes(".terraform")) return "credential_dir";
   // Deny class 4 (name-based part): auth and token stores.
   if (TOKEN_STORE_NAMES.has(base)) return "token_store";
-  if (ext === ".tfstate") return "token_store";
+  if (ext === ".tfstate" || ext === ".tfvars" || ext === ".kdbx") return "token_store";
+  if (BROWSER_KEYCHAIN_EXPORTS.has(base.toLowerCase())) return "token_store";
+  // Terraform state backups (`terraform.tfstate.backup`) and rotated secrets.
+  if (base.includes(".tfstate.")) return "token_store";
   // Deny class 5 covered by directoryDenyClass; also a bare file named .git.
   if (VCS_DIRS.has(base)) return "vcs_metadata";
   // Deny class 7: generated single-file artifacts.
@@ -128,12 +162,6 @@ export function isValidUtf8(bytes: Buffer): boolean {
   return Buffer.compare(Buffer.from(bytes.toString("utf8"), "utf8"), bytes) === 0;
 }
 
-const PEM_PRIVATE_KEY = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----/;
-
-export function isKeyMaterialContent(text: string): boolean {
-  return PEM_PRIVATE_KEY.test(text);
-}
-
 const LFS_POINTER_PREFIX = "version https://git-lfs.github.com/spec/v1";
 
 export function isLfsPointer(text: string): boolean {
@@ -141,37 +169,11 @@ export function isLfsPointer(text: string): boolean {
 }
 
 // --- Token redaction (deny class 4, content part) ---
-// Pattern parity with src/lib/secret-redaction.ts; the server applies the
-// same rules as defense in depth (spec 4.3).
+// The rules themselves live in secrets.ts; the first two are byte-for-byte
+// parity with src/lib/secret-redaction.ts, which the server applies as
+// defense in depth (spec 4.3).
 
-const TOKEN_RULES: Array<{ rule: string; pattern: RegExp; replace: (m: string) => string }> = [
-  {
-    rule: "token.known-prefix",
-    pattern: /\b(?:gh[opsu]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g,
-    replace: () => "[REDACTED]",
-  },
-  {
-    rule: "token.authorization-bearer",
-    pattern: /(authorization\s*:\s*bearer\s+)[^\s]+/gi,
-    replace: (m) => m.replace(/(authorization\s*:\s*bearer\s+)[^\s]+/gi, "$1[REDACTED]"),
-  },
-];
-
-export function redactTokens(text: string): {
-  text: string;
-  spans: Array<{ rule: string; count: number }>;
-} {
-  let out = text;
-  const spans: Array<{ rule: string; count: number }> = [];
-  for (const { rule, pattern, replace } of TOKEN_RULES) {
-    const matches = out.match(pattern);
-    if (matches !== null && matches.length > 0) {
-      out = out.replace(pattern, (m) => replace(m));
-      spans.push({ rule, count: matches.length });
-    }
-  }
-  return { text: out, spans };
-}
+export { isKeyMaterialContent, keyMaterialRule, redactSecretSpans } from "./secrets.js";
 
 // --- Ignore files (.gitignore / .ternaryignore) ---
 // Deliberately small glob subset for the alpha: blank lines and comments,
@@ -404,7 +406,7 @@ export function runExclusionPipeline(
     }
     const lfs = isLfsPointer(text);
     // Deny class 4 (content part): token spans are redacted and recorded.
-    const redacted = redactTokens(text);
+    const redacted = redactSecretSpans(text);
     text = redacted.text;
     for (const span of redacted.spans) {
       redactedSpans.push({ path, rule: span.rule, count: span.count });
@@ -412,7 +414,11 @@ export function runExclusionPipeline(
 
     // Stage 5: budgets, deterministic in sorted path order.
     if (isChangeset) {
-      const entry = buildChangesetEntry(candidate, path, text, readers);
+      const built = buildChangesetEntry(candidate, path, text, readers);
+      const entry = built.entry;
+      for (const span of built.spans) {
+        redactedSpans.push({ path, rule: span.rule, count: span.count });
+      }
       const cost = entry.patch?.length ?? entry.content?.length ?? 0;
       let included = true;
       if (contentCharsUsed + cost > caps.changesetChars) {
@@ -497,33 +503,37 @@ export function runExclusionPipeline(
   };
 }
 
+// A unified diff carries the HEAD-side lines verbatim, so the base blob is
+// transmitted content and gets the same treatment as the worktree bytes:
+// key material withholds the patch entirely (the new text is carried instead)
+// and token spans are redacted, both recorded against the entry's path.
 function buildChangesetEntry(
   candidate: Candidate,
   path: string,
   text: string,
   readers: ContentReaders,
-): ChangesetEntry {
+): { entry: ChangesetEntry; spans: Array<{ rule: string; count: number }> } {
+  const from = candidate.from !== undefined ? { from: normalizePath(candidate.from) } : {};
   if (candidate.status === "added" || candidate.baseSha === undefined) {
-    return { path, status: "added", content: text };
+    return { entry: { path, status: "added", content: text }, spans: [] };
   }
   const status = candidate.status === "renamed" ? "renamed" : "modified";
   const baseBytes = readers.readBlob(candidate.baseSha);
   if (baseBytes === null || isBinaryContent(path, baseBytes)) {
     // No usable text base: carry the full new text instead of a patch.
+    return { entry: { path, status, content: text, ...from }, spans: [] };
+  }
+  const baseText = baseBytes.toString("utf8");
+  if (isKeyMaterialContent(baseText)) {
+    // Deny class 2 applies to the base side too: no patch may exist.
     return {
-      path,
-      status,
-      content: text,
-      ...(candidate.from !== undefined ? { from: normalizePath(candidate.from) } : {}),
+      entry: { path, status, content: text, ...from },
+      spans: [{ rule: "patch.base-withheld", count: 1 }],
     };
   }
-  const patch = unifiedDiff(path, baseBytes.toString("utf8"), text);
-  return {
-    path,
-    status,
-    patch,
-    ...(candidate.from !== undefined ? { from: normalizePath(candidate.from) } : {}),
-  };
+  const redactedBase = redactSecretSpans(baseText);
+  const patch = unifiedDiff(path, redactedBase.text, text);
+  return { entry: { path, status, patch, ...from }, spans: redactedBase.spans };
 }
 
 // Truncate a string so its UTF-8 encoding fits maxBytes without splitting a

@@ -5,8 +5,13 @@
 export const SCHEMA_VERSION = "workspace-review/1";
 export const TOOL_NAME = "ternary-cli";
 export const TOOL_VERSION = "0.1.0";
-export const DENY_RULES_VERSION = "ternary-deny/1";
-export const REDACTION_RULES_VERSION = "ternary-redaction/1";
+// Bumped by TER-36: broader path deny classes (browser/keychain exports,
+// .pgpass, .ssh/.gnupg, id_* at any depth), content heuristics beyond the
+// server's mirrored patterns, and HEAD-side patch redaction. The canonical
+// payload SHAPE is unchanged, so schemaVersion stays workspace-review/1
+// (spec 8.1); only the rule-set versions move.
+export const DENY_RULES_VERSION = "ternary-deny/2";
+export const REDACTION_RULES_VERSION = "ternary-redaction/2";
 
 export type ReviewKind = "changeset" | "snapshot";
 export type CaptureMode = "default" | "staged" | "all";
