@@ -22,14 +22,26 @@ function redis() {
   return redisClient;
 }
 
+// INCR then EXPIRE as two separate REST round-trips is not atomic: if the
+// process dies (or the expire call itself fails) after the incr succeeds,
+// the key is left incremented with no TTL — stranding a rate-limit counter
+// or the single concurrency slot at 429 forever, until manual Redis
+// intervention. This script makes "increment, and set the TTL iff this is
+// the counter's first write" a single Redis-side operation: either both
+// happen or (on script/transport failure) neither does, so a persisted
+// increment can never lack its TTL.
+const INCR_WITH_EXPIRY_SCRIPT = `
+local v = redis.call("INCR", KEYS[1])
+if v == 1 then
+  redis.call("EXPIRE", KEYS[1], ARGV[1])
+end
+return v
+`;
+
 export function redisWorkspaceGateStore(): WorkspaceGateStore {
   return {
     async increment(key, ttlSeconds) {
-      const value = await redis().incr(key);
-      // Set the expiry only on the first write of a window/slot so a long-lived
-      // counter is not kept alive by later increments.
-      if (value === 1) await redis().expire(key, ttlSeconds);
-      return value;
+      return redis().eval<[string], number>(INCR_WITH_EXPIRY_SCRIPT, [key], [String(ttlSeconds)]);
     },
     async decrement(key) {
       await redis().decr(key);
