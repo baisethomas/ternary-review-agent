@@ -1,0 +1,16 @@
+diff --git a/src/pagination.ts b/src/pagination.ts
+new file mode 100644
+index 0000000..9a413de
+--- /dev/null
++++ b/src/pagination.ts
+@@ -0,0 +1,10 @@
++export interface Page<T> {
++  items: T[];
++  pageSize: number;
++}
++
++/** Returns the 0-based page containing `index`, and the slice for that page. */
++export function pageFor<T>(all: T[], index: number, pageSize: number): Page<T> {
++  const start = index - (index % pageSize);
++  return { items: all.slice(start, start + pageSize + 1), pageSize };
++}

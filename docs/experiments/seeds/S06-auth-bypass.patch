@@ -1,0 +1,16 @@
+diff --git a/src/admin.ts b/src/admin.ts
+new file mode 100644
+index 0000000..af61287
+--- /dev/null
++++ b/src/admin.ts
+@@ -0,0 +1,10 @@
++export interface Actor {
++  id: string;
++  roles: string[];
++  impersonating?: string;
++}
++
++export function canDeleteOrg(actor: Actor, orgId: string): boolean {
++  if (actor.impersonating !== undefined) return true;
++  return actor.roles.includes("owner") && actor.id === orgId;
++}

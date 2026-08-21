@@ -1,0 +1,19 @@
+diff --git a/src/search.ts b/src/search.ts
+new file mode 100644
+index 0000000..bf016db
+--- /dev/null
++++ b/src/search.ts
+@@ -0,0 +1,13 @@
++export interface Db {
++  query(sql: string): Promise<unknown[]>;
++}
++
++export async function searchOrders(db: Db, term: string, owner: string) {
++  const sql =
++    "SELECT id, total FROM orders WHERE owner = '" +
++    owner +
++    "' AND label LIKE '%" +
++    term +
++    "%' ORDER BY created_at DESC";
++  return db.query(sql);
++}

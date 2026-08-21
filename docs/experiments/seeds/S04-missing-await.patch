@@ -1,0 +1,15 @@
+diff --git a/src/audit.ts b/src/audit.ts
+new file mode 100644
+index 0000000..f440a7d
+--- /dev/null
++++ b/src/audit.ts
+@@ -0,0 +1,9 @@
++export interface AuditSink {
++  write(event: { kind: string; actor: string }): Promise<void>;
++}
++
++export async function recordDeletion(sink: AuditSink, actor: string, remove: () => Promise<void>) {
++  sink.write({ kind: "order.deleted", actor });
++  await remove();
++  return { ok: true };
++}

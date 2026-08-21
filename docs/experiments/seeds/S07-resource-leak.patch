@@ -1,0 +1,16 @@
+diff --git a/app/reports.py b/app/reports.py
+new file mode 100644
+index 0000000..044f99c
+--- /dev/null
++++ b/app/reports.py
+@@ -0,0 +1,10 @@
++import csv
++
++
++def summarize(paths):
++    totals = []
++    for path in paths:
++        handle = open(path, "r", encoding="utf-8")
++        rows = list(csv.reader(handle))
++        totals.append(sum(int(row[1]) for row in rows[1:]))
++    return totals
