@@ -1,0 +1,22 @@
+diff --git a/src/sync.ts b/src/sync.ts
+new file mode 100644
+index 0000000..c709064
+--- /dev/null
++++ b/src/sync.ts
+@@ -0,0 +1,16 @@
++export interface Remote {
++  push(batch: string[]): Promise<void>;
++}
++
++export async function syncAll(remote: Remote, batches: string[][]): Promise<{ synced: number }> {
++  let synced = 0;
++  for (const batch of batches) {
++    try {
++      await remote.push(batch);
++      synced += batch.length;
++    } catch {
++      // keep going
++    }
++  }
++  return { synced };
++}

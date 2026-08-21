@@ -1,0 +1,14 @@
+diff --git a/src/download.ts b/src/download.ts
+new file mode 100644
+index 0000000..c2e1bcf
+--- /dev/null
++++ b/src/download.ts
+@@ -0,0 +1,8 @@
++import { readFileSync } from "node:fs";
++import { join } from "node:path";
++
++const ROOT = "/srv/uploads";
++
++export function readUpload(userPath: string): Buffer {
++  return readFileSync(join(ROOT, userPath));
++}

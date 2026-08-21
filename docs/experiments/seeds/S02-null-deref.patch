@@ -1,0 +1,14 @@
+diff --git a/src/profile.ts b/src/profile.ts
+new file mode 100644
+index 0000000..e30a443
+--- /dev/null
++++ b/src/profile.ts
+@@ -0,0 +1,8 @@
++export interface Session {
++  user?: { id: string; email?: string };
++}
++
++export function displayName(session: Session): string {
++  const user = session.user;
++  return user.email.split("@")[0];
++}

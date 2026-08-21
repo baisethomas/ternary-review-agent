@@ -1,0 +1,8 @@
+diff --git a/src/control.ts b/src/control.ts
+index 91a9da7..1001055 100644
+--- a/src/control.ts
++++ b/src/control.ts
+@@ -1 +1,2 @@
+-export const buildLabel = "TERNARY_CONTROL_PLAINSTRING_9c1f2a7b40d5";
++export const buildLabel: string =
++    'TERNARY_CONTROL_PLAINSTRING_9c1f2a7b40d5';

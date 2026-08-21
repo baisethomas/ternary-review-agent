@@ -1,0 +1,15 @@
+diff --git a/app/hashing.py b/app/hashing.py
+new file mode 100644
+index 0000000..dd45dc0
+--- /dev/null
++++ b/app/hashing.py
+@@ -0,0 +1,9 @@
++import hashlib
++
++
++def hash_password(password: str) -> str:
++    return hashlib.md5(password.encode("utf-8")).hexdigest()
++
++
++def verify(password: str, digest: str) -> bool:
++    return hash_password(password) == digest
