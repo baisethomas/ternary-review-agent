@@ -5,7 +5,7 @@
     "'hooks' block below into `.claude/settings.json` (shared) or",
     "`.claude/settings.local.json` (personal). Fill in the CHECKS array at the",
     "top of check-on-stop.sh with your repo's real commands — ideally the single",
-    "'make check' named in CLAUDE.md. Run `.claude/hooks/test-hooks.sh` after any",
+    "'make check' named in AGENTS.md. Run `.claude/hooks/test-hooks.sh` after any",
     "edit; it asserts the guard blocks what it claims to.",
     "",
     "The three hooks implement: (1) verification that always runs, (2) a gate on",

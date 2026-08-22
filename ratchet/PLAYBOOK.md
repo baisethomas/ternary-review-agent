@@ -8,7 +8,7 @@ Three parts:
 - **Part II — Code:** how to work safely and verifiably in a repository.
 - **Part III — Compensation:** how to run both playbooks when the model is not the strongest available.
 
-The governing idea: most failure is process failure that capability was papering over. Move the intelligence out of the model's head and into the workflow — prompts that always load, verification that always runs, tasks small enough to check, and a human gate on everything that can't be undone.
+The governing idea: most failure is process failure that capability was papering over. Move the intelligence out of the model's head and into the workflow — instructions that always load, project memory that survives agent switches, verification that always runs, tasks small enough to check, and a human gate on choices whose blast radius warrants it.
 
 ---
 
@@ -91,7 +91,7 @@ Any "no" → not finished.
 
 ---
 
-# Part II — The Claude Code Playbook
+# Part II — The Code Playbook
 
 In chat, a wrong answer costs a correction. In a repo, a wrong action costs *state*. Everything follows from that.
 
@@ -143,15 +143,23 @@ In chat, a wrong answer costs a correction. In a repo, a wrong action costs *sta
 
 **Prevents:** the working-but-bloated PR that hides its core and smuggles in the one unrelated break.
 
-## 7. Report: what changed, why it's safe, what's left
+## 7. Maintain project memory before handing off
 
-**Procedure.** Lead with the behavior that changed. Then the shape and *why this approach*. Then verification: what ran, what it showed. Then residue: assumptions, untested paths, follow-ups, things noticed but deliberately untouched. No journey narration unless a failed approach teaches a constraint.
+**Procedure.** Project memory is part of the work, not an administrative task for the human. Read `AGENTS.md`, `.ratchet/STATE.md`, and `.ratchet/DECISIONS.md` before planning. Maintain state as work progresses and always leave it current before a nontrivial handoff.
 
-**Example.** "Rate limiting on all public endpoints — token bucket, 100 req/min per key, as middleware so new endpoints get it by default. Full suite: 112 pass, plus burst/refill tests. Not done: limits are hardcoded; per-tier is ~1 hour. Noticed: no rate limit on login attempts — separate, real issue."
+`STATE.md` is mutable: update it when milestones, active work, blockers, verification, or next actions change. Replace stale state rather than accumulating a session log.
+
+`DECISIONS.md` is durable: the agent decides when rationale is important enough for future work to retain. Routine implementation choices stay in code. Reversible medium-impact choices within authorized scope may be recorded autonomously and surfaced in the completion summary. High-impact choices — architecture replacement, destructive migrations, major dependency/platform changes, public/shared contract changes, security-sensitive policy changes, or material product-scope shifts — require explicit human approval before acceptance or execution.
+
+**Prevents:** the reset tax where every fresh model rediscovers the same constraints and the human becomes the project's memory bus.
+
+## 8. Report: what changed, why it's safe, what's left
+
+**Procedure.** Lead with the behavior that changed. Then the shape and *why this approach*. Then verification: what ran, what it showed. Then residue: assumptions, untested paths, follow-ups, things noticed but deliberately untouched. Confirm project state is current and surface any medium-impact decisions recorded or high-impact decisions awaiting approval. No journey narration unless a failed approach teaches a constraint.
 
 **Prevents:** the session log the user must reverse-engineer.
 
-## 8. The mistakes that look like competence
+## 9. The mistakes that look like competence
 
 - **Velocity theater** — instant edits without reading first is motion, not progress. (§1)
 - **The heroic diff** — fix + modernize + rename makes the fix unreviewable and the revert impossible. One change per change. (§6)
@@ -159,15 +167,18 @@ In chat, a wrong answer costs a correction. In a repo, a wrong action costs *sta
 - **Silent recovery** — a workaround for an ununderstood failure is often a second bug compensating for the first. Understand, then fix. (§4, §6)
 - **Confident API recall** — libraries have versions; memory doesn't. (§4, §5)
 - **The swallow** — `try/except: pass`, `@ts-ignore` — errors go away along with the information they carried. (§6)
-- **Presumed authority** — irreversible actions on shared state are the user's call even when obvious, because *obvious* is what the wrong answer feels like right before it's taken. (§3)
+- **Human-as-memory-bus** — making the user remember handoffs, rationale, or current state is a harness failure. (§7)
+- **Presumed authority** — high-impact or irreversible choices are the user's call even when obvious, because *obvious* is what the wrong answer feels like right before it's taken. (§3, §7)
 
-## The five-question self-test (code)
+## The seven-question self-test (code)
 
 1. Did I run it — the actual tests, the actual code — or does it merely read correct?
 2. Does `git diff` contain only the change, and can I justify every hunk?
 3. What did I assume about environment or versions, and did I say so out loud?
 4. Would this fix survive reproduce-revert-restore — do I have proof the test can fail?
-5. Is anything here irreversible or shared, and if so, did the user explicitly say go?
+5. Did I maintain `STATE.md` and record any durable medium-impact decision without making the human do project-memory bookkeeping?
+6. Is anything high-impact, irreversible, or shared, and if so, did the user explicitly say go?
+7. Could a fresh agent continue from the repository without this conversation?
 
 Any "no" → the work has only reached the stage where it *looks* done — the most dangerous stage it passes through.
 
@@ -177,7 +188,7 @@ Any "no" → the work has only reached the stage where it *looks* done — the m
 
 Three corollaries of the governing idea:
 
-1. **Never rely on the model to remember its own discipline.** Encode it in files, prompts, and hooks that fire every time.
+1. **Never rely on the model to remember its own discipline.** Encode it in files, prompts, state, and hooks that fire every time.
 2. **Replace internal judgment with external verification.** A weaker model's "looks right" is worth less; a test suite's green is worth exactly the same regardless of who wrote the code.
 3. **Shrink the unit of trust.** Smaller tasks, more frequent checkpoints, earlier review.
 
@@ -192,16 +203,18 @@ Three corollaries of the governing idea:
 
 ## Code compensation
 
-- **CLAUDE.md is the delivery mechanism.** The compressed Code playbook plus repo-specific knowledge a stronger model might have inferred (public API surface, untested modules, the one command that runs everything). Template: `drop-in/CLAUDE.md`.
-- **Hooks make verification mechanical.** Post-edit lint/typecheck; stop-hook test gate; guard hooks on destructive commands. Converts §4 and §3 from instructions into physics. Example config: `drop-in/claude-code-hooks-settings.json`.
-- **Shorten the leash.** Task size scales inversely with the capability gap. Decompose at the prompt level: (1) read and propose, no edits; (2) human review — the cheap kill-point; (3) implement one piece with tests, stop; (4) wire up, full suite. Use plan mode by default for anything nontrivial.
-- **Strengthen the ground truth.** Characterization tests before risky changes (a task weaker models do well — it manufactures their own safety net); strict CI; one unambiguous `make check` named in CLAUDE.md. Every investment here is a permanent capability transfer to whatever model works in the repo.
-- **Two-model patterns with one model.** Self-review pass ("hostile senior engineer, do not defend"); second-session review of the branch by a fresh context; pre-written escalation criteria (public API changes, migrations, security-adjacent, unreproduced bugs) — written beforehand, because in the moment the answer always feels obvious.
-- **Post-hoc audit ritual.** Two minutes on every "done": read the diff hunk by hunk; confirm shown test output, not claimed; look for the "assumed" bin (its absence is suspicious); confirm reproduce-revert-restore for bug fixes; confirm nothing irreversible ran without an explicit yes. Checklist: `drop-in/done-audit-checklist.md`.
+- **AGENTS.md is the canonical delivery mechanism.** Put the universal Code playbook and repo-specific operating knowledge in `AGENTS.md`. Template: `drop-in/AGENTS.md`. Tool-specific instruction files should be thin adapters that point to it rather than duplicate it.
+- **CLAUDE.md is a Claude Code adapter.** Use `drop-in/CLAUDE.md` only when Claude Code is part of the workflow. It should point to `AGENTS.md` and contain Claude-specific guidance, not a competing copy of the universal contract.
+- **Project memory travels with the repo.** Copy `drop-in/STATE.md` to `.ratchet/STATE.md` and `drop-in/DECISIONS.md` to `.ratchet/DECISIONS.md`. Agents maintain both automatically under the autonomy rules in `AGENTS.md`; the human should not become the synchronization layer.
+- **Hooks make verification mechanical.** Post-edit lint/typecheck; stop-hook test gate; guard hooks on destructive commands. Converts verification and hard stops from instructions into physics. Example config: `drop-in/claude-code-hooks-settings.json`.
+- **Shorten the leash.** Task size scales inversely with the capability gap. Decompose at the prompt level: read and propose; implement one piece with tests; wire up; run the full suite. Use plan mode by default for anything nontrivial where the tool supports it.
+- **Strengthen the ground truth.** Characterization tests before risky changes; strict CI; one unambiguous check command named in `AGENTS.md`. Every investment here is a permanent capability transfer to whatever model works in the repo.
+- **Two-model patterns with one model.** Self-review pass ("hostile senior engineer, do not defend"); second-session review of the branch by a fresh context; pre-written escalation criteria for high-impact work.
+- **Post-hoc audit ritual.** Read the diff hunk by hunk; confirm shown test output, not claimed; inspect assumptions; confirm reproduce-revert-restore for bug fixes; confirm state is current and nothing high-impact ran without explicit approval. Checklist: `drop-in/done-audit-checklist.md`.
 
 ## The meta-layer
 
 - **Calibrate.** The capability gap isn't uniform. Tally where the model's "done" survives audit and where it doesn't; tighten the leash only where it actually slips.
-- **Ratchet.** Every failure that gets past the system produces a permanent fix in the fixed part: a CLAUDE.md line, a hook, a test, an escalation rule. The model's ceiling is set; the system's isn't. Weaker-model-plus-system can outperform stronger-model-bare — which was always the real lesson.
+- **Ratchet.** Every failure that gets past the system produces a permanent fix in the fixed part: an `AGENTS.md` rule, project-memory entry, hook, test, or escalation rule. The model's ceiling is set; the system's isn't. Weaker-model-plus-system can outperform stronger-model-bare — which was always the real lesson.
 
-**One line:** capability is what you have; process is what you keep. When the first drops, spend the difference on the second.
+**One line:** capability is what you have; process and project memory are what you keep. When the first drops, spend the difference on the second.

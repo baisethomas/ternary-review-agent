@@ -19,7 +19,7 @@ set -uo pipefail
 MAX_BLOCKS=3
 
 # FILL-ME: the commands that constitute "verified" in this repo — ideally the
-# single `make check` named in CLAUDE.md. Each must be run so its exit status is
+# single `make check` named in AGENTS.md. Each must be run so its exit status is
 # preserved (never `cmd | tail`, which reports tail's status instead).
 CHECKS=("npm run lint --silent" "npm test --silent")
 
