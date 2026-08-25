@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
-import { DashboardLiveRefreshState, type DashboardLiveStatus } from "@/lib/dashboard-live-refresh";
+import { DashboardLiveRefreshState, liveDelayMs, type DashboardLiveStatus } from "@/lib/dashboard-live-refresh";
 
 async function fetchChangeCursor(url: string) {
   const response = await fetch(url, { cache: "no-store" });
@@ -19,7 +19,7 @@ export function DashboardLiveRefresh({ initialCursor }: { initialCursor: number 
   const [status, setStatus] = useState<DashboardLiveStatus>("live");
   useSWR("/api/dashboard/changes", fetchChangeCursor, {
     fallbackData: { cursor: initialCursor },
-    refreshInterval: 3_000,
+    refreshInterval: liveDelayMs,
     refreshWhenHidden: false,
     refreshWhenOffline: false,
     revalidateOnFocus: true,

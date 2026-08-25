@@ -120,7 +120,7 @@ Every completion summary must contain, in order:
 - CLI workspace: `cli/` has its own `npm test` and `tsconfig.build.json`; `cli/src/transmit.ts` is the only module allowed to import HTTP (enforced by `cli/src/zero-network.test.ts`)
 - Known untested / high-risk modules (extra caution, consider characterization tests first): review worker/job queue paths (`src/app/api/reviews/worker`, `src/app/api/reviews/jobs`) and the GitHub webhook handler (`src/app/api/github/webhook`)
 - Public API surface (breaking-change territory): everything under `src/app/api/**/route.ts`, and the `workspace-review/1` payload schema shared by `cli/` and `src/lib/workspace-payload-validation.ts`
-- Environment assumptions worth stating: see `.env.example` for required env vars (Neon Postgres, Upstash Redis/QStash, Vercel Sandbox, OpenRouter). Production runs on Vercel Hobby — function budgets in `src/lib/review-invocation-limits.ts` are a fixed constraint, not a tunable.
+- Environment assumptions worth stating: see `.env.example` for required env vars (Neon Postgres, Upstash Redis/QStash, Vercel Sandbox, OpenRouter). Production runs on Vercel Pro (since 2026-08-25; see `.ratchet/DECISIONS.md` D-20260825-0400) — function budgets in `src/lib/review-invocation-limits.ts` still encode the older Hobby limits and are tunable per ticket, not by drive-by edits.
 - Agent worktrees live under `.claude/worktrees/`; the stop hook's lint sweep covers them, so never leave a `.next/` build directory inside one.
 
 ## Self-test before every "done"

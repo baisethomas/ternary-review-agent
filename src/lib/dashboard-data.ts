@@ -166,11 +166,23 @@ async function getInstallationRepositories(providedInstallations?: GitHubInstall
   return groups.flat();
 }
 
+async function loadWatchedRepositoriesOrEmpty() {
+  try {
+    return await getWatchedRepositories();
+  } catch (error) {
+    console.error("Unable to load watched repositories", error);
+    return new Set<string>();
+  }
+}
+
 async function getRepositoryCatalog() {
   const appPromise = getGitHubApp();
-  const watchedPromise = getWatchedRepositories();
   const installations = await listAppInstallations();
-  const [app, installedRepositories, watchedRepositories] = await Promise.all([appPromise, getInstallationRepositories(installations), watchedPromise]);
+  const [app, installedRepositories, watchedRepositories] = await Promise.all([
+    appPromise,
+    getInstallationRepositories(installations),
+    loadWatchedRepositoriesOrEmpty(),
+  ]);
   const repositories = installedRepositories.map(({ installation, repository }) => ({
     id: repository.id,
     installationId: installation.id,
