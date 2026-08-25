@@ -25,8 +25,7 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 ## Next
 
 1. TER-44 step 2: bounded retry (≤ 2 attempts, 180 s end-to-end, second attempt routed away from the failed provider).
-2. TER-44 step 3: failed attempts stop consuming a rate-limit slot — public API behaviour under `src/app/api/workspace-reviews`, approved by ADR-0002, still a reviewed change.
-3. TER-44 step 4: amend `docs/workspace-review-spec.md` §1 decision 6 and `docs/workspace-review-endpoint.md`.
+2. (dropped after Ternary ⛔ on #41) slot refunds for failed attempts — input tokens are billed regardless, so the request gate stays the spend bound (≤ 20 invocations/hour with two attempts). Spec §1/§6 and the endpoint doc are amended in #41 with rollout-status lines; they get their final wording when step 2 lands.
 4. TER-45: pin the output contract (English, severity calibration, validation) — can land in parallel with TER-44 steps 2–3.
 5. Re-run the seeded suite incl. S05, `tablet-notes-v3`, `--all`; then the §7.2 generic-agent baseline.
 6. TER-43 (snapshot truncation) stays deprioritised until `--all` delivers at all; then TER-42, TER-33; TER-18/TER-13 later.
