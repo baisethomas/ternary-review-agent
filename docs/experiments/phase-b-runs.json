@@ -1,0 +1,397 @@
+{
+  "$comment": "TER-39 Phase B raw per-run record. Metadata, digests, findings and adjudication only: no source content, no secrets, no tokens or credentials. Token counts and cost come from the server-side WorkspaceReviewLogEntry lines and are reproduced here as measured numbers.",
+  "schema": "ter39-phase-b-runs/1",
+  "generatedUtc": "2026-08-25T11:45:00Z",
+  "endpoint": "POST /api/workspace-reviews (production)",
+  "deploymentId": "dpl_EbnBZZ4d4Q4ufBJEy7EvmUZt6Pdc",
+  "modelRequested": "~deepseek/deepseek-v4-flash-latest",
+  "modelServed": "deepseek/deepseek-v4-flash-0731",
+  "gates": { "rateLimitPerHour": 10, "maxConcurrent": 1, "deadlineMs": 120000 },
+  "totals": {
+    "liveSubmissions": 45,
+    "ok": 14,
+    "timeout504": 24,
+    "modelFailure500": 7,
+    "availabilityPct": 31.1,
+    "canaryPreflights": 45,
+    "canaryLeaks": 0,
+    "totalFindings": 87,
+    "findingsPerCompletedRun": 6.2,
+    "measuredSpendUsd": 0.011162385
+  },
+  "adjudication": {
+    "method": "docs/experiments/workspace-review-dogfood.md §7.1",
+    "seedsMeasured": 10,
+    "seedsUnmeasured": ["S05"],
+    "TP": 10,
+    "FP": 1,
+    "NOISE": 1,
+    "TP_extra": 75,
+    "seedRunInstances": 11,
+    "recallPerSeedRun": 0.909,
+    "recallPerSeed": 1.0,
+    "precision": 0.909,
+    "styleNoise": 0.083,
+    "negativeControlS12": "PASS (2/2 runs produced no finding on src/control.ts)"
+  },
+  "runs": [
+    {
+      "runId": "01-S12-r1", "seed": "S12", "repetition": 1, "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:bd6182571ac146c8400e9699f5314ea99cd54c03a47641b37af49522841807b4",
+      "payloadBytes": 4742, "capturedContentBytes": 1918, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "cliExitCode": 1, "wallClockMs": 28400, "serverDurationMs": 28312,
+      "inputTokens": 1029, "outputTokens": 2220, "estimatedCostUsd": 0.00048192,
+      "verdict": "findings", "findingCount": 5,
+      "findings": [
+        { "file": "src/index.ts", "line": 13, "severity": "blocking", "summary": "findOrder returns Order but may be undefined after cast", "adjudication": "TP_extra" },
+        { "file": "src/index.ts", "line": 10, "severity": "blocking", "summary": "orderTotal loop iterates one extra time", "adjudication": "TP_extra" },
+        { "file": "src/session.ts", "line": 2, "severity": "warning", "summary": "non-null assertion can throw", "adjudication": "TP_extra" },
+        { "file": "src/db.ts", "line": 10, "severity": "warning", "summary": "unsafeCount returns -1 for an empty array", "adjudication": "TP_extra" },
+        { "file": "src/retry.ts", "line": 8, "severity": "suggestion", "summary": "withRetry throws undefined when attempts is 0", "adjudication": "TP_extra" }
+      ],
+      "seedOutcome": "CONTROL_PASS — no finding against src/control.ts"
+    },
+    {
+      "runId": "02-S01-r1", "seed": "S01", "repetition": 1, "target": "ordinary", "captureMode": "default",
+      "digest": "sha256:792b6b6d83abc408deac11b09972194242566b3c8cf0ad84f924810a595ad77c",
+      "payloadBytes": 4878, "capturedContentBytes": 2049, "canaryVerdict": "CLEAN",
+      "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 121860, "serverDurationMs": 120003,
+      "verdict": null, "findingCount": 0, "findings": [], "seedOutcome": "BURNED"
+    },
+    {
+      "runId": "03-S02-r1", "seed": "S02", "repetition": 1, "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:ac8326f3286915868ad891d0846131684260090499f44fafb4624ff596c1e479",
+      "payloadBytes": 4723, "capturedContentBytes": 1900, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "cliExitCode": 1, "wallClockMs": 35389, "serverDurationMs": 34727,
+      "inputTokens": 1234, "outputTokens": 1685, "estimatedCostUsd": 0.000565916,
+      "verdict": "findings", "findingCount": 9,
+      "findings": [
+        { "file": "src/profile.ts", "line": 6, "severity": "blocking", "summary": "null/undefined dereference in displayName", "adjudication": "TP", "seed": "S02" },
+        { "file": "src/index.ts", "line": 9, "severity": "blocking", "summary": "off-by-one loop", "adjudication": "TP_extra" },
+        { "file": "src/db.ts", "line": 6, "severity": "blocking", "summary": "SQL injection in loadRows", "adjudication": "TP_extra" },
+        { "file": "src/session.ts", "line": 3, "severity": "blocking", "summary": "non-null assertion", "adjudication": "TP_extra" },
+        { "file": "src/index.ts", "line": 14, "severity": "blocking", "summary": "unsafe cast in findOrder", "adjudication": "TP_extra" },
+        { "file": "src/db.ts", "line": 8, "severity": "warning", "summary": "unsafeCount off-by-one", "adjudication": "TP_extra" },
+        { "file": "src/index.ts", "line": 17, "severity": "suggestion", "summary": "describeOrder could throw on empty items", "adjudication": "FP", "note": "items is a non-optional string[]; [].join() returns \"\" and does not throw" },
+        { "file": "src/config.ts", "line": 2, "severity": "suggestion", "summary": "hardcoded credentials in source", "adjudication": "TP_extra" },
+        { "file": "local-notes.txt", "line": 1, "severity": "suggestion", "summary": "hardcoded token in source", "adjudication": "TP_extra" }
+      ],
+      "seedOutcome": "TP"
+    },
+    {
+      "runId": "04-S03-r1", "seed": "S03", "repetition": 1, "target": "ordinary", "captureMode": "default",
+      "digest": "sha256:1cd0f9d24c54682f9d7ef6dc39be5789bb83c66deb2d9234f7e3011e4f24f01b",
+      "payloadBytes": 4857, "canaryVerdict": "CLEAN",
+      "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 121019, "serverDurationMs": 120001,
+      "findingCount": 0, "findings": [], "seedOutcome": "BURNED"
+    },
+    {
+      "runId": "05-S04-r1", "seed": "S04", "repetition": 1, "target": "ordinary", "captureMode": "default",
+      "digest": "sha256:827eb1eb8b30aad83e9365a30158cd8a1e21318c51a8ea63e425cd8f2ca7f39d",
+      "payloadBytes": 4814, "canaryVerdict": "CLEAN",
+      "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120875, "serverDurationMs": 120003,
+      "findingCount": 0, "findings": [], "seedOutcome": "BURNED"
+    },
+    {
+      "runId": "06-S05-r1", "seed": "S05", "repetition": 1, "target": "ordinary", "captureMode": "default",
+      "digest": "sha256:152b17bdea1ebe50f00a49910e841e7e24501bc1a5bd1d03ce79a705c1ac2134",
+      "payloadBytes": 4887, "canaryVerdict": "CLEAN",
+      "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 121523, "serverDurationMs": 120001,
+      "findingCount": 0, "findings": [], "seedOutcome": "BURNED"
+    },
+    {
+      "runId": "07-S06-r1", "seed": "S06", "repetition": 1, "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:343dd1c4cd4911e930bd9c2c3d00a81e4d4a251e1cf7281ea2c6bfc1578a8fb4",
+      "payloadBytes": 4802, "capturedContentBytes": 1981, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "cliExitCode": 1, "wallClockMs": 69920, "serverDurationMs": 68496,
+      "inputTokens": 1013, "outputTokens": 2423, "estimatedCostUsd": 0.00051718,
+      "verdict": "findings", "findingCount": 6,
+      "findings": [
+        { "file": "src/admin.ts", "line": 7, "severity": "warning", "summary": "impersonating actor bypasses all ownership checks", "adjudication": "TP", "seed": "S06" },
+        { "file": "src/index.ts", "line": 9, "severity": "blocking", "summary": "off-by-one loop", "adjudication": "TP_extra" },
+        { "file": "src/index.ts", "line": 13, "severity": "blocking", "summary": "findOrder unsafe cast", "adjudication": "TP_extra" },
+        { "file": "src/db.ts", "line": 8, "severity": "warning", "summary": "unsafeCount -1", "adjudication": "TP_extra" },
+        { "file": "src/session.ts", "line": 2, "severity": "warning", "summary": "non-null assertion", "adjudication": "TP_extra" },
+        { "file": "src/retry.ts", "line": 5, "severity": "warning", "summary": "throws undefined when attempts <= 0", "adjudication": "TP_extra" }
+      ],
+      "seedOutcome": "TP",
+      "note": "Seeded auth bypass reported at severity 'warning', not 'blocking' as the seed table expects."
+    },
+    {
+      "runId": "08-S07-r1", "seed": "S07", "repetition": 1, "target": "python", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:5bc95b6ddce6667d6b4ffe381be856670b7cb1f486ca3d25b087247ab7a33da0",
+      "payloadBytes": 2062, "capturedContentBytes": 683, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "cliExitCode": 1, "wallClockMs": 45484, "serverDurationMs": 44772,
+      "inputTokens": 592, "outputTokens": 1822, "estimatedCostUsd": 0.00059304,
+      "verdict": "findings", "findingCount": 4,
+      "findings": [
+        { "file": "app/reports.py", "line": 6, "severity": "warning", "summary": "file handle not closed in summarize", "adjudication": "TP", "seed": "S07" },
+        { "file": "app/reports.py", "line": 8, "severity": "warning", "summary": "unvalidated CSV rows cause IndexError/ValueError", "adjudication": "TP_extra" },
+        { "file": "app/store.py", "line": 14, "severity": "blocking", "summary": "SQL injection in find_user_unsafe", "adjudication": "TP_extra" },
+        { "file": "app/auth.py", "line": 2, "severity": "blocking", "summary": "is_admin always returns True", "adjudication": "TP_extra" }
+      ],
+      "seedOutcome": "TP"
+    },
+    {
+      "runId": "09-S08-r1", "seed": "S08", "repetition": 1, "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:a2450d1083331cd024dfb070dc2882acd8f95a2073e1912a579c38680b821b3c",
+      "payloadBytes": 4858, "capturedContentBytes": 2036, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "cliExitCode": 1, "wallClockMs": 79745, "serverDurationMs": 79153,
+      "inputTokens": 1039, "outputTokens": 3967, "estimatedCostUsd": 0.00079718,
+      "verdict": "findings", "findingCount": 8,
+      "findings": [
+        { "file": "src/http.ts", "line": 5, "severity": "warning", "summary": "postWithRetry does not catch fetch exceptions", "adjudication": "TP_extra", "note": "Right file, wrong defect class: names a genuine extra defect, not the seeded retry-semantics defect (no backoff / retries non-idempotent POST on any non-OK status)." },
+        { "file": "src/index.ts", "line": 9, "severity": "blocking", "summary": "off-by-one loop", "adjudication": "TP_extra" },
+        { "file": "src/index.ts", "line": 12, "severity": "blocking", "summary": "unsafe cast", "adjudication": "TP_extra" },
+        { "file": "src/db.ts", "line": 8, "severity": "warning", "summary": "unsafeCount negative", "adjudication": "TP_extra" },
+        { "file": "src/retry.ts", "line": 3, "severity": "warning", "summary": "throws undefined", "adjudication": "TP_extra" },
+        { "file": "src/session.ts", "line": 2, "severity": "warning", "summary": "non-null assertion", "adjudication": "TP_extra" },
+        { "file": "local-notes.txt", "line": 1, "severity": "warning", "summary": "hardcoded token", "adjudication": "TP_extra" },
+        { "file": "src/config.ts", "line": 3, "severity": "warning", "summary": "hardcoded AWS credentials", "adjudication": "TP_extra" }
+      ],
+      "seedOutcome": "FN"
+    },
+    {
+      "runId": "10-S09-r1", "seed": "S09", "repetition": 1, "target": "ordinary", "captureMode": "default",
+      "digest": "sha256:d6773544e8945787fad014cf89b01f3ab7eaee3b0ebca2ea791213bde71c569c",
+      "payloadBytes": 4764, "canaryVerdict": "CLEAN",
+      "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120757, "serverDurationMs": 120003,
+      "findingCount": 0, "findings": [], "seedOutcome": "BURNED"
+    },
+    {
+      "runId": "11-S10-r1", "seed": "S10", "repetition": 1, "target": "ordinary", "captureMode": "default",
+      "digest": "sha256:66cb4308863f54ed56cedba92414f8f4e1f1bf6f5e711f0bf9b4fd8424fc63ff",
+      "payloadBytes": 4743, "canaryVerdict": "CLEAN",
+      "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120598, "serverDurationMs": 120001,
+      "findingCount": 0, "findings": [], "seedOutcome": "BURNED"
+    },
+    {
+      "runId": "12-S11-r1", "seed": "S11", "repetition": 1, "target": "python", "captureMode": "default",
+      "digest": "sha256:7565690f6622be723ab722d5e7ca2a641fe44100a76e027fc4bc6ca83b50e43d",
+      "payloadBytes": 2030, "canaryVerdict": "CLEAN",
+      "httpStatus": 500, "outcome": "model_failure", "cliExitCode": 3, "wallClockMs": 47376, "serverDurationMs": 46784,
+      "findingCount": 0, "findings": [], "seedOutcome": "BURNED"
+    },
+    {
+      "runId": "25-tablet-r1", "seed": null, "target": "tablet-notes-v3", "captureMode": "default",
+      "digest": "sha256:84458a2a150ca53df8c81c0617c1fe85e7639feab233b7b1385b9e44f9470aec",
+      "payloadBytes": 43080, "capturedContentBytes": 40249, "canaryVerdict": "CLEAN",
+      "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120794, "serverDurationMs": 120002,
+      "findingCount": 0, "findings": [], "seedOutcome": "BURNED"
+    },
+    {
+      "runId": "27-todo-r1", "seed": null, "target": "todo-app", "captureMode": "default",
+      "digest": "sha256:752e6d050648ec40596b276c333ed3a0bc5e49b73a744500957296dced4ca214",
+      "payloadBytes": 9845, "canaryVerdict": "CLEAN",
+      "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120662, "serverDurationMs": 120001,
+      "findingCount": 0, "findings": [], "seedOutcome": "BURNED"
+    },
+    {
+      "runId": "28-todoall-r1", "seed": null, "target": "todo-app", "captureMode": "all", "kind": "snapshot",
+      "digest": "sha256:e7efd46e28c431efad801a881355da79de5f6015657ee122fb25f5270b6febe2",
+      "payloadBytes": 30455, "canaryVerdict": "CLEAN",
+      "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120679, "serverDurationMs": 120000,
+      "findingCount": 0, "findings": [], "seedOutcome": "BURNED"
+    },
+    {
+      "runId": "02b-S01-r1", "seed": "S01", "target": "ordinary", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120621, "canaryVerdict": "CLEAN", "payloadBytes": 4878, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "04b-S03-r1", "seed": "S03", "target": "ordinary", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120580, "canaryVerdict": "CLEAN", "payloadBytes": 4857, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "05b-S04-r1", "seed": "S04", "target": "ordinary", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120703, "canaryVerdict": "CLEAN", "payloadBytes": 4814, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "10b-S09-r1", "seed": "S09", "target": "ordinary", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120667, "canaryVerdict": "CLEAN", "payloadBytes": 4764, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "11b-S10-r1", "seed": "S10", "repetition": 1, "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:66cb4308863f54ed56cedba92414f8f4e1f1bf6f5e711f0bf9b4fd8424fc63ff",
+      "payloadBytes": 4743, "capturedContentBytes": 1914, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "cliExitCode": 1, "wallClockMs": 58737, "serverDurationMs": 58148,
+      "inputTokens": 1001, "outputTokens": 3024, "estimatedCostUsd": 0.0006244,
+      "verdict": "findings", "findingCount": 6,
+      "findings": [
+        { "file": "src/download.ts", "line": 7, "severity": "blocking", "summary": "path traversal via user-controlled path", "adjudication": "TP", "seed": "S10" },
+        { "file": "src/index.ts", "line": 9, "severity": "warning", "summary": "off-by-one loop", "adjudication": "TP_extra" },
+        { "file": "src/index.ts", "line": 14, "severity": "warning", "summary": "findOrder unsafe cast", "adjudication": "TP_extra" },
+        { "file": "src/db.ts", "line": 9, "severity": "warning", "summary": "unsafeCount -1", "adjudication": "TP_extra" },
+        { "file": "src/retry.ts", "line": 8, "severity": "warning", "summary": "throws undefined", "adjudication": "TP_extra" },
+        { "file": "src/session.ts", "line": 2, "severity": "suggestion", "summary": "non-null assertion", "adjudication": "TP_extra" }
+      ],
+      "seedOutcome": "TP"
+    },
+    {
+      "runId": "12b-S11-r1", "seed": "S11", "repetition": 1, "target": "python", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:7565690f6622be723ab722d5e7ca2a641fe44100a76e027fc4bc6ca83b50e43d",
+      "payloadBytes": 2030, "capturedContentBytes": 654, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "cliExitCode": 1, "wallClockMs": 8913, "serverDurationMs": 8117,
+      "inputTokens": 661, "outputTokens": 2952, "estimatedCostUsd": 0.00209374,
+      "verdict": "findings", "findingCount": 3,
+      "findings": [
+        { "file": "app/hashing.py", "line": 4, "severity": "blocking", "summary": "passwords hashed with unsalted MD5", "adjudication": "TP", "seed": "S11" },
+        { "file": "app/auth.py", "line": 4, "severity": "blocking", "summary": "is_admin always returns True", "adjudication": "TP_extra" },
+        { "file": "app/store.py", "line": 17, "severity": "blocking", "summary": "SQL injection in find_user_unsafe", "adjudication": "TP_extra" }
+      ],
+      "seedOutcome": "TP",
+      "note": "Did not mention the seeded non-constant-time compare in verify(); the weak-hash class was named, so scored TP."
+    },
+    {
+      "runId": "25b-tablet-r1", "seed": null, "target": "tablet-notes-v3", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120794, "canaryVerdict": "CLEAN", "payloadBytes": 43080, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "27b-todo-r1", "seed": null, "repetition": 1, "target": "todo-app", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:752e6d050648ec40596b276c333ed3a0bc5e49b73a744500957296dced4ca214",
+      "payloadBytes": 9845, "capturedContentBytes": 8623, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "cliExitCode": 1, "wallClockMs": 63843, "serverDurationMs": 63291,
+      "inputTokens": 2686, "outputTokens": 3215, "estimatedCostUsd": 0.0015953,
+      "verdict": "findings", "findingCount": 3,
+      "findings": [
+        { "file": "app/page.tsx", "line": 210, "severity": "warning", "summary": "'Clear completed' visibility is filter-scoped but the handler clears globally", "adjudication": "TP_extra", "verified": true, "note": "Confirmed against source: hasCompleted = filteredTodos.some(...), clearCompleted filters the whole todos array. Genuine cross-filter data-loss bug on real production code." },
+        { "file": "app/page.tsx", "line": 29, "severity": "suggestion", "summary": "todo added under an active filter can be invisible", "adjudication": "TP_extra" },
+        { "file": "app/page.tsx", "line": 64, "severity": "suggestion", "summary": "'Remaining' count silently became filter-scoped", "adjudication": "TP_extra", "verified": true }
+      ],
+      "seedOutcome": "N/A (real repo, no seeds)"
+    },
+    {
+      "runId": "02c-S01-r1", "seed": "S01", "target": "ordinary", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120808, "canaryVerdict": "CLEAN", "payloadBytes": 4878, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "04c-S03-r1", "seed": "S03", "repetition": 1, "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:1cd0f9d24c54682f9d7ef6dc39be5789bb83c66deb2d9234f7e3011e4f24f01b",
+      "payloadBytes": 4857, "capturedContentBytes": 2027, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "cliExitCode": 1, "wallClockMs": 54572, "serverDurationMs": 54018,
+      "inputTokens": 1025, "outputTokens": 3219, "estimatedCostUsd": 0.001234345,
+      "verdict": "findings", "findingCount": 6,
+      "findings": [
+        { "file": "src/search.ts", "line": 9, "severity": "blocking", "summary": "SQL injection via string concatenation", "adjudication": "TP", "seed": "S03" },
+        { "file": "src/index.ts", "line": 9, "severity": "blocking", "summary": "off-by-one loop", "adjudication": "TP_extra" },
+        { "file": "src/index.ts", "line": 15, "severity": "warning", "summary": "unsafe cast", "adjudication": "TP_extra" },
+        { "file": "src/session.ts", "line": 3, "severity": "warning", "summary": "non-null assertion", "adjudication": "TP_extra" },
+        { "file": "src/db.ts", "line": 9, "severity": "suggestion", "summary": "unsafeCount -1", "adjudication": "TP_extra" },
+        { "file": "src/retry.ts", "line": 2, "severity": "suggestion", "summary": "zero attempts throws undefined", "adjudication": "TP_extra" }
+      ],
+      "seedOutcome": "TP",
+      "note": "Did not report the pre-existing src/db.ts loadRows SQL injection in this run, though it did in others — same defect class, inconsistent across runs."
+    },
+    {
+      "runId": "05c-S04-r1", "seed": "S04", "repetition": 1, "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:827eb1eb8b30aad83e9365a30158cd8a1e21318c51a8ea63e425cd8f2ca7f39d",
+      "payloadBytes": 4814, "capturedContentBytes": 1994, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "cliExitCode": 1, "wallClockMs": 16696, "serverDurationMs": 16094,
+      "inputTokens": 1020, "outputTokens": 1575, "estimatedCostUsd": 0.0005838,
+      "verdict": "findings", "findingCount": 9,
+      "findings": [
+        { "file": "src/audit.ts", "line": 6, "severity": "warning", "summary": "audit write is not awaited before deletion", "adjudication": "TP", "seed": "S04" },
+        { "file": "src/index.ts", "line": 9, "severity": "blocking", "summary": "off-by-one loop", "adjudication": "TP_extra" },
+        { "file": "src/index.ts", "line": 14, "severity": "blocking", "summary": "unsafe cast", "adjudication": "TP_extra" },
+        { "file": "src/db.ts", "line": 7, "severity": "blocking", "summary": "SQL string interpolation", "adjudication": "TP_extra" },
+        { "file": "src/retry.ts", "line": 9, "severity": "blocking", "summary": "throws undefined", "adjudication": "TP_extra" },
+        { "file": "local-notes.txt", "line": 1, "severity": "blocking", "summary": "hardcoded credential", "adjudication": "TP_extra" },
+        { "file": "src/config.ts", "line": 3, "severity": "blocking", "summary": "hardcoded AWS credentials", "adjudication": "TP_extra" },
+        { "file": "src/session.ts", "line": 3, "severity": "warning", "summary": "non-null assertion", "adjudication": "TP_extra" },
+        { "file": "src/db.ts", "line": 10, "severity": "warning", "summary": "unsafeCount -1", "adjudication": "TP_extra" }
+      ],
+      "seedOutcome": "TP",
+      "note": "Six of nine findings marked 'blocking' — the same defects are 'warning' or 'suggestion' in other runs. Severity is not stable across runs."
+    },
+    {
+      "runId": "06c-S05-r1", "seed": "S05", "target": "ordinary", "httpStatus": 500, "outcome": "model_failure", "cliExitCode": 3, "wallClockMs": 103216, "canaryVerdict": "CLEAN", "payloadBytes": 4887, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "10c-S09-r1", "seed": "S09", "repetition": 1, "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:d6773544e8945787fad014cf89b01f3ab7eaee3b0ebca2ea791213bde71c569c",
+      "payloadBytes": 4764, "capturedContentBytes": 1945, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "cliExitCode": 1, "wallClockMs": 30499, "serverDurationMs": 29849,
+      "inputTokens": 1005, "outputTokens": 1764, "estimatedCostUsd": 0.00063462,
+      "verdict": "findings", "findingCount": 9,
+      "findings": [
+        { "file": "src/cache.ts", "line": 6, "severity": "warning", "summary": "cacheOnce check-then-act TOCTOU race", "adjudication": "TP", "seed": "S09", "note": "Explicitly names the TOCTOU race in the body." },
+        { "file": "src/db.ts", "line": 6, "severity": "blocking", "summary": "SQL injection in loadRows", "adjudication": "TP_extra" },
+        { "file": "src/index.ts", "line": 9, "severity": "blocking", "summary": "off-by-one loop", "adjudication": "TP_extra" },
+        { "file": "src/index.ts", "line": 14, "severity": "warning", "summary": "unsafe cast", "adjudication": "TP_extra" },
+        { "file": "src/session.ts", "line": 2, "severity": "warning", "summary": "non-null assertion", "adjudication": "TP_extra" },
+        { "file": "src/config.ts", "line": 3, "severity": "warning", "summary": "hardcoded credential placeholders", "adjudication": "TP_extra" },
+        { "file": "local-notes.txt", "line": 1, "severity": "warning", "summary": "token placeholder", "adjudication": "TP_extra" },
+        { "file": "src/retry.ts", "line": 10, "severity": "warning", "summary": "throws undefined", "adjudication": "TP_extra" },
+        { "file": "src/db.ts", "line": 9, "severity": "suggestion", "summary": "unsafeCount -1", "adjudication": "TP_extra" }
+      ],
+      "seedOutcome": "TP"
+    },
+    {
+      "runId": "02d-S01-r1", "seed": "S01", "repetition": 1, "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:792b6b6d83abc408deac11b09972194242566b3c8cf0ad84f924810a595ad77c",
+      "payloadBytes": 4878, "capturedContentBytes": 2049, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "cliExitCode": 1, "wallClockMs": 67339, "serverDurationMs": 66615,
+      "inputTokens": 1038, "outputTokens": 3174, "estimatedCostUsd": 0.00065436,
+      "verdict": "findings", "findingCount": 6,
+      "findings": [
+        { "file": "src/pagination.ts", "line": 8, "severity": "blocking", "summary": "off-by-one in pagination slice", "adjudication": "TP", "seed": "S01" },
+        { "file": "src/index.ts", "line": 9, "severity": "blocking", "summary": "off-by-one loop", "adjudication": "TP_extra" },
+        { "file": "src/index.ts", "line": 14, "severity": "warning", "summary": "unsafe type assertion", "adjudication": "TP_extra" },
+        { "file": "src/retry.ts", "line": 3, "severity": "warning", "summary": "invalid attempt count throws undefined", "adjudication": "TP_extra" },
+        { "file": "src/session.ts", "line": 2, "severity": "warning", "summary": "non-null assertion", "adjudication": "TP_extra" },
+        { "file": "src/db.ts", "line": 8, "severity": "suggestion", "summary": "returns -1 for empty rows", "adjudication": "TP_extra" }
+      ],
+      "seedOutcome": "TP"
+    },
+    {
+      "runId": "06d-S05-r1", "seed": "S05", "target": "ordinary", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120545, "canaryVerdict": "CLEAN", "payloadBytes": 4887, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "21-S08-r2", "seed": "S08", "target": "ordinary", "httpStatus": 500, "outcome": "model_failure", "cliExitCode": 3, "wallClockMs": 71372, "canaryVerdict": "CLEAN", "payloadBytes": 4858, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "28b-todoall-r1", "seed": null, "target": "todo-app", "captureMode": "all", "httpStatus": 500, "outcome": "model_failure", "cliExitCode": 3, "wallClockMs": 46931, "canaryVerdict": "CLEAN", "payloadBytes": 30455, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "25c-tablet-r1", "seed": null, "target": "tablet-notes-v3", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120720, "canaryVerdict": "CLEAN", "payloadBytes": 43080, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "13-S12-r2", "seed": "S12", "target": "ordinary", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120561, "canaryVerdict": "CLEAN", "payloadBytes": 4742, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "15-S02-r2", "seed": "S02", "target": "ordinary", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120590, "canaryVerdict": "CLEAN", "payloadBytes": 4723, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "19-S06-r2", "seed": "S06", "target": "ordinary", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120584, "canaryVerdict": "CLEAN", "payloadBytes": 4802, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "06e-S05-r1", "seed": "S05", "target": "ordinary", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120674, "canaryVerdict": "CLEAN", "payloadBytes": 4887, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "13b-S12-r2", "seed": "S12", "repetition": 2, "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:bd6182571ac146c8400e9699f5314ea99cd54c03a47641b37af49522841807b4",
+      "payloadBytes": 4742, "capturedContentBytes": 1918, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "cliExitCode": 1, "wallClockMs": 117230, "serverDurationMs": 116342,
+      "inputTokens": 1029, "outputTokens": 1199, "estimatedCostUsd": 0.000155915,
+      "verdict": "findings", "findingCount": 3,
+      "findings": [
+        { "file": "src/index.ts", "line": 10, "severity": "warning", "summary": "orderTotal 循环越界 (loop out of bounds)", "adjudication": "TP_extra", "language": "zh" },
+        { "file": "src/index.ts", "line": 14, "severity": "warning", "summary": "findOrder 返回类型断言不安全 (unsafe return type assertion)", "adjudication": "TP_extra", "language": "zh" },
+        { "file": "src/db.ts", "line": 9, "severity": "suggestion", "summary": "unsafeCount 返回值可能为负数 (may return negative)", "adjudication": "TP_extra", "language": "zh" }
+      ],
+      "seedOutcome": "CONTROL_PASS — no finding against src/control.ts",
+      "note": "Byte-identical payload to run 01-S12-r1 (same digest). Run 1 produced 5 findings in English at 28.3 s; run 2 produced 3 findings in Chinese at 116.3 s. Same input, different language, different count, different latency."
+    },
+    {
+      "runId": "21b-S08-r2", "seed": "S08", "repetition": 2, "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:a2450d1083331cd024dfb070dc2882acd8f95a2073e1912a579c38680b821b3c",
+      "payloadBytes": 4858, "capturedContentBytes": 2036, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "cliExitCode": 1, "wallClockMs": 48082, "serverDurationMs": 47443,
+      "inputTokens": 1283, "outputTokens": 1904, "estimatedCostUsd": 0.000630669,
+      "verdict": "findings", "findingCount": 10,
+      "findings": [
+        { "file": "src/http.ts", "line": 11, "severity": "suggestion", "summary": "postWithRetry retries without backoff and on any non-ok status", "adjudication": "TP", "seed": "S08", "note": "Names the seeded retry-semantics class, but only at severity 'suggestion' against a seed rated 'warning'." },
+        { "file": "src/index.ts", "line": 9, "severity": "blocking", "summary": "off-by-one loop", "adjudication": "TP_extra" },
+        { "file": "src/db.ts", "line": 6, "severity": "blocking", "summary": "SQL injection in loadRows", "adjudication": "TP_extra" },
+        { "file": "local-notes.txt", "line": 1, "severity": "blocking", "summary": "hardcoded credential", "adjudication": "TP_extra" },
+        { "file": "src/config.ts", "line": 2, "severity": "blocking", "summary": "hardcoded AWS credentials", "adjudication": "TP_extra" },
+        { "file": "src/index.ts", "line": 15, "severity": "blocking", "summary": "findOrder force-cast", "adjudication": "TP_extra" },
+        { "file": "src/session.ts", "line": 3, "severity": "blocking", "summary": "non-null assertion", "adjudication": "TP_extra" },
+        { "file": "src/db.ts", "line": 8, "severity": "warning", "summary": "unsafeCount off-by-one", "adjudication": "TP_extra" },
+        { "file": "src/retry.ts", "line": 13, "severity": "warning", "summary": "throws undefined", "adjudication": "TP_extra" },
+        { "file": "src/db.ts", "line": 8, "severity": "suggestion", "summary": "unsafeCount is unused in the changeset", "adjudication": "NOISE", "note": "Not a defect; also a duplicate target line within the same run." }
+      ],
+      "seedOutcome": "TP"
+    },
+    {
+      "runId": "15b-S02-r2", "seed": "S02", "target": "ordinary", "httpStatus": 500, "outcome": "model_failure", "cliExitCode": 3, "wallClockMs": 50999, "canaryVerdict": "CLEAN", "payloadBytes": 4723, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "19b-S06-r2", "seed": "S06", "target": "ordinary", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120606, "canaryVerdict": "CLEAN", "payloadBytes": 4802, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "22-S09-r2", "seed": "S09", "target": "ordinary", "httpStatus": 500, "outcome": "model_failure", "cliExitCode": 3, "wallClockMs": 12788, "canaryVerdict": "CLEAN", "payloadBytes": 4764, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "23-S10-r2", "seed": "S10", "target": "ordinary", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120642, "canaryVerdict": "CLEAN", "payloadBytes": 4743, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "24-S11-r2", "seed": "S11", "target": "python", "httpStatus": 500, "outcome": "model_failure", "cliExitCode": 3, "wallClockMs": 23975, "canaryVerdict": "CLEAN", "payloadBytes": 2030, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+    {
+      "runId": "25d-tablet-r1", "seed": null, "target": "tablet-notes-v3", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120726, "canaryVerdict": "CLEAN", "payloadBytes": 43080, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" }
+  ]
+}
