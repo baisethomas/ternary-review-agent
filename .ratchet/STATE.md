@@ -14,7 +14,8 @@ TER-39 Phase B (live runs against the deployed endpoint) — gated on human deci
 
 - TER-35 offline CLI collector (#32), TER-37 workspace analysis prompts + CheckEvidence provenance (#34), TER-38 `POST /api/workspace-reviews` endpoint + CLI transmit (#35, main `0d33384`).
 - TER-39 Phase A offline measurement (#36, main `7ab64c7`): `docs/experiments/workspace-review-dogfood.md`, fixtures `cli/scripts/dogfood-fixtures.sh`, harness `cli/scripts/dogfood-measure.ts`, 12 seeded-defect patches in `docs/experiments/seeds/`. All five target classes captured; secret canaries 8/8 excluded.
-- Ratchet `793fbcb` adapted: `AGENTS.md` canonical contract, thin `CLAUDE.md`, `.ratchet/` memory (this branch).
+- Ratchet `793fbcb` adapted: `AGENTS.md` canonical contract, thin `CLAUDE.md`, `.ratchet/` memory (#37, main `50030f7`).
+- Redis-quota + build fix (#38, main `ccb0138`): dashboard poll 30 s, guarded watched-repo read, `cli/scripts` excluded from root tsconfig. Vercel plan is Pro since 2026-08-25 (D-20260825-0400).
 
 ## Working on
 
@@ -31,8 +32,7 @@ TER-39 Phase B (live runs against the deployed endpoint) — gated on human deci
 ## Blocked
 
 - Phase B: waits on Next items 1–2 (human-only: Vercel env + data-egress approval).
-- Production outage since 2026-08-24 14:00 UTC: Upstash Redis free-tier monthly command quota (500k) exhausted → worker, webhook, dashboard 500. Dominant consumer was `dashboard-live-refresh.tsx` polling every 3 s (~29k commands/day per open tab); this branch raises it to 30 s and guards the `/` crash, but the quota itself only clears with an Upstash plan change (Vercel Storage → the Upstash store) or the monthly reset — human-only. Vercel moved to Pro on 2026-08-25 (Sandbox 402s should clear).
-- `main` has not deployed since #36 (`7ab64c7`, 2026-08-21): root `tsconfig.json` type-checks `cli/scripts/dogfood-measure.ts`, which imports the never-built `cli/dist`. Production is still `0d33384`. This branch excludes `cli/scripts` from the root tsconfig; until it merges, nothing ships.
+- (cleared 2026-08-25) Upstash Redis quota outage of 2026-08-24 and the broken production build since #36 — both resolved by #38 (`ccb0138`, deployed) plus the owner's Upstash plan change. Owner intends to drop the Upstash store back to the free tier at the next cycle; post-#38 usage estimate is ~100–130k commands/month, so that fits.
 
 ## Important context
 
@@ -43,7 +43,7 @@ TER-39 Phase B (live runs against the deployed endpoint) — gated on human deci
 
 ## Verification status
 
-- main `50030f7`: `npm run lint && npm test` green. `npm run build` BROKEN on main since #36 (see Blocked); green on this branch after the tsconfig exclusion (2026-08-25).
+- main `ccb0138`: `npm run lint && npm test` green (12,980 passed), `npm run build` green, production deploy READY (2026-08-25). Ternary review of #38 was 💬 with one open warning: `loadWatchedRepositoriesOrEmpty` in `dashboard-data.ts` swallows every Redis error (not just quota) and shows repos as unwatched — follow-up: surface a "watch status unavailable" state instead.
 - Known flake: `cli/src/capture.test.ts` can exceed its 5 s timeout under concurrent load in stale worktrees; not reproduced on a clean checkout.
 
 ## Open risks / assumptions
@@ -58,7 +58,7 @@ TER-39 Phase B (live runs against the deployed endpoint) — gated on human deci
 
 ## Last handoff
 
-- Updated: 2026-08-21
+- Updated: 2026-08-25
 - By: agent (Claude Code orchestrator)
-- Branch/worktree: `baise/ratchet-sync-agents-contract` (from main `7ab64c7`)
-- Last known-good commit: main `7ab64c7`
+- Branch/worktree: `main`
+- Last known-good commit: main `ccb0138` (deployed)
