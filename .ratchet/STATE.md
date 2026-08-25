@@ -8,7 +8,7 @@ Ship the Workspace Review (CLI) initiative — Linear project "Workspace Review 
 
 ## Current phase
 
-TER-39 complete (Phase A + Phase B measured). Awaiting the human's call on the Phase-B **REVISE** recommendation.
+TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call survivability per ADR-0002 (accepted, option "C then B"), with TER-45 (output contract) queued behind it.
 
 ## Completed
 
@@ -20,17 +20,16 @@ TER-39 complete (Phase A + Phase B measured). Awaiting the human's call on the P
 
 ## Working on
 
-- Nothing in flight on the code side. TER-39 write-up is uncommitted on `main` (docs only): `docs/experiments/workspace-review-dogfood.md`, `docs/experiments/phase-b-runs.json`.
+- TER-44 step 1 (spike C): bound reasoning + deterministic provider routing + streaming stall detection in `src/lib/workspace-analysis.ts`, then one 12-seed live series to measure (adopt at ≥ 80% delivery, p50 < 30 s).
 
 ## Next
 
-1. Human: decide on the TER-39 §9 **REVISE** call, then close TER-39.
-2. **Model-call survivability** is now the top product risk (84% of Phase-B failures were one aborted OpenRouter attempt). Changing the single-attempt/no-cascade rule is spec fixed decision 6 — needs an ADR and explicit human approval, not a patch.
-3. Failed attempts (504/500) currently consume a rate-limit slot and yield nothing — stop burning budget on failure.
-4. Pin the response contract: findings came back in Chinese on one run, and severity is uncalibrated (seeded auth bypass → `warning`, seeded retry defect → `suggestion`).
-5. Only after 2–4: run the §7.2 generic-agent baseline and re-run the seeded suite (S05, `tablet-notes-v3`, and `--all` were never measured).
-6. TER-43 (snapshot truncation) **drops in priority** — `--all` never completed a live run.
-7. Then TER-42, TER-33; TER-18/TER-13 after the TER-39 decision.
+1. TER-44 step 2: bounded retry (≤ 2 attempts, 180 s end-to-end, second attempt routed away from the failed provider).
+2. TER-44 step 3: failed attempts stop consuming a rate-limit slot — public API behaviour under `src/app/api/workspace-reviews`, approved by ADR-0002, still a reviewed change.
+3. TER-44 step 4: amend `docs/workspace-review-spec.md` §1 decision 6 and `docs/workspace-review-endpoint.md`.
+4. TER-45: pin the output contract (English, severity calibration, validation) — can land in parallel with TER-44 steps 2–3.
+5. Re-run the seeded suite incl. S05, `tablet-notes-v3`, `--all`; then the §7.2 generic-agent baseline.
+6. TER-43 (snapshot truncation) stays deprioritised until `--all` delivers at all; then TER-42, TER-33; TER-18/TER-13 later.
 
 ## Blocked
 

@@ -27,6 +27,7 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 ## ADR index (high impact, approved)
 
 - `docs/adr/0001-postgres-review-event-ledger.md` — Review Event ledger lives in Postgres; Redis stays queue/ephemeral state.
+- `docs/adr/0002-workspace-review-model-call-survivability.md` (accepted 2026-08-25) — supersedes Workspace Review spec fixed decision 6: up to two same-model-family attempts with bounded reasoning and deterministic provider routing inside a 180 s deadline; failed attempts do not consume a rate-limit slot. Implemented under TER-44, measured before adoption.
 - `docs/workspace-review-spec.md` §1 — the nine fixed Workspace Review decisions (separate domain concept from `Review`; client-side privacy is the boundary; explicit evidence provenance; structural zero-network collector with one transmit module; worktree-wins capture rule; versioned `workspace-review/1` payload is the CLI↔server contract).
 
 ## Decisions
