@@ -4,8 +4,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { NonRetryableReviewError } from "./review-errors";
 import {
   analyzeWorkspaceReview,
+  buildWorkspaceModelRequestBody,
   requestOpenRouterWorkspaceModel,
   WORKSPACE_MAX_OUTPUT_TOKENS,
+  WORKSPACE_MODEL_TUNING_DEFAULTS,
+  WorkspaceModelStallError,
   WorkspaceReviewTimeoutError,
   WorkspaceSandboxEvidenceRejectedError,
   type WorkspaceModelRequest,
@@ -337,7 +340,267 @@ describe("workspace analysis isolation", () => {
       schema: {},
       maxOutputTokens: 16,
       signal: new AbortController().signal,
+      tuning: WORKSPACE_MODEL_TUNING_DEFAULTS,
     })).rejects.toThrow(/OPENROUTER_API_KEY/);
     vi.unstubAllEnvs();
+  });
+});
+
+// --- TER-44 spike C: bounded reasoning, deterministic routing, streaming + stall ---
+
+const reviewPayload = { summary: "One blocking issue.", findings: [blockingFinding] };
+
+/** One SSE frame carrying a content delta. */
+function contentFrame(text: string): string {
+  return `data: ${JSON.stringify({ id: "gen-1", model: "deepseek/deepseek-v4-flash-0731", provider: "DeepInfra", choices: [{ delta: { content: text } }] })}\n\n`;
+}
+
+const usageFrame = `data: ${JSON.stringify({
+  id: "gen-1",
+  model: "deepseek/deepseek-v4-flash-0731",
+  provider: "DeepInfra",
+  choices: [{ delta: {}, finish_reason: "stop" }],
+  usage: {
+    prompt_tokens: 100,
+    completion_tokens: 40,
+    completion_tokens_details: { reasoning_tokens: 12 },
+    cost: 0.002,
+  },
+})}\n\n`;
+
+/**
+ * SSE frames for one complete review. The JSON is split mid-string so the test
+ * also proves the accumulator reassembles across chunk boundaries.
+ */
+function reviewFrames(): string[] {
+  const json = JSON.stringify(reviewPayload);
+  const mid = Math.floor(json.length / 2);
+  return [
+    ": OPENROUTER PROCESSING\n\n",
+    contentFrame(json.slice(0, mid)),
+    contentFrame(json.slice(mid)),
+    usageFrame,
+    "data: [DONE]\n\n",
+  ];
+}
+
+/** A ReadableStream emitting `frames` in order; `hold` stalls before the next frame. */
+function sseStream(frames: string[], hold?: (index: number) => Promise<void> | undefined): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let index = 0;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const waiting = hold?.(index);
+      if (waiting) await waiting;
+      if (index >= frames.length) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(encoder.encode(frames[index++]));
+    },
+  });
+}
+
+function stubFetch(makeResponse: () => Response) {
+  // Typed with the fetch arg list so the request body is readable off the call.
+  const fetchMock = vi.fn(async (...args: [url: string, init?: RequestInit]) => {
+    void args;
+    return makeResponse();
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+function sseResponse(body: ReadableStream<Uint8Array>): Response {
+  return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+}
+
+function sentBody(fetchMock: ReturnType<typeof stubFetch>): Record<string, unknown> {
+  const init = fetchMock.mock.calls[0][1];
+  return JSON.parse(init!.body as string);
+}
+
+describe("workspace model request parameters (ADR-0002 option C)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("defaults to a bounded reasoning budget, latency-sorted routing, and a 20s stall window", () => {
+    expect(WORKSPACE_MODEL_TUNING_DEFAULTS).toEqual({
+      reasoningEffort: "low",
+      providerSort: "latency",
+      stream: true,
+      stallTimeoutMs: 20_000,
+    });
+  });
+
+  it("builds a body carrying reasoning.effort, provider.sort, require_parameters and stream", () => {
+    const body = buildWorkspaceModelRequestBody({
+      model: "test/model",
+      systemPrompt: "s",
+      input: "i",
+      schema: workspaceReviewSchema,
+      maxOutputTokens: WORKSPACE_MAX_OUTPUT_TOKENS,
+      signal: new AbortController().signal,
+      tuning: WORKSPACE_MODEL_TUNING_DEFAULTS,
+    });
+
+    expect(body.reasoning).toEqual({ effort: "low" });
+    // require_parameters must survive: the request uses a strict json_schema.
+    expect(body.provider).toEqual({ require_parameters: true, sort: "latency" });
+    expect(body.stream).toBe(true);
+    // `stream_options.include_usage` is a documented no-op (OpenRouter usage
+    // accounting); sending it under require_parameters could only narrow routing.
+    expect(body).not.toHaveProperty("stream_options");
+    expect(body.max_tokens).toBe(WORKSPACE_MAX_OUTPUT_TOKENS);
+  });
+
+  it("omits stream when streaming is turned off, keeping the other knobs", () => {
+    const body = buildWorkspaceModelRequestBody({
+      model: "test/model",
+      systemPrompt: "s",
+      input: "i",
+      schema: {},
+      maxOutputTokens: 16,
+      signal: new AbortController().signal,
+      tuning: { ...WORKSPACE_MODEL_TUNING_DEFAULTS, stream: false, reasoningEffort: "none", providerSort: "throughput" },
+    });
+    expect(body).not.toHaveProperty("stream");
+    expect(body.reasoning).toEqual({ effort: "none" });
+    expect(body.provider).toEqual({ require_parameters: true, sort: "throughput" });
+  });
+
+  it("sends the tuned parameters on the wire, honouring per-call overrides", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    const fetchMock = stubFetch(() => sseResponse(sseStream(reviewFrames())));
+
+    await analyzeWorkspaceReview(changesetInput(), { tuning: { reasoningEffort: "minimal", stallTimeoutMs: 5_000 } });
+
+    const sent = sentBody(fetchMock);
+    expect(sent.reasoning).toEqual({ effort: "minimal" });
+    expect(sent.provider).toEqual({ require_parameters: true, sort: "latency" });
+    expect(sent.stream).toBe(true);
+  });
+});
+
+describe("workspace model streaming transport", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("assembles a streamed response into the same result the non-streamed path produced", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+
+    stubFetch(() => sseResponse(sseStream(reviewFrames())));
+    // Fixed clock + fixed deadline so both paths are byte-comparable (and so
+    // the deadline timer is not armed with a real-epoch-sized delay).
+    const streamed = await analyzeWorkspaceReview(changesetInput({ deadlineAt: 61_000 }), { now: () => 1_000 });
+
+    vi.unstubAllGlobals();
+    stubFetch(() => Response.json({
+      id: "gen-1",
+      model: "deepseek/deepseek-v4-flash-0731",
+      provider: "DeepInfra",
+      choices: [{ message: { content: JSON.stringify(reviewPayload) }, finish_reason: "stop" }],
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 40,
+        completion_tokens_details: { reasoning_tokens: 12 },
+        cost: 0.002,
+      },
+    }));
+    const nonStreamed = await analyzeWorkspaceReview(changesetInput({ deadlineAt: 61_000 }), { now: () => 1_000, tuning: { stream: false } });
+
+    expect(streamed).toEqual(nonStreamed);
+    expect(streamed.ai).toMatchObject({
+      model: "deepseek/deepseek-v4-flash-0731",
+      provider: "DeepInfra",
+      inputTokens: 100,
+      outputTokens: 40,
+      reasoningTokens: 12,
+      estimatedCostUsd: 0.002,
+    });
+    expect(streamed.findings).toHaveLength(1);
+  });
+
+  it("fails a mid-stream provider error rather than returning a truncated review", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    stubFetch(() => sseResponse(sseStream([
+      contentFrame("{\"summary\":\"partial"),
+      `data: ${JSON.stringify({ error: { code: "server_error", message: "Provider disconnected unexpectedly" }, choices: [{ finish_reason: "error" }] })}\n\n`,
+    ])));
+
+    await expect(analyzeWorkspaceReview(changesetInput()))
+      .rejects.toThrow(/Provider disconnected unexpectedly/);
+  });
+
+  it("aborts a stalled stream inside the stall window with a distinct error, not the deadline error", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    // First frame arrives, then the provider goes silent forever.
+    stubFetch(() => sseResponse(sseStream(
+      [contentFrame("{\"summary\":\"")],
+      (index) => (index >= 1 ? new Promise<void>(() => {}) : undefined),
+    )));
+
+    // Deadline is 120s; the stall window is 20s. The stall must win.
+    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 120_000 }));
+    const expectation = expect(pending).rejects.toBeInstanceOf(WorkspaceModelStallError);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await expectation;
+  });
+
+  it("reports the stall window in the stall error message", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    stubFetch(() => sseResponse(sseStream([], () => new Promise<void>(() => {}))));
+
+    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 120_000 }), {
+      tuning: { stallTimeoutMs: 7_000 },
+    });
+    const expectation = expect(pending).rejects.toThrow(/no bytes received for 7000ms/);
+    await vi.advanceTimersByTimeAsync(7_000);
+    await expectation;
+  });
+
+  it("lets the end-to-end deadline win over a stream that is slow but alive", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    // A frame every 5s: never stalls for 20s, but never finishes before 12s either.
+    const frames = Array.from({ length: 20 }, () => contentFrame("x"));
+    stubFetch(() => sseResponse(sseStream(
+      frames,
+      (index) => (index === 0 ? undefined : new Promise<void>((resolve) => setTimeout(resolve, 5_000))),
+    )));
+
+    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 12_000 }));
+    const expectation = expect(pending).rejects.toBeInstanceOf(WorkspaceReviewTimeoutError);
+    await vi.advanceTimersByTimeAsync(12_000);
+    await expectation;
+  });
+});
+
+describe("stall error survives the deadline-abort path", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reports a stall as a stall even when the deadline abort fires in the same tick", async () => {
+    vi.useFakeTimers();
+    // Models the narrow race the guard exists for: the stream stalls at the
+    // same moment the end-to-end deadline aborts the outer signal. Without the
+    // explicit stall passthrough the aborted-signal check would relabel this a
+    // timeout and the measurement would lose the cause.
+    const requestModel: WorkspaceModelRequest = vi.fn((request) => new Promise<WorkspaceModelResponse>((_resolve, reject) => {
+      request.signal.addEventListener("abort", () => reject(new WorkspaceModelStallError(20_000)));
+    }));
+    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 5_000 }), { requestModel });
+    const expectation = expect(pending).rejects.toBeInstanceOf(WorkspaceModelStallError);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expectation;
   });
 });

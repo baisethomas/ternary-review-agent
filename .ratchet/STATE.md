@@ -20,7 +20,8 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 
 ## Working on
 
-- TER-44 step 1 (spike C): bound reasoning + deterministic provider routing + streaming stall detection in `src/lib/workspace-analysis.ts`, then one 12-seed live series to measure (adopt at ≥ 80% delivery, p50 < 30 s).
+- TER-44 step 1 (spike C) on branch `baise/ter-44-survivability-spike`: implementation **done, uncommitted, unmeasured**. `src/lib/workspace-analysis.ts` now sends `reasoning: { effort }`, `provider: { require_parameters: true, sort }` and `stream: true`, assembles the SSE deltas, and aborts on a configurable stall window (default 20 s) with a distinct `WorkspaceModelStallError`. Knobs live in `WORKSPACE_MODEL_TUNING_DEFAULTS` / `WorkspaceAnalysisDeps.tuning`, not in the fetch body. Log line gained `provider`, `reasoningTokens`, `stallAborted`.
+- **Next action is measurement, and it needs a deploy** (a human hard stop): once a preview carries this change, run `TER44_ENDPOINT=<preview>/api/workspace-reviews bash <scratch>/ter44/run-series.sh` — 12 seeds × 1 rep against the TER-39 fixtures, tallying outcome and wall-clock. Adopt at ≥ 80% delivery and p50 < 30 s.
 
 ## Next
 
@@ -51,6 +52,8 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 
 ## Open risks / assumptions
 
+- **The reasoning bound may be a no-op on the current model.** OpenRouter's schema accepts `reasoning.effort` in `max|xhigh|high|medium|low|minimal|none`, but the `deepseek/deepseek-v4-flash` model page documents only `high` and `xhigh` as natively supported and OpenRouter maps unsupported efforts to the nearest supported behaviour. If the spike series does not move p50, ADR-0002 §Decision step 1 says switch to a non-reasoning model in the same price class (every `deepseek-v4-flash` endpoint prices at ~$0.07–$0.44 / M prompt tokens) and re-measure — that model choice is a medium-impact decision to record when taken.
+- `stream_options: { include_usage: true }` is a **documented no-op** (OpenRouter usage accounting: usage is always included, and the parameter is deprecated), so it is deliberately not sent — sending it under `require_parameters: true` could only narrow routing. Usage now comes off the last SSE chunk.
 - Phase-B quality numbers are **un-baselined** (§7.2 never ran) and rest on 14 completed reviews, one repeated seed, one real repository. Read recall as "not obviously broken", not as an accuracy figure.
 - Precision (90.9%) is the least trustworthy number in the report: the `ordinary` fixture's baseline is dense with genuine defects, so §7.1 routes most findings to `TP_extra` rather than FP.
 - OpenRouter's per-token price is **not derivable** from `estimatedCostUsd` (cost per reported output token varies 5× across runs — likely unreported reasoning tokens). Measured per-review spend is the number to plan with.
@@ -63,7 +66,8 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 
 ## Last handoff
 
-- Updated: 2026-08-25 (TER-39 Phase B measurement)
+- Updated: 2026-08-25 (TER-44 spike C implemented, awaiting deploy + live series)
 - By: agent (Claude Code)
-- Branch/worktree: `main` (docs edits uncommitted)
+- Branch/worktree: `baise/ter-44-survivability-spike` (spike C uncommitted; a separate Git agent commits)
 - Last known-good commit: main `ccb0138` (deployed)
+- Verified on this branch: `npm run lint` clean; `npx vitest run --dir src` 602 passed / 9 skipped; `npx vitest run src/lib/workspace-analysis.test.ts src/lib/workspace-review-route.test.ts` 83 passed; `npm run build` green (clear `.next/cache` first if the build worker dies with a WasmHash dump).
