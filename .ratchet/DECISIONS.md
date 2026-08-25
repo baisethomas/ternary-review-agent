@@ -33,7 +33,7 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 
 ### D-20260818-0000-vercel-hobby-is-fixed — Vercel Hobby plan is a design constraint, not a tunable
 
-- **Status:** accepted
+- **Status:** superseded by D-20260825-0400-vercel-pro-plan
 - **Impact:** medium
 - **Date:** 2026-08-18
 - **Decision:** Production stays on Vercel Hobby. Concretely: 300 s hard function cap, Vercel crons at most daily (QStash schedule in `review-worker-wake-schedule.ts` is the wake floor), Vercel Sandbox limited to 5 Active-CPU-hours/month so sandbox evidence is best-effort and reviews degrade to AI-only with `status: "unavailable"`. Per-invocation budgets live in `src/lib/review-invocation-limits.ts` and features are shaped to fit them (e.g. the Workspace Review endpoint's single model attempt, ≤120 s deadline).
@@ -66,3 +66,15 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 - **Consequences:** Agents must read `.ratchet/*` before planning and leave `STATE.md` current at handoff.
 - **Revisit when:** the ADR directory grows enough that indexing here is noise.
 - **Approved by:** agent (requested by owner: "adapt Ratchet to this project")
+
+### D-20260825-0400-vercel-pro-plan — Production moved to Vercel Pro; Hobby-derived budgets are now tunable
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-08-25
+- **Decision:** The owner upgraded the `ternary-review-agent` Vercel team to Pro on 2026-08-25 (during the Upstash quota outage). Supersedes D-20260818-0000. Hobby-derived limits are no longer fixed: function `maxDuration` may go up to 800 s (`review-invocation-limits.ts` already carries a Pro target), sub-daily Vercel crons are allowed, and Vercel Sandbox has the Pro quota (the 402 "Hobby plan usage limit exceeded" errors since 2026-08-20 should clear). Nothing in code was changed by this decision; each budget is revisited on its own ticket.
+- **Why:** Hobby Sandbox quota was exhausted by 2026-08-20 and the plan's ceilings were constraining the Workspace Review design; the owner chose to pay rather than keep shaping features to Hobby.
+- **Rejected / alternatives:** Staying on Hobby (the previous decision).
+- **Consequences:** Upstash Redis is a separate Marketplace plan and is NOT upgraded by this — its 500k-command free tier still needs its own plan change or the monthly reset. Spec §1.6 (Workspace Review single attempt, ≤120 s deadline) was justified by Hobby and may be reopened.
+- **Revisit when:** budgets in `review-invocation-limits.ts` are retuned, or the plan changes again.
+- **Approved by:** Baise Thomas (owner)

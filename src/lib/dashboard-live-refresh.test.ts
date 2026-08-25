@@ -5,22 +5,21 @@ describe("dashboard live refresh state", () => {
   it("starts from the server-rendered cursor and refreshes only for a newer cursor", () => {
     const state = new DashboardLiveRefreshState(12);
 
-    expect(state.observe(12)).toEqual({ refresh: false, status: "live", delayMs: 3_000 });
-    expect(state.observe(11)).toEqual({ refresh: false, status: "live", delayMs: 3_000 });
-    expect(state.observe(13)).toEqual({ refresh: true, status: "live", delayMs: 3_000 });
+    expect(state.observe(12)).toEqual({ refresh: false, status: "live", delayMs: 30_000 });
+    expect(state.observe(11)).toEqual({ refresh: false, status: "live", delayMs: 30_000 });
+    expect(state.observe(13)).toEqual({ refresh: true, status: "live", delayMs: 30_000 });
   });
 
   it("backs off after disconnection and recovers without replaying a stale cursor", () => {
     const state = new DashboardLiveRefreshState();
     state.observe(20);
 
-    expect(state.failed()).toEqual({ refresh: false, status: "reconnecting", delayMs: 3_000 });
-    expect(state.failed()).toEqual({ refresh: false, status: "reconnecting", delayMs: 6_000 });
-    expect(state.failed()).toEqual({ refresh: false, status: "reconnecting", delayMs: 12_000 });
-    expect(state.failed()).toEqual({ refresh: false, status: "reconnecting", delayMs: 24_000 });
     expect(state.failed()).toEqual({ refresh: false, status: "reconnecting", delayMs: 30_000 });
-    expect(state.observe(20)).toEqual({ refresh: false, status: "live", delayMs: 3_000 });
-    expect(state.observe(21)).toEqual({ refresh: true, status: "live", delayMs: 3_000 });
+    expect(state.failed()).toEqual({ refresh: false, status: "reconnecting", delayMs: 60_000 });
+    expect(state.failed()).toEqual({ refresh: false, status: "reconnecting", delayMs: 120_000 });
+    expect(state.failed()).toEqual({ refresh: false, status: "reconnecting", delayMs: 120_000 });
+    expect(state.observe(20)).toEqual({ refresh: false, status: "live", delayMs: 30_000 });
+    expect(state.observe(21)).toEqual({ refresh: true, status: "live", delayMs: 30_000 });
   });
 
   it("reports a browser disconnection immediately", () => {

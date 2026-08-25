@@ -31,17 +31,19 @@ TER-39 Phase B (live runs against the deployed endpoint) — gated on human deci
 ## Blocked
 
 - Phase B: waits on Next items 1–2 (human-only: Vercel env + data-egress approval).
+- Production outage since 2026-08-24 14:00 UTC: Upstash Redis free-tier monthly command quota (500k) exhausted → worker, webhook, dashboard 500. Dominant consumer was `dashboard-live-refresh.tsx` polling every 3 s (~29k commands/day per open tab); this branch raises it to 30 s and guards the `/` crash, but the quota itself only clears with an Upstash plan change (Vercel Storage → the Upstash store) or the monthly reset — human-only. Vercel moved to Pro on 2026-08-25 (Sandbox 402s should clear).
+- `main` has not deployed since #36 (`7ab64c7`, 2026-08-21): root `tsconfig.json` type-checks `cli/scripts/dogfood-measure.ts`, which imports the never-built `cli/dist`. Production is still `0d33384`. This branch excludes `cli/scripts` from the root tsconfig; until it merges, nothing ships.
 
 ## Important context
 
-- Review convergence loop and Hobby-plan constraint: see `.ratchet/DECISIONS.md`.
+- Review convergence loop and the Vercel plan (Pro since 2026-08-25, superseding the Hobby constraint): see `.ratchet/DECISIONS.md`.
 - `--all` snapshot mode fills the 400,000-byte `snapshotBytes` cap in bytewise path order, so alphabetical-early files crowd out later ones (TER-43). Changeset mode is unaffected.
 - The Workspace Review endpoint has no persistence and no idempotency; every run costs a model call. Gates are fail-closed on Redis.
 - Stale agent worktrees accumulate under `.claude/worktrees/`; deletion is a hard stop, so they are left for the human. `.next/` dirs inside them break the stop hook's lint sweep (parked in the session scratchpad when it happened).
 
 ## Verification status
 
-- main `7ab64c7`: `npm run lint && npm test` green at merge of #36 (Ternary review 💬, approving). `cli/` tests green. `npm run build` green as of #35.
+- main `50030f7`: `npm run lint && npm test` green. `npm run build` BROKEN on main since #36 (see Blocked); green on this branch after the tsconfig exclusion (2026-08-25).
 - Known flake: `cli/src/capture.test.ts` can exceed its 5 s timeout under concurrent load in stale worktrees; not reproduced on a clean checkout.
 
 ## Open risks / assumptions

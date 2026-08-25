@@ -6,8 +6,8 @@ export type DashboardLiveRefreshDecision = {
   delayMs: number;
 };
 
-const liveDelayMs = 3_000;
-const maximumRetryDelayMs = 30_000;
+export const liveDelayMs = 30_000;
+const maximumRetryDelayMs = 120_000;
 const reconciliationIntervalMs = 30_000;
 
 export class DashboardLiveRefreshState {
