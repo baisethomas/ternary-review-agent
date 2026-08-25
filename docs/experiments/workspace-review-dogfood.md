@@ -5,7 +5,7 @@
 | Phase | What it covers | Status |
 | --- | --- | --- |
 | **A — offline** | Collector behaviour: payload sizes, capture-mode differences, truncation, deny classes, secret handling, cost ceilings, Phase-B methodology | **Complete** (this document) |
-| **B — live** | Actual model runs against `POST /api/workspace-reviews`: seeded-defect recall/precision, latency, real token counts and spend, baseline comparison | **Pending** — needs credentials and deliberate network use; runbook in §8 |
+| **B — live** | Actual model runs against `POST /api/workspace-reviews`: seeded-defect recall/precision, latency, real token counts and spend, baseline comparison | **Complete** (2026-08-25) — 45 live submissions, results in §8.5, measured cost in §6.3, recommendation in §9. The §7.2 baseline was **not** run (see §8.5.6). |
 
 Phase A ran with **zero network**: only `--dry-run` / manifest collection paths,
 never `TERNARY_ENDPOINT`, never `TERNARY_CLI_TOKEN`, never the submit path.
@@ -276,16 +276,47 @@ cost_usd = input_tokens  × price_in_per_token
 
 **Hourly ceiling** (rate limit × worst case): `10 × cost_usd(snapshot ceiling)`.
 
-### 6.3 Unit price — PLACEHOLDER, needs the user
+### 6.3 Unit price — measured spend, price still a placeholder
 
-> **PLACEHOLDER.** No price for `~deepseek/deepseek-v4-flash-latest` exists
-> anywhere in this repository, and Phase A had no network access to look one
-> up. Fill in `price_in_per_token` / `price_out_per_token` from the OpenRouter
-> model page, or simply read the real figure back from the first Phase-B run —
-> the route already logs `estimatedCostUsd`, `inputTokens`, and `outputTokens`
-> per request (`WorkspaceReviewLogEntry`, `workspace-review-route.ts:80-92`).
-> Phase B should replace this section with measured spend, not with an
-> estimate.
+Measured over the **14 completed** Phase-B reviews (§8.5). Every figure below
+is read from a `WorkspaceReviewLogEntry` line, not derived.
+
+| Quantity | Measured |
+| --- | --- |
+| Total spend, 14 completed reviews | **$0.011162** |
+| Mean cost per completed review | **$0.000797** |
+| Min / max cost per review | $0.000156 / $0.002094 |
+| Mean input tokens | 1,118 (range 592–2,686) |
+| Mean output tokens | 2,439 (range 1,199–3,967) |
+| Total tokens | 15,655 in / 34,143 out |
+| Cost per *attempt*, incl. the 31 burned slots | $0.000248 |
+
+Two things this measurement settles, and one it does not.
+
+**Settled — the marginal cost of a review is negligible.** Under a cent per
+review at the observed load, and the §6.2 ceiling was never approached: the
+largest real changeset submitted (43 KB, `tablet-notes-v3`) never completed, and
+the largest that did (`todo-app`, 9,845 payload bytes) used 2,686 input tokens —
+6% of the changeset-mode ceiling. Cost is not the constraint on this product.
+
+**Settled — failed runs are not billed by us.** All 24 `workspace_review_timeout`
+and 7 `model_failure` responses logged no `inputTokens`, `outputTokens`, or
+`estimatedCostUsd` at all, because the model request is aborted before a usage
+record comes back. Whether OpenRouter bills for the aborted upstream generation
+is **not visible from these logs** and is not answered here.
+
+> **STILL A PLACEHOLDER — `price_in_per_token` / `price_out_per_token`.**
+> The unit price is **not derivable** from `estimatedCostUsd`. Fitting a
+> two-parameter linear model to the measured runs fails: run `01-S12-r1`
+> (1,029 in / 2,220 out) cost $0.00048192 while run `13b-S12-r2` — the *same*
+> canonical payload, same digest — (1,029 in / 1,199 out) cost $0.000155915,
+> and run `12b-S11-r1` (661 in / 2,952 out) cost $0.00209374. Cost per reported
+> output token ranges over 5× across runs, so `estimatedCostUsd` (taken verbatim
+> from OpenRouter's `usage.cost`) is priced against something the response's
+> `inputTokens`/`outputTokens` do not surface — most plausibly reasoning tokens
+> billed but not reported as output. The measured per-review spend above is the
+> number to plan with; the per-token price must still come from the OpenRouter
+> model page if anyone needs it.
 
 ### 6.4 Greptile comparison — PLACEHOLDER, needs the user
 
@@ -297,7 +328,14 @@ cost_usd = input_tokens  × price_in_per_token
 >
 > When it arrives, the comparison worth making is cost **per review**, not per
 > seat: Ternary's marginal cost is one bounded model call (§6.2), and its
-> fixed cost is the Vercel Hobby platform already in use.
+> fixed cost is the Vercel platform already in use.
+>
+> **Phase B did not change this.** No Greptile pricing was reachable from this
+> phase either, and §8.5 makes the comparison less interesting than it looked:
+> Ternary's measured per-review cost is $0.000797 (§6.3), so on price it wins
+> against any seat-based product by orders of magnitude. The number that would
+> actually decide the comparison is **delivery rate**, not price — and at 31%
+> (§8.5.1) the cheaper tool is the one that does not answer.
 
 ## 7. Seeded-defect plan (for Phase B)
 
@@ -470,12 +508,271 @@ payload before transmitting.
 
 Then fill §6.3, §6.4, and §9.
 
+## 8.5 Phase B results (measured 2026-08-25)
+
+**45 live submissions** against production `POST /api/workspace-reviews`, over
+five hourly windows, 09 requests per window, concurrency 1, teed to disk as they
+arrived. Raw per-run record: `docs/experiments/phase-b-runs.json`.
+
+The offline baseline (§8.3 step 1) was re-run first and reproduced Phase A
+exactly: **8/8 canaries clean across 11 scanned runs, exit 0**.
+
+### 8.5.1 The headline is availability, not quality
+
+| Outcome | Count | Share |
+| --- | --- | --- |
+| `ok` (200) | **14** | **31.1%** |
+| `workspace_review_timeout` (504) | 24 | 53.3% |
+| `model_failure` (500) | 7 | 15.6% |
+
+**Fewer than one submission in three produced a review.** This is not a tail
+event that a retry absorbs: the endpoint makes a single model attempt with no
+fallback cascade (spec fixed decision 6), a timeout consumes a rate-limit slot,
+and nothing is persisted — so a 504 is a lost hour-slot with nothing to show.
+
+Per window, the rate moved a great deal, which is the point:
+
+| Window | Attempts | ok | 504 | 500 |
+| --- | --- | --- | --- | --- |
+| 1 (07:12–07:27) | 9 | 5 | 4 | 0 |
+| 2 (08:21–08:40) | 9 | 0 | 8 | 1 |
+| 3 (09:23–09:36) | 9 | 5 | 3 | 1 |
+| 4 (10:26–10:41) | 9 | 2 | 5 | 2 |
+| 5 (11:28–11:42) | 9 | 2 | 4 | 3 |
+
+Window 2 returned nothing at all. The collector was not implicated in any
+failure: `digestVerified` was `true` on every request including every 504, and
+`droppedByServerCaps` was 0 throughout. The failures are upstream of Ternary's
+own code, in the single OpenRouter attempt.
+
+Latency on the runs that *did* complete leaves very little headroom under the
+120,000 ms deadline:
+
+| percentile | server `durationMs` |
+| --- | --- |
+| min | 8,117 |
+| median | ≈ 51,000 |
+| max | 116,342 |
+
+A p50 of ~51 s against a 120 s deadline means the deadline is not a safety
+margin, it is a coin toss under load. The single slowest success finished
+3.7 s inside the cutoff.
+
+Payload size correlates with failure. The largest target, `tablet-notes-v3`
+(43,080 payload bytes, 3 Swift files, 40,249 captured content bytes), was
+submitted **four times and completed zero times** — all four 504 at the
+deadline. `todo-app --all` (30,455 bytes, snapshot) failed both attempts. Every
+completed run was under 10 KB of payload.
+
+### 8.5.2 Seeded-defect scoring (§7.1 formulas)
+
+Because burned slots are not samples, the denominators are the runs that
+actually returned a review. **S05 never completed a single run in four
+attempts** and is therefore *not measured*, not a miss.
+
+| id | defect class | completed runs | seeded defect reported? |
+| --- | --- | --- | --- |
+| S01 | off-by-one | 1 of 4 | **TP** — `src/pagination.ts:8` |
+| S02 | null dereference | 1 of 2 | **TP** — `src/profile.ts:6` |
+| S03 | SQL injection | 1 of 3 | **TP** — `src/search.ts:9` |
+| S04 | missing `await` | 1 of 3 | **TP** — `src/audit.ts:6` |
+| S05 | swallowed error | **0 of 4** | **not measured** |
+| S06 | auth bypass | 1 of 3 | **TP** — `src/admin.ts:7` |
+| S07 | resource leak | 1 of 1 | **TP** — `app/reports.py:6` |
+| S08 | incorrect retry | 2 of 3 | **1 TP, 1 FN** (see below) |
+| S09 | TOCTOU race | 1 of 4 | **TP** — `src/cache.ts:6`, names the race explicitly |
+| S10 | path traversal | 1 of 3 | **TP** — `src/download.ts:7` |
+| S11 | weak crypto | 1 of 3 | **TP** — `app/hashing.py:4` |
+| S12 | **negative control** | 2 of 3 | **PASS ×2** — no finding against `src/control.ts` |
+
+```
+seeds measured                     10  (S05 excluded — no completed run)
+seed-run instances (excl. S12)     11
+TP                                 10
+FN                                  1  (S08, rep 1)
+FP                                  1
+NOISE                               1
+TP_extra                           75
+
+recall (per seed-run instance)  = 10 / 11 = 90.9%
+recall (per measured seed)      = 10 / 10 = 100%
+precision                       = 10 / (10 + 1) = 90.9%
+style_noise                     =  1 / 12 =  8.3%
+```
+
+**The one miss is instructive.** In `09-S08-r1` the reviewer landed on the right
+file and reported a real defect — `postWithRetry` does not catch thrown fetch
+rejections — but that is not the seeded defect, which is that the function
+retries a **non-idempotent POST** on every non-OK status with no backoff and no
+4xx exclusion. It found *a* bug in the code it was pointed at and stopped. On
+repetition 2 (`21b-S08-r2`) it did name the seeded class — but graded it
+`suggestion`, the lowest severity, for a defect that hammers a failing server
+with duplicate POSTs.
+
+**The negative control passed cleanly, twice.** Zero findings against
+`src/control.ts` in both completed S12 runs. The system prompt's "do not report
+style preferences" instruction holds.
+
+**Precision as defined here is not very discriminating, and the report should
+say so.** The `ordinary` fixture's committed baseline is itself dense with
+genuine defects (`orderTotal` off-by-one, `findOrder`'s unsound cast,
+`session.user!`, `loadRows` SQL injection, `unsafeCount`, `withRetry`). §7.1
+correctly scores findings against those as `TP_extra` rather than false
+positives — which is why 75 of 87 findings land in that bucket and precision
+comes out at 90.9%. A fixture with a clean baseline would put real pressure on
+this number. **Precision is the least trustworthy figure in this report.**
+
+The single false positive: `03-S02-r1` reported that `describeOrder` "assumes
+items array and could throw on empty". `items` is a non-optional `string[]` and
+`[].join(", ")` returns `""`. It does not throw.
+
+### 8.5.3 Repeatability — the same bytes do not give the same review
+
+Runs `01-S12-r1` and `13b-S12-r2` submitted a **byte-identical canonical
+payload** (`sha256:bd6182…07b4` in both). The two reviews:
+
+| | 01-S12-r1 | 13b-S12-r2 |
+| --- | --- | --- |
+| findings | 5 | 3 |
+| language | English | **Chinese** |
+| latency | 28.3 s | 116.3 s |
+| output tokens | 2,220 | 1,199 |
+| cost | $0.00048192 | $0.000155915 |
+
+The Chinese output is a product defect, not a curiosity: the response contract
+says nothing about language, nothing validates it, and a developer running
+`ternary review` gets findings they may not be able to read. Both runs did agree
+on the control (no finding against `src/control.ts`) and on the genuine
+`src/index.ts` defects — the *substance* is more stable than the presentation.
+
+Severity is not stable either. The same pre-existing defects are graded
+`blocking` in `05c-S04-r1` and `21b-S08-r2`, `warning` in `09-S08-r1`, and
+`suggestion` in `03-S02-r1` and `04c-S03-r1`. The seeded auth bypass (S06,
+spec-rated *blocking*) came back as `warning`; the seeded retry defect (S08)
+came back as `suggestion`. **Severity cannot currently be used to gate
+anything.**
+
+By contrast the **collector is perfectly deterministic**: every repetition of a
+given seed produced a byte-identical digest and payload size across all five
+windows. Whatever is unstable here is downstream of the payload.
+
+### 8.5.4 Volume and triage load
+
+87 findings across 14 completed reviews = **6.2 findings per review** on a
+changeset of 8 files and ~2 KB of captured content. Of those, on a seeded run,
+exactly one is the defect the run was testing for. Note also a duplicate within
+`21b-S08-r2`, which reported `src/db.ts:8` twice.
+
+At that density the developer's question is not "did it find the bug" but "which
+of these six do I act on" — and §8.5.3 says severity will not answer it.
+
+### 8.5.5 The real-repo result — the strongest evidence in Phase B
+
+`todo-app` (`27b-todo-r1`, the real HEAD changeset re-created as uncommitted
+edits: 130 insertions / 22 deletions in `app/page.tsx`) produced 3 findings, and
+the first one is genuinely good. Verified against the source by hand:
+
+> `hasCompleted = filteredTodos.some((t) => t.completed)` gates the "Clear
+> completed" button, but `clearCompleted()` runs
+> `setTodos(prev => prev.filter(t => !t.completed))` over the **whole** list. A
+> user filtered to `work` who clicks the button silently deletes completed
+> `personal` and `urgent` todos they cannot see.
+
+That is a real cross-filter data-loss bug in production code, introduced by the
+diff under review, that no seeded fixture prompted and that a human reviewer
+could easily miss. The third finding (`remaining` silently became filter-scoped)
+is also factually correct. This is the shape of value the product is aiming at.
+
+It is also a sample of **one**. The Swift counterpart, `tablet-notes-v3`, failed
+all four attempts on the deadline, so Phase B produced **no evidence at all**
+about non-TypeScript real-world review quality.
+
+### 8.5.6 What Phase B did not measure
+
+- **§7.2 baseline — not run.** Comparing Ternary against a generic coding agent
+  on the same payload was the question that mattered most, and it was not
+  reached: five hours of the budget went into the rate-limit windows and the
+  31% delivery rate. **Every quality number above is therefore un-baselined.**
+  Nothing here shows that Ternary's prompt, limits, and pipeline add anything
+  over a competent model reading the same bytes.
+- **S05** — no completed run.
+- **Snapshot (`--all`) review quality** — both attempts failed; the §4.3
+  coverage defect (TER-43) is still unmeasured against a live model.
+- **Non-TypeScript real-world quality** — `tablet-notes-v3` never completed.
+- **Repetition 2 for most seeds** — the delivery rate consumed the slots. Only
+  S08 and S12 have two completed runs, and §8.5.3 shows how much two runs of the
+  same input can differ.
+
+### 8.5.7 Secret handling under live conditions
+
+The eight canaries were re-asserted against the **exact canonical bytes** before
+every single submission, including the 31 that went on to fail.
+
+**45 pre-flights, 45 CLEAN, 0 leaks.** Combined with Phase A's 11 scanned runs,
+nothing in this experiment ever put a canary on the wire. `redactionApplied` was
+0 and `digestVerified` true on all 45 server-side log lines.
+
+One live-only observation: the redaction placeholder is itself legible to the
+model, which repeatedly reported `src/config.ts` as "hardcoded AWS credentials …
+even with redacted values, this pattern is dangerous". The finding is correct
+and useful, but it means **redaction does not hide from the reviewer that a
+secret was there** — worth knowing before anyone assumes withheld content is
+invisible.
+
 ## 9. Recommendation
 
-> **Pending Phase B.** Deliberately empty. Phase A measured what the collector
-> does; it cannot say whether the reviews are worth running. No
-> recommendation — adopt, tune, or drop — should be written here until the
-> seeded-defect recall/precision numbers and the measured per-run cost exist.
+**REVISE.** Not continue, not stop.
+
+The review quality that Phase B managed to observe is good enough to keep
+building on, and the delivery rate is bad enough that shipping it to anyone
+would be a mistake. Both halves are load-bearing.
+
+**Why not stop.** On the runs that completed, the reviewer found 10 of 10
+measured seeded defects across ten distinct classes and two languages, kept
+silent on the style-only control both times, and — the result that actually
+matters — found a genuine, verified, non-obvious cross-filter data-loss bug in
+real production code that no fixture prompted (§8.5.5). At $0.000797 per review
+(§6.3), cost is not a constraint and never becomes one. The collector was
+flawless: deterministic digests, zero canary leaks in 45 pre-flights, no
+server-cap drops, `digestVerified` true on every request.
+
+**Why not continue.** 31% of submissions returned a review (§8.5.1). A tool that
+answers fewer than one time in three is not a tool, and the gates make each
+failure expensive: one model attempt, no cascade, a burned hourly slot, nothing
+persisted. Beneath that, three things are not ready. Latency has no headroom —
+p50 ≈ 51 s against a 120 s deadline, and every target above 10 KB of payload
+failed every time, including all four `tablet-notes-v3` attempts. Output is not
+repeatable — a byte-identical payload returned 5 English findings once and 3
+**Chinese** findings the next time (§8.5.3). Severity is not usable — the seeded
+auth bypass came back `warning`, the seeded retry defect `suggestion`, and the
+same defect is graded three different ways across runs. And the whole quality
+picture is **un-baselined**: §7.2 was never run, so nothing here demonstrates
+that Ternary beats a generic agent reading the same bytes.
+
+**The revision, in priority order.**
+
+1. **Survive the model call.** Timeouts and `model_failure` are 84% of the
+   failures and they are all one aborted OpenRouter attempt. This needs a
+   retry/fallback path or a streaming-with-partial-result design — a change to
+   spec fixed decision 6, so an ADR and an explicit human decision, not a patch.
+2. **Stop burning slots on failure.** A 504 currently costs a rate-limit slot
+   and yields nothing. Failed attempts should not consume the hourly budget.
+3. **Pin the output contract.** Language is unconstrained and unvalidated;
+   severity is uncalibrated. Both are cheap to fix in the prompt plus a response
+   validation, and until they are fixed no consumer can gate on a verdict.
+4. **Then, and only then, run §7.2.** The generic-agent baseline is the missing
+   number. Re-run the seeded suite once delivery is reliable enough that 24 runs
+   fit in 3 hours as designed — including S05, `tablet-notes-v3`, and `--all`,
+   none of which Phase B measured.
+
+TER-43 (`--all` truncation) drops in priority: snapshot mode never completed a
+live run, so its coverage defect is not currently the thing standing between
+this product and usefulness.
+
+**One trial is a signal, not a benchmark** — and this was less than one trial.
+Fourteen completed reviews, one repeated seed, one real repository, no baseline.
+The recall figure should be read as "the reviewer is not obviously broken", not
+as "the reviewer is 91% accurate".
 
 ## 10. Residue from Phase A
 

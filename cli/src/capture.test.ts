@@ -18,6 +18,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
+// Many tests here build real Git repositories and run several captures each
+// (~2 s alone); under a full concurrent suite run they exceed vitest's 5 s
+// default and flake.
+vi.setConfig({ testTimeout: 20_000 });
+
 // A conditional lstatSync hook for one test (identity-mismatch-vs-nlink
 // ordering, below): node:fs is a real ES module and its exports are not
 // individually spy-able, so the whole module is mocked here with a

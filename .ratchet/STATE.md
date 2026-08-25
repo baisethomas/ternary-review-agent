@@ -8,30 +8,33 @@ Ship the Workspace Review (CLI) initiative — Linear project "Workspace Review 
 
 ## Current phase
 
-TER-39 Phase B (live runs against the deployed endpoint) — gated on human decisions.
+TER-39 complete (Phase A + Phase B measured). Awaiting the human's call on the Phase-B **REVISE** recommendation.
 
 ## Completed
 
 - TER-35 offline CLI collector (#32), TER-37 workspace analysis prompts + CheckEvidence provenance (#34), TER-38 `POST /api/workspace-reviews` endpoint + CLI transmit (#35, main `0d33384`).
 - TER-39 Phase A offline measurement (#36, main `7ab64c7`): `docs/experiments/workspace-review-dogfood.md`, fixtures `cli/scripts/dogfood-fixtures.sh`, harness `cli/scripts/dogfood-measure.ts`, 12 seeded-defect patches in `docs/experiments/seeds/`. All five target classes captured; secret canaries 8/8 excluded.
+- TER-39 Phase B live measurement (2026-08-25): 45 live submissions, results in `docs/experiments/workspace-review-dogfood.md` §8.5 + `docs/experiments/phase-b-runs.json`. **Delivery rate 31%** (14 ok / 24 timeout / 7 model_failure); recall 10/10 measured seeds, precision 90.9%, S12 control passed 2/2; measured cost $0.000797 per completed review. §9 recommendation: **REVISE**.
 - Ratchet `793fbcb` adapted: `AGENTS.md` canonical contract, thin `CLAUDE.md`, `.ratchet/` memory (#37, main `50030f7`).
 - Redis-quota + build fix (#38, main `ccb0138`): dashboard poll 30 s, guarded watched-repo read, `cli/scripts` excluded from root tsconfig. Vercel plan is Pro since 2026-08-25 (D-20260825-0400).
 
 ## Working on
 
-- Nothing in flight on the code side. Orchestration branch `baise/ratchet-sync-agents-contract` awaiting review/merge.
+- Nothing in flight on the code side. TER-39 write-up is uncommitted on `main` (docs only): `docs/experiments/workspace-review-dogfood.md`, `docs/experiments/phase-b-runs.json`.
 
 ## Next
 
-1. Human: provision `TERNARY_CLI_TOKEN` in Vercel production env (deployment-config hard stop) and redeploy.
-2. Human: approve which repositories may be transmitted for Phase B (proposed: this repo, `tablet-notes-v3` as the Swift/other-language case, `todo-app`).
-3. Phase B live runs — changeset mode as the primary measurement; treat `--all` snapshot mode as known-compromised until TER-43 lands. Stay within the gates (10/hr, concurrency 1). Fill cost columns from route logs (`inputTokens`/`outputTokens`/`estimatedCostUsd`).
-4. Write the continue/revise/stop recommendation into the dogfood report; close TER-39.
-5. Then: TER-43 (snapshot truncation, High), TER-42 (dead numeric validation in `openrouter-review-provider.ts`), TER-33; TER-18/TER-13 after the TER-39 decision.
+1. Human: decide on the TER-39 §9 **REVISE** call, then close TER-39.
+2. **Model-call survivability** is now the top product risk (84% of Phase-B failures were one aborted OpenRouter attempt). Changing the single-attempt/no-cascade rule is spec fixed decision 6 — needs an ADR and explicit human approval, not a patch.
+3. Failed attempts (504/500) currently consume a rate-limit slot and yield nothing — stop burning budget on failure.
+4. Pin the response contract: findings came back in Chinese on one run, and severity is uncalibrated (seeded auth bypass → `warning`, seeded retry defect → `suggestion`).
+5. Only after 2–4: run the §7.2 generic-agent baseline and re-run the seeded suite (S05, `tablet-notes-v3`, and `--all` were never measured).
+6. TER-43 (snapshot truncation) **drops in priority** — `--all` never completed a live run.
+7. Then TER-42, TER-33; TER-18/TER-13 after the TER-39 decision.
 
 ## Blocked
 
-- Phase B: waits on Next items 1–2 (human-only: Vercel env + data-egress approval).
+- Nothing blocking measurement. TER-39's remaining gaps are product defects, not gates: §7.2 baseline, S05, Swift/real-repo quality, and `--all` quality all need a working delivery rate first.
 - (cleared 2026-08-25) Upstash Redis quota outage of 2026-08-24 and the broken production build since #36 — both resolved by #38 (`ccb0138`, deployed) plus the owner's Upstash plan change. Owner intends to drop the Upstash store back to the free tier at the next cycle; post-#38 usage estimate is ~100–130k commands/month, so that fits.
 
 ## Important context
@@ -43,13 +46,16 @@ TER-39 Phase B (live runs against the deployed endpoint) — gated on human deci
 
 ## Verification status
 
+- TER-39 Phase B (2026-08-25): offline canary baseline re-run green (8/8 clean, exit 0); 45/45 live pre-flights CLEAN, zero canary leaks; `npm run lint` green after the docs edits. The `capture.test.ts` timeout change was verified by `npx vitest run cli/src/capture.test.ts` (17 files / 757 tests passed) plus Ternary's sandbox `test` check on PR #40; the full root suite was not re-run locally for this PR.
 - main `ccb0138`: `npm run lint && npm test` green (12,980 passed), `npm run build` green, production deploy READY (2026-08-25). Ternary review of #38 was 💬 with one open warning: `loadWatchedRepositoriesOrEmpty` in `dashboard-data.ts` swallows every Redis error (not just quota) and shows repos as unwatched — follow-up: surface a "watch status unavailable" state instead.
-- Known flake: `cli/src/capture.test.ts` can exceed its 5 s timeout under concurrent load in stale worktrees; not reproduced on a clean checkout.
+- `cli/src/capture.test.ts` now sets a file-level 20 s `testTimeout` (its adversarial tests build real Git repos, ~2 s each alone); the stale copies under `.claude/worktrees/` still carry the 5 s default and keep flaking in the stop hook until the human deletes them.
 
 ## Open risks / assumptions
 
-- Phase A measured payload behaviour offline only; model-side metrics (findings/review, recall on the 12 seeds, precision, style-noise, latency, cost) are unmeasured until Phase B.
-- Greptile comparison pricing must be supplied by the human; placeholders remain in the report.
+- Phase-B quality numbers are **un-baselined** (§7.2 never ran) and rest on 14 completed reviews, one repeated seed, one real repository. Read recall as "not obviously broken", not as an accuracy figure.
+- Precision (90.9%) is the least trustworthy number in the report: the `ordinary` fixture's baseline is dense with genuine defects, so §7.1 routes most findings to `TP_extra` rather than FP.
+- OpenRouter's per-token price is **not derivable** from `estimatedCostUsd` (cost per reported output token varies 5× across runs — likely unreported reasoning tokens). Measured per-review spend is the number to plan with.
+- Greptile comparison pricing must still be supplied by the human; placeholder remains in §6.4.
 - CLI still emits the nested `CheckEvidence` shape; migration to the flat shape is a carried follow-up from TER-38.
 
 ## Integration note
@@ -58,7 +64,7 @@ TER-39 Phase B (live runs against the deployed endpoint) — gated on human deci
 
 ## Last handoff
 
-- Updated: 2026-08-25
-- By: agent (Claude Code orchestrator)
-- Branch/worktree: `main`
+- Updated: 2026-08-25 (TER-39 Phase B measurement)
+- By: agent (Claude Code)
+- Branch/worktree: `main` (docs edits uncommitted)
 - Last known-good commit: main `ccb0138` (deployed)
