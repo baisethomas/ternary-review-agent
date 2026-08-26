@@ -3,13 +3,17 @@
  *
  * Two limits behind one injected store interface:
  *   - a fixed-window rate limit (default 10 requests/hour per Principal), and
- *   - a concurrency ceiling (default 1 in-flight review, TTL 150 s — just above
- *     the 120 s deadline so a crashed request's slot always expires).
+ *   - a concurrency ceiling (default 1 in-flight review, TTL 210 s — just above
+ *     the 180 s end-to-end deadline (ADR-0002, TER-44 step 2) so a crashed
+ *     request's slot always expires, and never below it so a still-running
+ *     review's slot is never handed out twice).
  *
  * Both FAIL CLOSED: if the store is unreachable the gate returns
  * `unavailable` and the route answers 503 `gate_unavailable`. A request is
  * never let through unlimited because Redis is down (spec §12 T9).
  */
+
+import { WORKSPACE_REVIEW_CONCURRENCY_TTL_MS } from "./review-invocation-limits";
 
 /**
  * The counter primitives the gate needs. Deliberately tiny so the Redis
@@ -38,7 +42,7 @@ export const DEFAULT_WORKSPACE_GATE_CONFIG: WorkspaceGateConfig = {
   rateLimitMax: 10,
   rateLimitWindowMs: 60 * 60 * 1_000,
   maxConcurrent: 1,
-  concurrencyTtlMs: 150_000,
+  concurrencyTtlMs: WORKSPACE_REVIEW_CONCURRENCY_TTL_MS,
 };
 
 export type WorkspaceGateDecision =

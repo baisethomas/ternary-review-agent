@@ -123,6 +123,17 @@ export type WorkspaceReviewResult = {
     /** Reasoning tokens when the provider reports them (ADR-0002: where the latency went). */
     reasoningTokens?: number;
     estimatedCostUsd?: number;
+    /**
+     * Model requests actually sent for this review: 1 or 2 (ADR-0002 option B,
+     * bounded retry). Additive metadata — the `workspace-review/1` request
+     * schema is unchanged and the CLI ignores fields it does not know.
+     */
+    attempts?: number;
+    /** Why attempt 1 was retry-eligible, when a retry happened (error class or HTTP status). */
+    retryReason?: string;
+    /** Serving provider per attempt, when reported; attempt 2 is routed away from attempt 1's. */
+    attempt1Provider?: string;
+    attempt2Provider?: string;
   };
 };
 

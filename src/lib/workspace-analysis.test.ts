@@ -3,7 +3,21 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NonRetryableReviewError } from "./review-errors";
 import {
+  WORKSPACE_REVIEW_ATTEMPT_BUDGET_MS,
+  WORKSPACE_REVIEW_DEADLINE_MS,
+  WORKSPACE_REVIEW_MAX_ATTEMPTS,
+} from "./review-invocation-limits";
+import {
   analyzeWorkspaceReview,
+  attachWorkspaceProvider,
+  workspaceAttemptMetadataFromError,
+  workspaceModelHttpError,
+  workspaceRetryReason,
+  WorkspaceModelAttemptTimeoutError,
+  WorkspaceModelMalformedFrameError,
+  WorkspaceModelProviderError,
+  WorkspaceModelTruncatedStreamError,
+  WorkspaceReviewOutputInvalidError,
   buildWorkspaceModelRequestBody,
   requestOpenRouterWorkspaceModel,
   WORKSPACE_MAX_OUTPUT_TOKENS,
@@ -676,6 +690,11 @@ describe("undici connection failures are not timeouts (TER-44 step 1b)", () => {
   });
 
   it("still calls it a timeout when our own deadline aborted the connection", async () => {
+    // Fake time so the deadline is exactly 1 100 ms of *test* clock: with real
+    // timers the gap between `Date.now()` here and the wrapper's own `now()`
+    // could push the remainder under MIN_OPENROUTER_TIMEOUT_MS and short-circuit
+    // the whole scenario.
+    vi.useFakeTimers();
     vi.stubEnv("OPENROUTER_API_KEY", "test-key");
     // The deadline fires, aborts the socket, and undici surfaces the cut body
     // as `TypeError: terminated`. The deadline flag must still win.
@@ -690,8 +709,11 @@ describe("undici connection failures are not timeouts (TER-44 step 1b)", () => {
       },
     }))));
 
-    await expect(analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 1_100 })))
-      .rejects.toBeInstanceOf(WorkspaceReviewTimeoutError);
+    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 1_100 }));
+    const expectation = expect(pending).rejects.toBeInstanceOf(WorkspaceReviewTimeoutError);
+    // Past the body's own 1 500 ms cut, so the deadline (1 100 ms) is what wins.
+    await vi.advanceTimersByTimeAsync(1_500);
+    await expectation;
   });
 });
 
@@ -720,6 +742,9 @@ describe("abort vs deadline (TER-44 step 1b)", () => {
   });
 
   it("still reports the deadline race as a timeout", async () => {
+    // Fake time for the same reason as above: a 1 100 ms real deadline races the
+    // wrapper's own setup and can fail fast before the model is ever called.
+    vi.useFakeTimers();
     const requestModel: WorkspaceModelRequest = ({ signal }) =>
       new Promise<never>((_, reject) => {
         // A provider that surfaces our own deadline abort as an AbortError:
@@ -731,8 +756,10 @@ describe("abort vs deadline (TER-44 step 1b)", () => {
         });
       });
 
-    await expect(analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 1_100 }), { requestModel }))
-      .rejects.toBeInstanceOf(WorkspaceReviewTimeoutError);
+    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 1_100 }), { requestModel });
+    const expectation = expect(pending).rejects.toBeInstanceOf(WorkspaceReviewTimeoutError);
+    await vi.advanceTimersByTimeAsync(1_100);
+    await expectation;
   });
 });
 
@@ -798,8 +825,10 @@ describe("workspace model streaming transport", () => {
       (index) => (index >= 1 ? new Promise<void>(() => {}) : undefined),
     )));
 
-    // Deadline is 120s; the stall window is 20s. The stall must win.
-    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 120_000 }));
+    // Deadline is 60s; the stall window is 20s. The stall must win. (60 s, not
+    // 120 s: under ADR-0002 step 2 a failure with >= 95 s left would be retried,
+    // and this test is about classifying ONE attempt.)
+    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 60_000 }));
     const expectation = expect(pending).rejects.toBeInstanceOf(WorkspaceModelStallError);
     await vi.advanceTimersByTimeAsync(20_000);
     await expectation;
@@ -810,7 +839,9 @@ describe("workspace model streaming transport", () => {
     vi.stubEnv("OPENROUTER_API_KEY", "test-key");
     stubFetch(() => sseResponse(sseStream([], () => new Promise<void>(() => {}))));
 
-    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 120_000 }), {
+    // 60 s, not 120 s: under ADR-0002 step 2 a failure with ≥ 95 s left would be
+    // retried, and this test is about classifying ONE attempt.
+    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 60_000 }), {
       tuning: { stallTimeoutMs: 7_000 },
     });
     const expectation = expect(pending).rejects.toThrow(/no bytes received for 7000ms/);
@@ -869,7 +900,9 @@ describe("stall window covers the request phase, not just the body (PR #42 findi
     // Connection accepted, nothing ever returned: fetch never settles.
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
 
-    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 120_000 }));
+    // 60 s, not 120 s: under ADR-0002 step 2 a failure with ≥ 95 s left would be
+    // retried, and this test is about classifying ONE attempt.
+    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 60_000 }));
     const expectation = expect(pending).rejects.toBeInstanceOf(WorkspaceModelStallError);
     await vi.advanceTimersByTimeAsync(20_000);
     await expectation;
@@ -964,7 +997,9 @@ describe("stall clock measures data frames, not bytes (PR #42 re-review finding 
     // A byte-based window would be reset forever and never fire.
     stubFetch(() => sseResponse(sseStream(Array.from({ length: 10 }, () => keepaliveFrame), everyMs(6_000))));
 
-    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 120_000 }));
+    // 60 s, not 120 s: under ADR-0002 step 2 a failure with ≥ 95 s left would be
+    // retried, and this test is about classifying ONE attempt.
+    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 60_000 }));
     const expectation = expect(pending).rejects.toBeInstanceOf(WorkspaceModelStallError);
     await vi.advanceTimersByTimeAsync(20_000);
     await expectation;
@@ -1073,5 +1108,248 @@ describe("deterministic routing applies to both paths (PR #42 re-review finding 
     const sent = sentBody(fetchMock);
     expect(sent.provider).toEqual({ require_parameters: true, sort: "latency" });
     expect(sent).not.toHaveProperty("stream");
+  });
+});
+
+// --- ADR-0002 option B (TER-44 step 2): bounded retry ---
+
+/** The body of the Nth fetch call (0-based), so a retry's routing is readable. */
+function sentBodyAt(fetchMock: ReturnType<typeof stubFetch>, index: number): Record<string, unknown> {
+  const init = fetchMock.mock.calls[index][1];
+  return JSON.parse(init!.body as string);
+}
+
+/** A deadline generous enough for a retry: a failure with >= 95 s left is retry-eligible. */
+function retryableDeadline(overrides: Partial<WorkspaceAnalysisInput> = {}) {
+  return changesetInput({ deadlineAt: Date.now() + WORKSPACE_REVIEW_DEADLINE_MS, ...overrides });
+}
+
+describe("bounded retry (ADR-0002 option B, TER-44 step 2)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("retries a stalled first attempt on a second provider and reports both attempts", async () => {
+    const requestModel = vi.fn<WorkspaceModelRequest>(async ({ ignoreProviders }) => {
+      if (vi.mocked(requestModel).mock.calls.length === 1) {
+        throw attachWorkspaceProvider(new WorkspaceModelStallError(20_000), "DeepInfra");
+      }
+      expect(ignoreProviders).toEqual(["DeepInfra"]);
+      return { text: JSON.stringify(reviewPayload), model: "deepseek/deepseek-v4-flash-0731", provider: "AkashML" };
+    });
+
+    const result = await analyzeWorkspaceReview(retryableDeadline(), { requestModel });
+
+    expect(requestModel).toHaveBeenCalledTimes(2);
+    expect(result.verdict).toBe("findings");
+    expect(result.ai).toMatchObject({
+      attempts: 2,
+      retryReason: "stall",
+      attempt1Provider: "DeepInfra",
+      attempt2Provider: "AkashML",
+      provider: "AkashML",
+    });
+    // Attempt 1 sends no blocklist at all.
+    expect(vi.mocked(requestModel).mock.calls[0][0].ignoreProviders).toBeUndefined();
+  });
+
+  it("puts the failed provider in provider.ignore on the retry's request body", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    let call = 0;
+    const errorFrame = `data: ${JSON.stringify({
+      provider: "DeepInfra",
+      error: { message: "Provider returned error" },
+      choices: [{ finish_reason: "error" }],
+    })}\n\n`;
+    const fetchMock = stubFetch(() => {
+      call += 1;
+      // Attempt 1: a provider error frame naming DeepInfra. Attempt 2: a clean review.
+      return call === 1
+        ? sseResponse(sseStream([errorFrame]))
+        : sseResponse(sseStream(reviewFrames()));
+    });
+
+    await expect(analyzeWorkspaceReview(retryableDeadline())).resolves.toMatchObject({ verdict: "findings" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Verified 2026-08-26 against https://openrouter.ai/docs/features/provider-routing:
+    // `ignore` is `string[]`, "List of provider slugs to skip for this request".
+    expect(sentBodyAt(fetchMock, 0).provider).toEqual({ require_parameters: true, sort: "latency" });
+    expect(sentBodyAt(fetchMock, 1).provider).toEqual({
+      require_parameters: true,
+      sort: "latency",
+      ignore: ["DeepInfra"],
+    });
+  });
+
+  it("builds provider.ignore only when the retry knows which provider failed", () => {
+    const base = {
+      model: "test/model",
+      systemPrompt: "s",
+      input: "i",
+      schema: {},
+      maxOutputTokens: 10,
+      signal: new AbortController().signal,
+      tuning: WORKSPACE_MODEL_TUNING_DEFAULTS,
+    };
+    expect(buildWorkspaceModelRequestBody(base).provider)
+      .toEqual({ require_parameters: true, sort: "latency" });
+    expect(buildWorkspaceModelRequestBody({ ...base, ignoreProviders: [] }).provider)
+      .toEqual({ require_parameters: true, sort: "latency" });
+    expect(buildWorkspaceModelRequestBody({ ...base, ignoreProviders: ["DeepInfra"] }).provider)
+      .toEqual({ require_parameters: true, sort: "latency", ignore: ["DeepInfra"] });
+  });
+
+  it("sends the same routing on the retry when no provider was identified", async () => {
+    const requestModel = vi.fn<WorkspaceModelRequest>(async () => {
+      if (vi.mocked(requestModel).mock.calls.length === 1) throw workspaceModelHttpError(503, "overloaded");
+      return { text: JSON.stringify(reviewPayload) };
+    });
+
+    const result = await analyzeWorkspaceReview(retryableDeadline(), { requestModel });
+
+    expect(requestModel).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(requestModel).mock.calls[1][0].ignoreProviders).toBeUndefined();
+    expect(result.ai).toMatchObject({ attempts: 2, retryReason: "http_503" });
+    expect(result.ai?.attempt1Provider).toBeUndefined();
+  });
+
+  it("never retries a non-retryable 401 — a second identical request buys the same answer", async () => {
+    const requestModel = vi.fn<WorkspaceModelRequest>(async () => {
+      throw workspaceModelHttpError(401, "invalid api key");
+    });
+
+    const failure = await analyzeWorkspaceReview(retryableDeadline(), { requestModel }).catch((error: unknown) => error);
+
+    expect(requestModel).toHaveBeenCalledOnce();
+    expect(failure).toBeInstanceOf(NonRetryableReviewError);
+    expect((failure as Error).message).toMatch(/\(401\)/);
+    expect(workspaceAttemptMetadataFromError(failure)).toEqual({ attempts: 1 });
+  });
+
+  it("never retries when the retry's full budget no longer fits before the deadline", async () => {
+    // Attempt 1 fails at 110 s of a 180 s deadline: 70 s remain, and a retry
+    // needs 80 s + the 15 s assembly reserve.
+    let clock = 0;
+    const requestModel = vi.fn<WorkspaceModelRequest>(async () => {
+      clock = 110_000;
+      throw attachWorkspaceProvider(new WorkspaceModelStallError(20_000), "DeepInfra");
+    });
+
+    const failure = await analyzeWorkspaceReview(
+      changesetInput({ deadlineAt: WORKSPACE_REVIEW_DEADLINE_MS }),
+      { requestModel, now: () => clock },
+    ).catch((error: unknown) => error);
+
+    expect(requestModel).toHaveBeenCalledOnce();
+    expect(failure).toBeInstanceOf(WorkspaceModelStallError);
+    expect(workspaceAttemptMetadataFromError(failure)).toEqual({
+      attempts: 1,
+      retryReason: "stall",
+      retrySkipped: "insufficient_budget",
+      attempt1Provider: "DeepInfra",
+    });
+  });
+
+  it("fails the review after two attempts and never makes a third", async () => {
+    const requestModel = vi.fn<WorkspaceModelRequest>(async () => {
+      throw attachWorkspaceProvider(
+        new WorkspaceModelProviderError("Provider disconnected unexpectedly"),
+        vi.mocked(requestModel).mock.calls.length === 1 ? "DeepInfra" : "Cloudflare",
+      );
+    });
+
+    const failure = await analyzeWorkspaceReview(retryableDeadline(), { requestModel }).catch((error: unknown) => error);
+
+    expect(requestModel).toHaveBeenCalledTimes(2);
+    expect(failure).toBeInstanceOf(WorkspaceModelProviderError);
+    expect(workspaceAttemptMetadataFromError(failure)).toEqual({
+      attempts: 2,
+      retryReason: "provider_error",
+      attempt1Provider: "DeepInfra",
+      attempt2Provider: "Cloudflare",
+    });
+  });
+
+  // Phase B saw byte-identical payloads produce non-repeatable output, so a
+  // malformed answer is evidence about the generation, not about the request.
+  it("retries a schema-invalid answer once, then fails deterministically", async () => {
+    const requestModel = vi.fn<WorkspaceModelRequest>(async () => ({ text: "not json at all" }));
+
+    const failure = await analyzeWorkspaceReview(retryableDeadline(), { requestModel }).catch((error: unknown) => error);
+
+    expect(requestModel).toHaveBeenCalledTimes(2);
+    expect(failure).toBeInstanceOf(WorkspaceReviewOutputInvalidError);
+    expect((failure as Error).message).toMatch(/not valid review JSON/);
+    expect(workspaceAttemptMetadataFromError(failure)).toMatchObject({ attempts: 2, retryReason: "schema_invalid" });
+  });
+
+  it("caps a first attempt at its own budget so the retry still fits", async () => {
+    vi.useFakeTimers();
+    // A provider that never settles: only the attempt budget can end attempt 1.
+    const requestModel = vi.fn<WorkspaceModelRequest>(() => new Promise<WorkspaceModelResponse>(() => {}));
+    const pending = analyzeWorkspaceReview(
+      changesetInput({ deadlineAt: Date.now() + WORKSPACE_REVIEW_DEADLINE_MS }),
+      { requestModel },
+    );
+    const failure = pending.catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(WORKSPACE_REVIEW_ATTEMPT_BUDGET_MS);
+    expect(requestModel).toHaveBeenCalledTimes(2);
+    // Attempt 2 is bounded by the end-to-end deadline, not by another 80 s slice.
+    await vi.advanceTimersByTimeAsync(WORKSPACE_REVIEW_DEADLINE_MS);
+    const error = await failure;
+    expect(error).toBeInstanceOf(WorkspaceReviewTimeoutError);
+    expect(workspaceAttemptMetadataFromError(error)).toMatchObject({ attempts: 2, retryReason: "attempt_timeout" });
+  });
+
+  it("lets the end-to-end deadline abort the second attempt and reports a timeout", async () => {
+    vi.useFakeTimers();
+    const requestModel = vi.fn<WorkspaceModelRequest>(async ({ signal }) => {
+      if (vi.mocked(requestModel).mock.calls.length === 1) {
+        throw attachWorkspaceProvider(new WorkspaceModelStallError(20_000), "DeepInfra");
+      }
+      // Attempt 2 hangs until something aborts it; only the deadline can.
+      return new Promise<WorkspaceModelResponse>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
+      });
+    });
+
+    const pending = analyzeWorkspaceReview(
+      changesetInput({ deadlineAt: Date.now() + WORKSPACE_REVIEW_DEADLINE_MS }),
+      { requestModel },
+    );
+    const failure = pending.catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(WORKSPACE_REVIEW_DEADLINE_MS);
+
+    const error = await failure;
+    expect(requestModel).toHaveBeenCalledTimes(2);
+    expect(error).toBeInstanceOf(WorkspaceReviewTimeoutError);
+    expect(workspaceAttemptMetadataFromError(error)).toMatchObject({ attempts: 2, retryReason: "stall" });
+  });
+
+  it("classifies exactly the failures a different provider could survive", () => {
+    expect(workspaceRetryReason(new WorkspaceModelStallError(20_000))).toBe("stall");
+    expect(workspaceRetryReason(new WorkspaceModelConnectionError("terminated"))).toBe("connection");
+    expect(workspaceRetryReason(new WorkspaceModelTruncatedStreamError())).toBe("truncated_stream");
+    expect(workspaceRetryReason(new WorkspaceModelMalformedFrameError())).toBe("malformed_frame");
+    expect(workspaceRetryReason(new WorkspaceModelProviderError("boom"))).toBe("provider_error");
+    expect(workspaceRetryReason(new WorkspaceModelAttemptTimeoutError(80_000))).toBe("attempt_timeout");
+    expect(workspaceRetryReason(new WorkspaceReviewOutputInvalidError("bad json"))).toBe("schema_invalid");
+    expect(workspaceRetryReason(workspaceModelHttpError(500, "x"))).toBe("http_500");
+    expect(workspaceRetryReason(workspaceModelHttpError(429, "x"))).toBe("http_429");
+
+    expect(workspaceRetryReason(new WorkspaceReviewTimeoutError(180_000))).toBeUndefined();
+    expect(workspaceRetryReason(new WorkspaceModelTuningConfigError("V", "x", ["y"]))).toBeUndefined();
+    expect(workspaceRetryReason(workspaceModelHttpError(401, "x"))).toBeUndefined();
+    expect(workspaceRetryReason(workspaceModelHttpError(400, "x"))).toBeUndefined();
+    expect(workspaceRetryReason(workspaceModelHttpError(413, "x"))).toBeUndefined();
+    expect(workspaceRetryReason(new TypeError("x.map is not a function"))).toBeUndefined();
+  });
+
+  it("bounds one review at two model invocations, which is what the request gate multiplies", () => {
+    expect(WORKSPACE_REVIEW_MAX_ATTEMPTS).toBe(2);
   });
 });

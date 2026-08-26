@@ -12,6 +12,7 @@
  */
 
 import { NonRetryableReviewError } from "./review-errors";
+import { WORKSPACE_REVIEW_DEADLINE_MS } from "./review-invocation-limits";
 import type { ReviewSeverity } from "./review-policy";
 import { WORKSPACE_MAX_FINDINGS } from "./workspace-review-prompts";
 import {
@@ -22,6 +23,7 @@ import {
   WorkspaceReviewTimeoutError,
   analyzeWorkspaceReview,
   resolveWorkspaceModelTuningFromEnv,
+  workspaceAttemptMetadataFromError,
   type WorkspaceProviderSortSetting,
   type WorkspaceReasoningSetting,
 } from "./workspace-analysis";
@@ -48,8 +50,14 @@ import type {
   WorkspaceReviewResult,
 } from "./workspace-review-types";
 
-/** End-to-end deadline (spec §6); `maxDuration = 300` leaves platform headroom. */
-export const WORKSPACE_REVIEW_DEADLINE_MS = 120_000;
+/**
+ * End-to-end deadline (spec §6, ADR-0002 fixed decision 6: 180 s covering at
+ * most two 80 s attempts). Re-exported from `review-invocation-limits.ts` so
+ * the deadline, the attempt budget, and the gate's concurrency TTL have a
+ * single source of truth; `maxDuration = 300` on the route shell leaves
+ * platform headroom above it.
+ */
+export { WORKSPACE_REVIEW_DEADLINE_MS };
 
 /**
  * Server-owned caps (spec §4.4). The client reports the caps IT applied in
@@ -131,6 +139,20 @@ export type WorkspaceReviewLogEntry = {
    * redaction concern for this field to be metadata-only.
    */
   tuningConfigError?: boolean;
+  /**
+   * Bounded-retry observability (ADR-0002 option B). `attempts` is 1 or 2 —
+   * how many model requests this ONE request sent; the rate-limit slot is still
+   * consumed exactly once, so the hourly gate bounds invocations at twice its
+   * size. `retryReason` names why attempt 1 was retry-eligible (its error class
+   * or HTTP status), `retrySkipped` says a retry was warranted but did not fit
+   * before the deadline, and the provider fields say who served each attempt —
+   * attempt 2 is routed away from attempt 1's provider. All metadata only.
+   */
+  attempts?: number;
+  retryReason?: string;
+  retrySkipped?: string;
+  attempt1Provider?: string;
+  attempt2Provider?: string;
   verdict?: string;
   findingCount?: number;
   redactionApplied?: number;
@@ -147,7 +169,7 @@ export type WorkspaceReviewRouteDeps = {
   validatePayload?: (value: unknown) => PayloadValidationResult;
   now?: () => number;
   log?: (entry: WorkspaceReviewLogEntry) => void;
-  /** Overridable so tests can assert the timeout path without waiting 120 s. */
+  /** Overridable so tests can assert the timeout path without waiting 180 s. */
   deadlineMs?: number;
   model?: string;
   minimumSeverity?: ReviewSeverity;
@@ -517,12 +539,15 @@ export function createWorkspaceReviewHandler(deps: WorkspaceReviewRouteDeps) {
           deadlineAt,
         });
       } catch (error) {
+        // How many attempts the wrapper actually spent, pinned to the error it
+        // threw — the same shape the success path reads off `result.ai`.
+        const attemptMetadata = workspaceAttemptMetadataFromError(error) ?? {};
         if (error instanceof WorkspaceReviewTimeoutError) {
           return finish(
             504,
             "workspace_review_timeout",
             { error: "workspace_review_timeout", deadlineMs },
-            metadata,
+            { ...metadata, ...attemptMetadata },
           );
         }
         const message = error instanceof NonRetryableReviewError || error instanceof Error ? error.message : "model failure";
@@ -545,7 +570,7 @@ export function createWorkspaceReviewHandler(deps: WorkspaceReviewRouteDeps) {
           500,
           isTuningConfigError ? "model_tuning_config_error" : "model_failure",
           { error: "model_failure", message },
-          { ...metadata, ...stall, ...upstream, ...tuningConfig },
+          { ...metadata, ...attemptMetadata, ...stall, ...upstream, ...tuningConfig },
         );
       }
 
@@ -562,6 +587,10 @@ export function createWorkspaceReviewHandler(deps: WorkspaceReviewRouteDeps) {
         ...(result.ai?.outputTokens !== undefined ? { outputTokens: result.ai.outputTokens } : {}),
         ...(result.ai?.reasoningTokens !== undefined ? { reasoningTokens: result.ai.reasoningTokens } : {}),
         ...(result.ai?.estimatedCostUsd !== undefined ? { estimatedCostUsd: result.ai.estimatedCostUsd } : {}),
+        ...(result.ai?.attempts !== undefined ? { attempts: result.ai.attempts } : {}),
+        ...(result.ai?.retryReason !== undefined ? { retryReason: result.ai.retryReason } : {}),
+        ...(result.ai?.attempt1Provider !== undefined ? { attempt1Provider: result.ai.attempt1Provider } : {}),
+        ...(result.ai?.attempt2Provider !== undefined ? { attempt2Provider: result.ai.attempt2Provider } : {}),
         verdict: result.verdict,
         findingCount: result.findings.length,
         redactionApplied: result.redactionApplied,

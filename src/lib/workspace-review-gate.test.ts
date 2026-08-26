@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { WORKSPACE_REVIEW_CONCURRENCY_TTL_MS, WORKSPACE_REVIEW_DEADLINE_MS } from "./review-invocation-limits";
 import {
   DEFAULT_WORKSPACE_GATE_CONFIG,
   concurrencyKey,
@@ -29,7 +30,7 @@ describe("workspaceGateConfigFromEnv", () => {
     expect(DEFAULT_WORKSPACE_GATE_CONFIG.rateLimitMax).toBe(10);
     expect(DEFAULT_WORKSPACE_GATE_CONFIG.rateLimitWindowMs).toBe(3_600_000);
     expect(DEFAULT_WORKSPACE_GATE_CONFIG.maxConcurrent).toBe(1);
-    expect(DEFAULT_WORKSPACE_GATE_CONFIG.concurrencyTtlMs).toBe(150_000);
+    expect(DEFAULT_WORKSPACE_GATE_CONFIG.concurrencyTtlMs).toBe(210_000);
   });
 
   it("is env-tunable", () => {
@@ -48,8 +49,12 @@ describe("workspaceGateConfigFromEnv", () => {
     }
   });
 
-  it("keeps the concurrency TTL above the 120s end-to-end deadline", () => {
-    expect(DEFAULT_WORKSPACE_GATE_CONFIG.concurrencyTtlMs).toBeGreaterThan(120_000);
+  // ADR-0002 (TER-44 step 2) moved the end-to-end deadline to 180 s; the TTL is
+  // the backstop for a request that dies mid-flight, so it must stay ABOVE the
+  // deadline — a TTL below it would hand a still-running review's slot out twice.
+  it("keeps the concurrency TTL above the end-to-end deadline", () => {
+    expect(DEFAULT_WORKSPACE_GATE_CONFIG.concurrencyTtlMs).toBeGreaterThan(WORKSPACE_REVIEW_DEADLINE_MS);
+    expect(DEFAULT_WORKSPACE_GATE_CONFIG.concurrencyTtlMs).toBe(WORKSPACE_REVIEW_CONCURRENCY_TTL_MS);
   });
 });
 
@@ -113,7 +118,7 @@ describe("enterWorkspaceReviewGate", () => {
     expect(held.status).toBe("allowed");
 
     const denied = await enterWorkspaceReviewGate(store, principal, DEFAULT_WORKSPACE_GATE_CONFIG, 0);
-    expect(denied).toMatchObject({ status: "concurrency_ceiling", retryAfterSeconds: 150 });
+    expect(denied).toMatchObject({ status: "concurrency_ceiling", retryAfterSeconds: 210 });
     expect(store.counters.get(concurrencyKey(principal))).toBe(1);
 
     if (held.status !== "allowed") throw new Error("expected allowed");

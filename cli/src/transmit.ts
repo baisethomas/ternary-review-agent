@@ -21,7 +21,14 @@ import type { TransmitErrorCode } from "./types.js";
 export { TransmitError };
 export type { TransmitErrorCode };
 
-export const DEFAULT_TIMEOUT_MS = 130_000;
+/**
+ * Client-side submission timeout: the server's end-to-end deadline (180 000 ms,
+ * ADR-0002 fixed decision 6 / `src/lib/review-invocation-limits.ts`) plus 10 s
+ * of slack for transport and response assembly. It must stay ABOVE the server
+ * deadline so a deterministic 504 `workspace_review_timeout` reaches the user
+ * instead of a `client_timeout` that says nothing about what happened.
+ */
+export const DEFAULT_TIMEOUT_MS = 190_000;
 
 export type WorkspaceSeverity = "blocking" | "warning" | "suggestion";
 

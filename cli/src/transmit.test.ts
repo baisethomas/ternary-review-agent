@@ -69,9 +69,12 @@ describe("resolveTransmitConfig", () => {
     }
   });
 
-  it("defaults the client timeout to 130000ms", () => {
+  it("defaults the client timeout to 190000ms — the 180 s server deadline plus slack", () => {
     const cfg = resolveTransmitConfig({ TERNARY_ENDPOINT: "http://x", TERNARY_CLI_TOKEN: "t" });
-    expect(cfg.timeoutMs).toBe(130_000);
+    // Must exceed the server's WORKSPACE_REVIEW_DEADLINE_MS (180 000) so the
+    // caller sees the deterministic 504, not a client-side abort (ADR-0002).
+    expect(cfg.timeoutMs).toBe(190_000);
+    expect(cfg.timeoutMs).toBeGreaterThan(180_000);
   });
 });
 
@@ -245,7 +248,7 @@ describe("transmitCanonicalPayload: error status mappings", () => {
   });
 
   it("504 -> workspace_review_timeout", async () => {
-    await expectMapped(504, { error: "workspace_review_timeout", deadlineMs: 120_000 }, "workspace_review_timeout");
+    await expectMapped(504, { error: "workspace_review_timeout", deadlineMs: 180_000 }, "workspace_review_timeout");
   });
 
   it("400 unsupported_schema_version -> unsupported_schema_version", async () => {
