@@ -272,6 +272,44 @@ function isAbortError(error: unknown) {
 }
 
 /**
+ * The two messages undici (Node's built-in `fetch`) uses when a connection dies
+ * rather than returning a response. Verified against the installed
+ * `node_modules/undici`:
+ *   - `new TypeError('fetch failed', { cause: response.error })`
+ *     (`lib/web/fetch/index.js:237`) — the request never produced a response.
+ *   - `new TypeError('terminated', { cause: ... })`
+ *     (`lib/web/fetch/index.js:2132`) — the response body was cut mid-stream.
+ * Confirmed empirically on Node v22.14.0 against a socket that resets: the
+ * `fetch()` rejection is `TypeError: fetch failed` and the `reader.read()`
+ * rejection is `TypeError: terminated`, both with `cause.code === "ECONNRESET"`
+ * (undici also raises `UND_ERR_SOCKET` causes under the same two messages).
+ *
+ * Matching the message rather than the cause is deliberate: the cause varies by
+ * failure (ECONNRESET, UND_ERR_SOCKET, TLS errors), the outer message does not,
+ * and an unrelated internal `TypeError` — a genuine bug — carries neither
+ * message and so stays a plain model failure.
+ */
+const UNDICI_CONNECTION_FAILURE_MESSAGES = new Set(["fetch failed", "terminated"]);
+
+/**
+ * Classify a transport-level rejection as a dead connection, or return
+ * `undefined` to leave it alone.
+ *
+ * Ternary's own errors (stall, truncated stream, malformed frame, non-OK HTTP,
+ * provider error frames) are never `TypeError` and never carry an abort name,
+ * so they pass through unchanged and keep their own meaning.
+ */
+function asConnectionError(error: unknown): WorkspaceModelConnectionError | undefined {
+  if (isAbortError(error)) return new WorkspaceModelConnectionError(error instanceof Error ? error.message : String(error));
+  if (error instanceof TypeError && UNDICI_CONNECTION_FAILURE_MESSAGES.has(error.message)) {
+    const cause = (error as { cause?: { code?: unknown } }).cause;
+    const code = typeof cause?.code === "string" ? ` (${cause.code})` : "";
+    return new WorkspaceModelConnectionError(`${error.message}${code}`);
+  }
+  return undefined;
+}
+
+/**
  * Field-map exhaustiveness checks (one per type below): each literal must
  * satisfy `Record<keyof T, true>`, listing every field on the type. If
  * `CheckEvidence`, `CommandEvidence`, or `WorkspaceChangeSet` gains or loses
@@ -651,7 +689,14 @@ async function readWorkspaceModelStream(
   try {
     for (;;) {
       const waitMs = stallTimeoutMs - (Date.now() - lastDataFrameAt);
-      const chunk = await withStallDeadline(reader.read(), waitMs, abort, stallTimeoutMs);
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await withStallDeadline(reader.read(), waitMs, abort, stallTimeoutMs);
+      } catch (error) {
+        // A body cut mid-stream is a dead connection, not a slow review. The
+        // stall window's own error is not a TypeError, so it passes through.
+        throw asConnectionError(error) ?? error;
+      }
       if (chunk.done) break;
       buffer += decoder.decode(chunk.value, { stream: true });
       let sawDataFrame = false;
@@ -722,7 +767,10 @@ export const requestOpenRouterWorkspaceModel: WorkspaceModelRequest = async (req
       : await pending;
   } catch (error) {
     request.signal.removeEventListener("abort", onOuterAbort);
-    throw error;
+    // The connection never produced a response. Classified here, at the
+    // transport boundary, so the wrapper's deadline check stays the only thing
+    // that can call something a timeout.
+    throw asConnectionError(error) ?? error;
   }
   try {
     if (!response.ok) {
@@ -768,7 +816,10 @@ export const requestOpenRouterWorkspaceModel: WorkspaceModelRequest = async (req
     } catch {
       // ignore: body cleanup is best-effort
     }
-    throw error;
+    // Covers the non-streamed `response.json()` and the non-OK `response.text()`
+    // too: a body that dies while being buffered is the same dead connection.
+    // Already-classified and Ternary-owned errors pass through untouched.
+    throw asConnectionError(error) ?? error;
   } finally {
     request.signal.removeEventListener("abort", onOuterAbort);
     // Idempotent: on success the body is already fully read, on failure this is
@@ -852,9 +903,12 @@ export async function analyzeWorkspaceReview(
     // connection died, and saying "timeout" for that made Phase B's 24 timeouts
     // unreadable (ADR-0002; dogfood report §9 item 1).
     if (deadlineReached) throw new WorkspaceReviewTimeoutError(timeoutMs);
-    if (isAbortError(error) || controller.signal.aborted) {
-      throw new WorkspaceModelConnectionError(error instanceof Error ? error.message : String(error));
-    }
+    // Classified here as well as at the transport boundary: the contract is the
+    // wrapper's, so it must hold for ANY injected `requestModel`, not only for
+    // the OpenRouter transport that ships with it.
+    const connection = asConnectionError(error);
+    if (connection) throw connection;
+    if (controller.signal.aborted) throw new WorkspaceModelConnectionError(error instanceof Error ? error.message : String(error));
     throw error;
   } finally {
     clearTimeout(timer!);

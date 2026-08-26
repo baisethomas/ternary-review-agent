@@ -599,6 +599,98 @@ describe("env-tunable model knobs (TER-44 step 1b)", () => {
   });
 });
 
+/** The exact shape undici raises when a connection dies (see UNDICI_CONNECTION_FAILURE_MESSAGES). */
+function undiciError(message: "fetch failed" | "terminated", code = "ECONNRESET"): TypeError {
+  return new TypeError(message, { cause: Object.assign(new Error(code), { code }) });
+}
+
+describe("undici connection failures are not timeouts (TER-44 step 1b)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("classifies a fetch() rejection (connection reset before any response) as a connection error", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    // Node's fetch does not throw AbortError for a reset socket — it throws
+    // `TypeError: fetch failed` with an ECONNRESET cause.
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(undiciError("fetch failed"))));
+
+    const promise = analyzeWorkspaceReview(changesetInput({ deadlineAt: 61_000 }), { now: () => 1_000 });
+    await expect(promise).rejects.toBeInstanceOf(WorkspaceModelConnectionError);
+    await expect(promise).rejects.not.toBeInstanceOf(WorkspaceReviewTimeoutError);
+    // The cause code survives into the message, so a log line says which failure it was.
+    await expect(promise).rejects.toThrow(/fetch failed \(ECONNRESET\)/);
+  });
+
+  it("classifies a mid-stream body cut (reader.read() rejection) as a connection error", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    const frames = reviewFrames();
+    vi.stubGlobal("fetch", vi.fn(async () => sseResponse(new ReadableStream<Uint8Array>({
+      start(controller) {
+        // One good frame, then the socket dies the way undici reports it.
+        controller.enqueue(new TextEncoder().encode(frames[0]));
+      },
+      pull(controller) {
+        controller.error(undiciError("terminated"));
+      },
+    }))));
+
+    const promise = analyzeWorkspaceReview(changesetInput({ deadlineAt: 61_000 }), { now: () => 1_000 });
+    await expect(promise).rejects.toBeInstanceOf(WorkspaceModelConnectionError);
+    await expect(promise).rejects.toThrow(/terminated \(ECONNRESET\)/);
+  });
+
+  it("classifies a buffered-body cut on the non-streamed path too", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body: null,
+      json: () => Promise.reject(undiciError("terminated")),
+    } as unknown as Response)));
+
+    await expect(analyzeWorkspaceReview(changesetInput({ deadlineAt: 61_000 }), { now: () => 1_000, tuning: { stream: false } }))
+      .rejects.toBeInstanceOf(WorkspaceModelConnectionError);
+  });
+
+  it("leaves an unrelated TypeError alone — a bug is not a dead connection", async () => {
+    const requestModel: WorkspaceModelRequest = () => Promise.reject(new TypeError("x.map is not a function"));
+
+    const promise = analyzeWorkspaceReview(changesetInput({ deadlineAt: 61_000 }), { now: () => 1_000, requestModel });
+    await expect(promise).rejects.not.toBeInstanceOf(WorkspaceModelConnectionError);
+    await expect(promise).rejects.toThrow(/is not a function/);
+  });
+
+  it("leaves a malformed-review failure a plain model failure, not a connection error", async () => {
+    const requestModel: WorkspaceModelRequest = async () => ({ text: "not json at all" });
+
+    const promise = analyzeWorkspaceReview(changesetInput({ deadlineAt: 61_000 }), { now: () => 1_000, requestModel });
+    await expect(promise).rejects.not.toBeInstanceOf(WorkspaceModelConnectionError);
+    await expect(promise).rejects.toThrow(/not valid review JSON/);
+  });
+
+  it("still calls it a timeout when our own deadline aborted the connection", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    // The deadline fires, aborts the socket, and undici surfaces the cut body
+    // as `TypeError: terminated`. The deadline flag must still win.
+    vi.stubGlobal("fetch", vi.fn(async () => sseResponse(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        return new Promise<void>((resolve) => {
+          setTimeout(() => {
+            controller.error(undiciError("terminated"));
+            resolve();
+          }, 1_500);
+        });
+      },
+    }))));
+
+    await expect(analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 1_100 })))
+      .rejects.toBeInstanceOf(WorkspaceReviewTimeoutError);
+  });
+});
+
 describe("abort vs deadline (TER-44 step 1b)", () => {
   afterEach(() => {
     vi.useRealTimers();

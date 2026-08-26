@@ -636,6 +636,44 @@ describe("deterministic timeout (contract §5)", () => {
     expect(logs[0].stallAborted).toBeUndefined();
   });
 
+  it("flags an undici connection reset (TypeError: fetch failed) as upstreamAborted, not a timeout", async () => {
+    // Node's fetch reports a reset socket as a TypeError, not an AbortError —
+    // the first cut of this fix would have called this a 504.
+    const reset = () => Promise.reject<never>(
+      new TypeError("fetch failed", { cause: Object.assign(new Error("ECONNRESET"), { code: "ECONNRESET" }) }),
+    );
+    const { deps, logs } = makeDeps({
+      analyze: (input) => analyzeWorkspaceReview(input, { requestModel: reset }),
+    });
+    const response = await createWorkspaceReviewHandler(deps)(buildRequest());
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({ error: "model_failure" });
+    expect(logs[0]).toMatchObject({ outcome: "model_failure", upstreamAborted: true });
+  });
+
+  it("flags a mid-stream body cut (TypeError: terminated) as upstreamAborted", async () => {
+    const terminated = () => Promise.reject<never>(
+      new TypeError("terminated", { cause: Object.assign(new Error("ECONNRESET"), { code: "ECONNRESET" }) }),
+    );
+    const { deps, logs } = makeDeps({
+      analyze: (input) => analyzeWorkspaceReview(input, { requestModel: terminated }),
+    });
+    const response = await createWorkspaceReviewHandler(deps)(buildRequest());
+    expect(response.status).toBe(500);
+    expect(logs[0]).toMatchObject({ outcome: "model_failure", upstreamAborted: true });
+  });
+
+  it("leaves a plain parsing failure a model_failure with no upstreamAborted flag", async () => {
+    const { deps, logs } = makeDeps({
+      analyze: (input) => analyzeWorkspaceReview(input, { requestModel: async () => ({ text: "not json" }) }),
+    });
+    const response = await createWorkspaceReviewHandler(deps)(buildRequest());
+    expect(response.status).toBe(500);
+    expect(logs[0].outcome).toBe("model_failure");
+    expect(logs[0].upstreamAborted).toBeUndefined();
+    expect(logs[0].stallAborted).toBeUndefined();
+  });
+
   it("labels a WorkspaceModelConnectionError from any depth as upstreamAborted", async () => {
     const { deps, logs } = makeDeps({
       analyze: async () => {

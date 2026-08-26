@@ -20,11 +20,13 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 
 ## Working on
 
-- **TER-44 step 1b — `baise/ter-44-step1b-model-tuning` (this branch).** Note the branch was cut from main `f922654` and is **one commit behind** `origin/main` `c8a88eb` (the §8.6 measurement PR #43); it needs a rebase before merge.
+- **TER-44 step 1b — `baise/ter-44-step1b-model-tuning` (this branch, PR #44).** Commit `590cd08`, then merge `23e6f70` brought `origin/main` `c8a88eb` (the §8.6 measurement) in; the branch is current with main and no longer needs a rebase. Ternary reviewed it 💬 with two warnings, **both fixed and uncommitted** (see the last two sub-bullets).
 - Context: step 1 (spike C) is merged and deployed on main `f922654` and was measured on 2026-08-26 — `docs/experiments/workspace-review-dogfood.md` §8.6, raw data `docs/experiments/ter44-step1-runs.json`. **Verdict against the ADR-0002 gate (≥ 80% delivery, p50 < 30 s): NOT ADOPT** — delivery 66.7% server-side / 58.3% caller-observed, `durationMs` p50 56,627 ms. Measured cause: `effort: "low"` is not honoured by `deepseek-v4-flash-0731`; `stallAborted` never fired.
 - This PR makes the owner's 2026-08-26 experiments possible **without a code change** — (a) the incumbent at reasoning effort `none`, (b) `mistralai/mistral-small-3.2-24b-instruct` (non-reasoning) — and fixes the measurement defect §8.6 found:
   1. `WORKSPACE_MODEL_REASONING_EFFORT` and `WORKSPACE_MODEL_PROVIDER_SORT` tune `analyzeWorkspaceReview` from env (`resolveWorkspaceModelTuningFromEnv`; precedence defaults < env < per-call `deps.tuning`). Accepted values are OpenRouter's documented enums plus the literal `omit`, which sends **no** `reasoning` object / no `provider.sort` — required for a non-reasoning model, because under `provider.require_parameters: true` a `reasoning` param excludes every provider that does not support it. An invalid value throws `WorkspaceModelTuningConfigError` before the model call; defaults unchanged (`low` / `latency`).
   2. Only the deadline race now yields `WorkspaceReviewTimeoutError` (`workspace-analysis.ts` ~line 729). Any other abort raises `WorkspaceModelConnectionError` → the same 500 `model_failure` to the caller, with a new `upstreamAborted: true` log field beside `stallAborted`, so the next series can separate "deadline expired" from "connection died".
+  3. *(Ternary fix)* Classification is no longer AbortError-only. Node's `fetch` reports a dead connection as a **`TypeError`**, not an abort: `TypeError: fetch failed` when no response is produced and `TypeError: terminated` when the body is cut mid-stream (both verified in `node_modules/undici` and reproduced on Node v22.14.0 against a resetting socket, `cause.code` `ECONNRESET`). Both now become `WorkspaceModelConnectionError`, at the transport boundary *and* in the wrapper's own catch so the contract holds for any injected `requestModel`. Non-OK HTTP, provider error frames, stalls, malformed frames and parse failures are untouched and stay plain `model_failure`.
+  4. *(Ternary fix)* This file's "Last handoff" was stale (it still named the spike worktree at `ccb0138`); rewritten for this branch, and "Working on"/"Next"/"Verification status" reconciled with it.
 - No `src/app/api/**` change, no payload-schema change; the CLI error set is unchanged. Not committed by this agent.
 
 ## Next
@@ -50,6 +52,7 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 
 ## Verification status
 
+- **This branch (TER-44 step 1b, 2026-08-26), all RAN locally:** `npm run lint` exit 0, clean. `npx vitest run --dir src src/lib/workspace-analysis.test.ts src/lib/workspace-review-route.test.ts` → **118 passed** (analysis 60, route 58). `npx vitest run --dir src` → **637 passed / 9 skipped, 80 files**. `npm run build` green, all 17 routes compiled. (`--dir src` excludes the stale copies under `.claude/worktrees/`, which a root-level run also picks up.) Both behaviour fixes passed reproduce-revert-restore: reverting the abort classification failed 2 tests, reverting the undici message set failed 5. Nothing about live OpenRouter behaviour is verified here — the model experiments are the next measurement, not this PR.
 - TER-39 Phase B (2026-08-25): offline canary baseline re-run green (8/8 clean, exit 0); 45/45 live pre-flights CLEAN, zero canary leaks; `npm run lint` green after the docs edits. The `capture.test.ts` timeout change was verified by `npx vitest run cli/src/capture.test.ts` (17 files / 757 tests passed) plus Ternary's sandbox `test` check on PR #40; the full root suite was not re-run locally for this PR.
 - main `ccb0138`: `npm run lint && npm test` green (12,980 passed), `npm run build` green, production deploy READY (2026-08-25). Ternary review of #38 was 💬 with one open warning: `loadWatchedRepositoriesOrEmpty` in `dashboard-data.ts` swallows every Redis error (not just quota) and shows repos as unwatched — follow-up: surface a "watch status unavailable" state instead.
 - `cli/src/capture.test.ts` now sets a file-level 20 s `testTimeout` (its adversarial tests build real Git repos, ~2 s each alone); the stale copies under `.claude/worktrees/` still carry the 5 s default and keep flaking in the stop hook until the human deletes them.
@@ -68,8 +71,8 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 
 ## Last handoff
 
-- Updated: 2026-08-25 (TER-44 spike C, PR #42 fix round 2)
+- Updated: 2026-08-26 (TER-44 step 1b, PR #44, Ternary fix round 1)
 - By: agent (Claude Code)
-- Branch/worktree: `baise/ter-44-survivability-spike` (fix round 2 uncommitted; a separate Git agent commits)
-- Last known-good commit: main `ccb0138` (deployed)
-- Verified after fix round 2: `npm run lint` clean; `npx vitest run src/lib/workspace-analysis.test.ts src/lib/workspace-review-route.test.ts` 95 passed (43 + 52); `npx vitest run --dir src` 614 passed / 9 skipped; `npm run build` green (clear `.next/cache` first if the build worker dies with a WasmHash dump).
+- Branch: `baise/ter-44-step1b-model-tuning` — commit `590cd08` plus merge `23e6f70` (brought `origin/main` `c8a88eb`, the §8.6 measurement, into the branch). The Ternary fix round described in "Working on" is **uncommitted**; a separate Git agent commits.
+- Base: main `c8a88eb`, merged in. **Last known-good deployed main: `f922654`** (the step-1 spike, which §8.6 measured and did not adopt); `c8a88eb` is docs-only on top of it.
+- Verified on this branch (see "Verification status" for the numbers): `npm run lint` clean; the two touched suites and the whole `src` suite green; `npm run build` green. Clear `.next/cache` (`find .next/cache -mindepth 1 -delete`) first if the build worker dies with a WasmHash dump — it did, twice, and cleared both times.
