@@ -936,12 +936,42 @@ describe("survivability log fields (ADR-0002 option C)", () => {
     }
   });
 
-  it("logs the resolved tuning on a non-ok outcome too (rejected before the model call)", async () => {
-    vi.stubEnv("WORKSPACE_MODEL_REASONING_EFFORT", "omit");
+  // Tuning is resolved inside the model-call error boundary (right before
+  // `deps.analyze`), deliberately AFTER authentication and payload
+  // validation — never before. An invalid env value must not throw past the
+  // 401/429/400 responses those earlier steps are supposed to give.
+  it("returns 401 with a log entry, not a throw, when auth fails and the env tuning is invalid", async () => {
+    vi.stubEnv("WORKSPACE_MODEL_REASONING_EFFORT", "not-a-real-effort");
     try {
       const { deps, logs } = makeDeps();
-      await createWorkspaceReviewHandler(deps)(buildRequest({ token: "wrong-token" }));
-      expect(logs[0]).toMatchObject({ outcome: "unauthorized:token_mismatch", reasoningEffort: "omit" });
+      const response = await createWorkspaceReviewHandler(deps)(buildRequest({ token: "wrong-token" }));
+      expect(response.status).toBe(401);
+      await expect(response.json()).resolves.toMatchObject({ error: "unauthorized" });
+      expect(logs[0]).toMatchObject({ outcome: "unauthorized:token_mismatch", status: 401 });
+      // Never reached the point where tuning is resolved for this request.
+      expect(logs[0].reasoningEffort).toBeUndefined();
+      expect(logs[0].tuningConfigError).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("returns 500 model_failure with a log entry naming the config error, for a valid authenticated request under an invalid env value", async () => {
+    vi.stubEnv("WORKSPACE_MODEL_PROVIDER_SORT", "not-a-real-sort");
+    try {
+      const { deps, logs } = makeDeps();
+      const response = await createWorkspaceReviewHandler(deps)(buildRequest());
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toMatchObject({ error: "model_failure" });
+      expect(logs[0]).toMatchObject({
+        outcome: "model_tuning_config_error",
+        status: 500,
+        tuningConfigError: true,
+      });
+      // Resolution failed before assigning to metadata, so the (invalid,
+      // unresolved) tuning is not reported as if it were used.
+      expect(logs[0].reasoningEffort).toBeUndefined();
+      expect(logs[0].providerSort).toBeUndefined();
     } finally {
       vi.unstubAllEnvs();
     }

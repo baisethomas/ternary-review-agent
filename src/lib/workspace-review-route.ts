@@ -18,6 +18,7 @@ import {
   WORKSPACE_MODEL_TUNING_DEFAULTS,
   WorkspaceModelConnectionError,
   WorkspaceModelStallError,
+  WorkspaceModelTuningConfigError,
   WorkspaceReviewTimeoutError,
   analyzeWorkspaceReview,
   resolveWorkspaceModelTuningFromEnv,
@@ -100,9 +101,14 @@ export type WorkspaceReviewLogEntry = {
    * `resolveWorkspaceModelTuningFromEnv`) — the route does not receive
    * `deps.tuning` per-call overrides, so this is exactly what the analysis
    * wrapper used. `"omit"` means the corresponding key was not sent on the
-   * wire. Logged so a measurement series can read the configuration off the
-   * log line instead of inferring it from `reasoningTokens` (dogfood report
-   * §8.7.2).
+   * wire. Present on every outcome from the model-call attempt onward (`ok`,
+   * `workspace_review_timeout`, `model_failure`, including
+   * `model_tuning_config_error`); absent on rejections that returned before
+   * that point (auth, gate, transport, payload validation) since resolution
+   * deliberately happens inside the model-call error boundary, not before
+   * it — see the comment at the resolution site. Logged so a measurement
+   * series can read the configuration off the log line instead of inferring
+   * it from `reasoningTokens` (dogfood report §8.7.2).
    */
   reasoningEffort?: WorkspaceReasoningSetting;
   providerSort?: WorkspaceProviderSortSetting;
@@ -115,6 +121,16 @@ export type WorkspaceReviewLogEntry = {
    * "connection died" — Phase B could not.
    */
   upstreamAborted?: boolean;
+  /**
+   * True when the outcome is `model_tuning_config_error`: an invalid
+   * `WORKSPACE_MODEL_REASONING_EFFORT` / `WORKSPACE_MODEL_PROVIDER_SORT` env
+   * value, caught at the point the model call is prepared rather than left to
+   * throw uncaught. A plain boolean flag rather than duplicating the
+   * env-derived detail already in the response `message` — the value in
+   * question is an operator-set env var, not user input, so it is not a
+   * redaction concern for this field to be metadata-only.
+   */
+  tuningConfigError?: boolean;
   verdict?: string;
   findingCount?: number;
   redactionApplied?: number;
@@ -331,14 +347,6 @@ export function createWorkspaceReviewHandler(deps: WorkspaceReviewRouteDeps) {
 
   return async function handleWorkspaceReviewRequest(request: Request): Promise<Response> {
     const startedAt = now();
-    // The route never passes `deps.tuning` per-call overrides to `analyze`, so
-    // defaults < env is exactly what the analysis wrapper resolves and uses
-    // for this request (workspace-analysis.ts's own precedence). Resolved once,
-    // up front, purely for the log line — it does not affect the request in
-    // any way, and is attached to every log entry below, including ones
-    // emitted before the model call (e.g. auth/validation failures), because
-    // it is env-only and does not depend on anything the request supplies.
-    const resolvedTuning = { ...WORKSPACE_MODEL_TUNING_DEFAULTS, ...resolveWorkspaceModelTuningFromEnv() };
     const finish = (
       status: number,
       outcome: string,
@@ -346,15 +354,7 @@ export function createWorkspaceReviewHandler(deps: WorkspaceReviewRouteDeps) {
       entry: Partial<WorkspaceReviewLogEntry> = {},
       headers?: Record<string, string>,
     ) => {
-      log({
-        event: "workspace_review",
-        outcome,
-        status,
-        durationMs: now() - startedAt,
-        reasoningEffort: resolvedTuning.reasoningEffort,
-        providerSort: resolvedTuning.providerSort,
-        ...entry,
-      });
+      log({ event: "workspace_review", outcome, status, durationMs: now() - startedAt, ...entry });
       return errorResponse(status, body, headers);
     };
 
@@ -480,8 +480,6 @@ export function createWorkspaceReviewHandler(deps: WorkspaceReviewRouteDeps) {
         digestVerified: true,
         model,
         droppedByServerCaps: dropped,
-        reasoningEffort: resolvedTuning.reasoningEffort,
-        providerSort: resolvedTuning.providerSort,
       };
 
       // Steps 6–8 — the wrapper owns server-side redaction (spec §4.3) and the
@@ -490,6 +488,22 @@ export function createWorkspaceReviewHandler(deps: WorkspaceReviewRouteDeps) {
       const deadlineAt = startedAt + deadlineMs;
       let result: WorkspaceReviewResult;
       try {
+        // Resolved here, inside this try/catch, deliberately AFTER
+        // authentication, the abuse gate, and payload validation have all
+        // already returned their own structured responses. `defaults < env`
+        // is exactly what `deps.analyze` itself resolves (it takes no
+        // per-call `tuning` override from this route), so doing it here too
+        // — right where the model call is prepared — is purely for the log
+        // line; it does not affect the request. Resolving it any earlier
+        // (e.g. before authentication) would let a misconfigured env value
+        // throw past the 401/429/400 responses those steps are supposed to
+        // give, turning a config error into an unhandled exception on every
+        // request, including unauthenticated ones — caught and mapped to a
+        // structured 500 below instead.
+        const resolvedTuning = { ...WORKSPACE_MODEL_TUNING_DEFAULTS, ...resolveWorkspaceModelTuningFromEnv() };
+        metadata.reasoningEffort = resolvedTuning.reasoningEffort;
+        metadata.providerSort = resolvedTuning.providerSort;
+
         result = await deps.analyze({
           reviewKind: payload.kind,
           changeSet,
@@ -520,7 +534,19 @@ export function createWorkspaceReviewHandler(deps: WorkspaceReviewRouteDeps) {
         // unchanged — but the log says the connection died rather than leaving
         // it indistinguishable from a provider 500.
         const upstream = error instanceof WorkspaceModelConnectionError ? { upstreamAborted: true } : {};
-        return finish(500, "model_failure", { error: "model_failure", message }, { ...metadata, ...stall, ...upstream });
+        // An invalid WORKSPACE_MODEL_REASONING_EFFORT / WORKSPACE_MODEL_PROVIDER_SORT
+        // value never reaches the model call at all; it fails deterministically
+        // right here. Same 500 `model_failure` shape to the caller as any other
+        // model-call failure, but the outcome and the metadata-only
+        // `tuningConfigError` flag identify it distinctly in the log.
+        const isTuningConfigError = error instanceof WorkspaceModelTuningConfigError;
+        const tuningConfig = isTuningConfigError ? { tuningConfigError: true } : {};
+        return finish(
+          500,
+          isTuningConfigError ? "model_tuning_config_error" : "model_failure",
+          { error: "model_failure", message },
+          { ...metadata, ...stall, ...upstream, ...tuningConfig },
+        );
       }
 
       // Step 9 — the bounded advisory result.
