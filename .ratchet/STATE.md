@@ -20,7 +20,7 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 
 ## Working on
 
-- TER-44 step 1 (spike C): bound reasoning + deterministic provider routing + streaming stall detection in `src/lib/workspace-analysis.ts`, then one 12-seed live series to measure (adopt at ≥ 80% delivery, p50 < 30 s).
+- TER-44 step 1 (spike C) is **implemented and committed** on `baise/ter-44-survivability-spike` (PR #42: bound reasoning + deterministic provider routing + streaming stall detection in `src/lib/workspace-analysis.ts`), currently in a Ternary fix round (stall timer must cover the pre-headers phase; a stream ending without a terminal marker must be rejected). Not merged, not measured. Measurement happens on production after merge (preview deployments are SSO-gated): one 12-seed live series, adopt at ≥ 80% delivery and p50 < 30 s.
 
 ## Next
 
