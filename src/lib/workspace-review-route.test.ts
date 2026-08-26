@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { analyzeWorkspaceReview, WORKSPACE_MAX_OUTPUT_TOKENS, WorkspaceModelStallError } from "./workspace-analysis";
+import { analyzeWorkspaceReview, WORKSPACE_MAX_OUTPUT_TOKENS, WorkspaceModelConnectionError, WorkspaceModelStallError } from "./workspace-analysis";
 import { WORKSPACE_MAX_FINDINGS } from "./workspace-review-prompts";
 import { computePayloadDigest, type PayloadCaps } from "./workspace-payload-validation";
 import {
@@ -615,6 +615,38 @@ describe("deterministic timeout (contract §5)", () => {
     });
   });
 
+  it("returns 500 model_failure — not 504 — when the connection died before the deadline", async () => {
+    // The Phase B measurement defect: an upstream abort used to be relabelled a
+    // timeout, so "deadline expired" and "connection died" were the same
+    // number. They are different outcomes now.
+    // Through the REAL wrapper, so this fails if the wrapper goes back to
+    // relabelling aborts as timeouts.
+    const droppedConnection = () => {
+      const aborted = new Error("The operation was aborted.");
+      aborted.name = "AbortError";
+      return Promise.reject<never>(aborted);
+    };
+    const { deps, logs } = makeDeps({
+      analyze: (input) => analyzeWorkspaceReview(input, { requestModel: droppedConnection }),
+    });
+    const response = await createWorkspaceReviewHandler(deps)(buildRequest());
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({ error: "model_failure" });
+    expect(logs[0]).toMatchObject({ outcome: "model_failure", upstreamAborted: true });
+    expect(logs[0].stallAborted).toBeUndefined();
+  });
+
+  it("labels a WorkspaceModelConnectionError from any depth as upstreamAborted", async () => {
+    const { deps, logs } = makeDeps({
+      analyze: async () => {
+        throw new WorkspaceModelConnectionError("socket hang up");
+      },
+    });
+    const response = await createWorkspaceReviewHandler(deps)(buildRequest());
+    expect(response.status).toBe(500);
+    expect(logs[0]).toMatchObject({ outcome: "model_failure", upstreamAborted: true });
+  });
+
   it("returns 500 model_failure for a non-timeout model error", async () => {
     const { deps } = makeDeps({
       analyze: async () => {
@@ -828,5 +860,19 @@ describe("survivability log fields (ADR-0002 option C)", () => {
     await createWorkspaceReviewHandler(deps)(buildRequest());
     expect(logs[0].outcome).toBe("model_failure");
     expect(logs[0].stallAborted).toBeUndefined();
+    expect(logs[0].upstreamAborted).toBeUndefined();
+  });
+
+  it("leaves upstreamAborted unset on a real deadline, which is still a 504", async () => {
+    const { deps, logs } = makeDeps({
+      analyze: async () => {
+        const { WorkspaceReviewTimeoutError } = await import("./workspace-analysis");
+        throw new WorkspaceReviewTimeoutError(120_000);
+      },
+    });
+    const response = await createWorkspaceReviewHandler(deps)(buildRequest());
+    expect(response.status).toBe(504);
+    expect(logs[0].outcome).toBe("workspace_review_timeout");
+    expect(logs[0].upstreamAborted).toBeUndefined();
   });
 });

@@ -79,6 +79,23 @@ export class WorkspaceModelStallError extends NonRetryableReviewError {
 }
 
 /**
+ * The connection died; the deadline did not expire.
+ *
+ * Phase B could not tell these apart: the wrapper relabelled *any* abort
+ * reaching its catch as `WorkspaceReviewTimeoutError`, so an upstream reset, a
+ * dropped socket, or a provider hanging up mid-generation all counted as
+ * "review took too long" — 24 of 45 submissions landed in that bucket with no
+ * way to say how many were actually slow. Only the deadline race may produce
+ * the timeout error now; every other abort surfaces here.
+ */
+export class WorkspaceModelConnectionError extends NonRetryableReviewError {
+  constructor(detail: string) {
+    super(`Workspace review model connection ended before the deadline: ${detail}`);
+    this.name = "WorkspaceModelConnectionError";
+  }
+}
+
+/**
  * OpenRouter reasoning-effort bound. Enum verified against OpenRouter's
  * chat-completion schema (`reasoning.effort`: max | xhigh | high | medium |
  * low | minimal | none). NOTE: the `deepseek/deepseek-v4-flash` model page
@@ -88,8 +105,40 @@ export class WorkspaceModelStallError extends NonRetryableReviewError {
  */
 export type WorkspaceReasoningEffort = "max" | "xhigh" | "high" | "medium" | "low" | "minimal" | "none";
 
-/** OpenRouter `provider.sort` values (provider-routing docs). Sorting disables load balancing. */
+/**
+ * The enum above, verified 2026-08-26 against
+ * https://openrouter.ai/docs/use-cases/reasoning-tokens — "Can be \"max\",
+ * \"xhigh\", \"high\", \"medium\", \"low\", \"minimal\" or \"none\"
+ * (OpenAI-style)". (https://openrouter.ai/docs/api-reference/parameters lists
+ * the same set minus `max`; the reasoning-tokens page is the fuller one, so the
+ * union is what we accept.) Kept as a runtime array so the env parser and the
+ * type cannot drift apart.
+ */
+export const WORKSPACE_REASONING_EFFORTS = ["max", "xhigh", "high", "medium", "low", "minimal", "none"] as const;
+
+/**
+ * `"omit"` is Ternary's own value, not OpenRouter's: it means *send no
+ * `reasoning` object at all*. It is required for non-reasoning models — with
+ * `provider.require_parameters: true` a `reasoning` parameter excludes every
+ * provider of a model that does not support the parameter, so a model like
+ * `mistralai/mistral-small-3.2-24b-instruct` would be unroutable rather than
+ * merely unbounded.
+ */
+export type WorkspaceReasoningSetting = WorkspaceReasoningEffort | "omit";
+
+/**
+ * OpenRouter `provider.sort` values, verified 2026-08-26 against
+ * https://openrouter.ai/docs/features/provider-routing — `"price"`,
+ * `"throughput"`, `"latency"`. Sorting disables load balancing, so on a small
+ * provider pool it can concentrate traffic on one struggling provider; `"omit"`
+ * (Ternary's own value) drops `sort` from the body and restores OpenRouter's
+ * default load-balanced routing.
+ */
 export type WorkspaceProviderSort = "latency" | "throughput" | "price";
+
+export const WORKSPACE_PROVIDER_SORTS = ["latency", "throughput", "price"] as const;
+
+export type WorkspaceProviderSortSetting = WorkspaceProviderSort | "omit";
 
 /**
  * Survivability knobs for the single model attempt (ADR-0002 option C).
@@ -98,15 +147,18 @@ export type WorkspaceProviderSort = "latency" | "throughput" | "price";
  * to the transport.
  */
 export type WorkspaceModelTuning = {
-  /** Bounded reasoning budget: sent as `reasoning: { effort }`. */
-  reasoningEffort: WorkspaceReasoningEffort;
+  /**
+   * Bounded reasoning budget: sent as `reasoning: { effort }`, or, for
+   * `"omit"`, not sent at all (see `WorkspaceReasoningSetting`).
+   */
+  reasoningEffort: WorkspaceReasoningSetting;
   /**
    * Deterministic provider routing: sent as `provider.sort` on BOTH the
    * streamed and non-streamed paths. The non-streamed path exists as the
    * comparison baseline for *streaming and stall detection*, not for routing —
-   * routing determinism is wanted either way.
+   * routing determinism is wanted either way. `"omit"` drops `sort` entirely.
    */
-  providerSort: WorkspaceProviderSort;
+  providerSort: WorkspaceProviderSortSetting;
   /** Ask for an SSE stream so a stalled generation is detectable. */
   stream: boolean;
   /**
@@ -128,6 +180,60 @@ export const WORKSPACE_MODEL_TUNING_DEFAULTS: WorkspaceModelTuning = {
   stream: true,
   stallTimeoutMs: 20_000,
 };
+
+/**
+ * Invalid tuning env. A misspelled effort must not silently degrade to the
+ * default: the whole point of these knobs is that a measurement series can say
+ * which value produced which numbers, and a silent fallback would make a run
+ * unattributable.
+ */
+export class WorkspaceModelTuningConfigError extends NonRetryableReviewError {
+  constructor(variable: string, value: string, accepted: readonly string[]) {
+    super(`${variable}="${value}" is not a valid value; expected one of: ${accepted.join(", ")}`);
+    this.name = "WorkspaceModelTuningConfigError";
+  }
+}
+
+function parseTuningEnum<T extends string>(
+  variable: string,
+  raw: string | undefined,
+  accepted: readonly T[],
+): T | undefined {
+  // Unset and empty both mean "not configured" — Vercel env vars that exist
+  // with an empty value are the normal way to clear one.
+  if (raw === undefined) return undefined;
+  const value = raw.trim();
+  if (value === "") return undefined;
+  if (!(accepted as readonly string[]).includes(value)) throw new WorkspaceModelTuningConfigError(variable, value, accepted);
+  return value as T;
+}
+
+/**
+ * Resolve the env-tunable survivability knobs, once, in one place.
+ *
+ * Env exists so ADR-0002's model/routing experiments are env-only changes on a
+ * deployed build (owner decision 2026-08-26: measure reasoning `none` on the
+ * incumbent and a non-reasoning model, without a code change). Precedence is
+ * defaults < env < per-call `deps.tuning`, so tests stay in control.
+ */
+export function resolveWorkspaceModelTuningFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): Partial<WorkspaceModelTuning> {
+  const reasoningEffort = parseTuningEnum<WorkspaceReasoningSetting>(
+    "WORKSPACE_MODEL_REASONING_EFFORT",
+    env.WORKSPACE_MODEL_REASONING_EFFORT,
+    [...WORKSPACE_REASONING_EFFORTS, "omit"],
+  );
+  const providerSort = parseTuningEnum<WorkspaceProviderSortSetting>(
+    "WORKSPACE_MODEL_PROVIDER_SORT",
+    env.WORKSPACE_MODEL_PROVIDER_SORT,
+    [...WORKSPACE_PROVIDER_SORTS, "omit"],
+  );
+  return {
+    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+    ...(providerSort !== undefined ? { providerSort } : {}),
+  };
+}
 
 export type WorkspaceModelResponse = {
   text: string;
@@ -379,8 +485,15 @@ export function buildWorkspaceModelRequestBody(request: WorkspaceModelRequestArg
       { role: "user", content: request.input },
     ],
     response_format: { type: "json_schema", json_schema: { name: "workspace_review", strict: true, schema: request.schema } },
-    reasoning: { effort: request.tuning.reasoningEffort },
-    provider: { require_parameters: true, sort: request.tuning.providerSort },
+    // `omit` means the key never reaches the wire. Under `require_parameters:
+    // true` an unsupported parameter is not ignored — it excludes every
+    // provider that does not support it, which is how a `reasoning` object
+    // makes a non-reasoning model unroutable.
+    ...(request.tuning.reasoningEffort === "omit" ? {} : { reasoning: { effort: request.tuning.reasoningEffort } }),
+    provider: {
+      require_parameters: true,
+      ...(request.tuning.providerSort === "omit" ? {} : { sort: request.tuning.providerSort }),
+    },
     ...(request.tuning.stream ? { stream: true } : {}),
   };
 }
@@ -685,7 +798,14 @@ export async function analyzeWorkspaceReview(
   }
 
   const requestModel = deps.requestModel ?? requestOpenRouterWorkspaceModel;
-  const tuning: WorkspaceModelTuning = { ...WORKSPACE_MODEL_TUNING_DEFAULTS, ...deps.tuning };
+  // Defaults < env < per-call overrides. Resolved before the deadline timer is
+  // armed so a misconfigured env fails the request outright rather than being
+  // reported as a model failure.
+  const tuning: WorkspaceModelTuning = {
+    ...WORKSPACE_MODEL_TUNING_DEFAULTS,
+    ...resolveWorkspaceModelTuningFromEnv(),
+    ...deps.tuning,
+  };
   const now = deps.now ?? Date.now;
   const startedAt = now();
   const timeoutMs = Math.floor(input.deadlineAt - startedAt);
@@ -726,7 +846,15 @@ export async function analyzeWorkspaceReview(
     // A stall is a delivery failure with its own cause; it must never be
     // laundered into the generic deadline error by the abort check below.
     if (error instanceof WorkspaceModelStallError) throw error;
-    if (isAbortError(error) || deadlineReached || controller.signal.aborted) throw new WorkspaceReviewTimeoutError(timeoutMs);
+    // ONLY the deadline race may produce a timeout. `deadlineReached` is set by
+    // the timer before it aborts, so an AbortError caused by our own deadline
+    // still lands here; anything else that aborted did so because the
+    // connection died, and saying "timeout" for that made Phase B's 24 timeouts
+    // unreadable (ADR-0002; dogfood report §9 item 1).
+    if (deadlineReached) throw new WorkspaceReviewTimeoutError(timeoutMs);
+    if (isAbortError(error) || controller.signal.aborted) {
+      throw new WorkspaceModelConnectionError(error instanceof Error ? error.message : String(error));
+    }
     throw error;
   } finally {
     clearTimeout(timer!);
