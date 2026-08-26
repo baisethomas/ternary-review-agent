@@ -913,4 +913,67 @@ describe("survivability log fields (ADR-0002 option C)", () => {
     expect(logs[0].outcome).toBe("workspace_review_timeout");
     expect(logs[0].upstreamAborted).toBeUndefined();
   });
+
+  // D-20260826-0500-workspace-review-reasoning-none: the route logs the
+  // resolved tuning (defaults < env — see workspace-analysis.ts) so a
+  // measurement series can read the configuration off the log line instead of
+  // inferring it from `reasoningTokens` (dogfood report §8.7.2).
+  it("logs the resolved reasoningEffort and providerSort defaults on a completed review", async () => {
+    const { deps, logs } = makeDeps();
+    await createWorkspaceReviewHandler(deps)(buildRequest());
+    expect(logs[0]).toMatchObject({ reasoningEffort: "none", providerSort: "latency" });
+  });
+
+  it("logs the env override of WORKSPACE_MODEL_REASONING_EFFORT rather than the code default", async () => {
+    vi.stubEnv("WORKSPACE_MODEL_REASONING_EFFORT", "high");
+    vi.stubEnv("WORKSPACE_MODEL_PROVIDER_SORT", "price");
+    try {
+      const { deps, logs } = makeDeps();
+      await createWorkspaceReviewHandler(deps)(buildRequest());
+      expect(logs[0]).toMatchObject({ reasoningEffort: "high", providerSort: "price" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  // Tuning is resolved inside the model-call error boundary (right before
+  // `deps.analyze`), deliberately AFTER authentication and payload
+  // validation — never before. An invalid env value must not throw past the
+  // 401/429/400 responses those earlier steps are supposed to give.
+  it("returns 401 with a log entry, not a throw, when auth fails and the env tuning is invalid", async () => {
+    vi.stubEnv("WORKSPACE_MODEL_REASONING_EFFORT", "not-a-real-effort");
+    try {
+      const { deps, logs } = makeDeps();
+      const response = await createWorkspaceReviewHandler(deps)(buildRequest({ token: "wrong-token" }));
+      expect(response.status).toBe(401);
+      await expect(response.json()).resolves.toMatchObject({ error: "unauthorized" });
+      expect(logs[0]).toMatchObject({ outcome: "unauthorized:token_mismatch", status: 401 });
+      // Never reached the point where tuning is resolved for this request.
+      expect(logs[0].reasoningEffort).toBeUndefined();
+      expect(logs[0].tuningConfigError).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("returns 500 model_failure with a log entry naming the config error, for a valid authenticated request under an invalid env value", async () => {
+    vi.stubEnv("WORKSPACE_MODEL_PROVIDER_SORT", "not-a-real-sort");
+    try {
+      const { deps, logs } = makeDeps();
+      const response = await createWorkspaceReviewHandler(deps)(buildRequest());
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toMatchObject({ error: "model_failure" });
+      expect(logs[0]).toMatchObject({
+        outcome: "model_tuning_config_error",
+        status: 500,
+        tuningConfigError: true,
+      });
+      // Resolution failed before assigning to metadata, so the (invalid,
+      // unresolved) tuning is not reported as if it were used.
+      expect(logs[0].reasoningEffort).toBeUndefined();
+      expect(logs[0].providerSort).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
