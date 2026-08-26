@@ -581,23 +581,50 @@ describe("deterministic timeout (contract §5)", () => {
       return new Promise<never>(() => {});
     };
 
-    const { deps } = makeDeps({
-      // A short injected deadline keeps the test's wall time bounded while
-      // exercising the real wrapper's abort path.
-      deadlineMs: 1_200,
-      analyze: (input) => analyzeWorkspaceReview(input, { requestModel: stalledProvider }),
-    });
+    // Fake time, not a shortened deadline. A short real deadline (this test used
+    // to inject 1 200 ms) races the request's own setup: auth, the bounded body
+    // read, the digest, and validation all consume wall time before the wrapper
+    // computes `deadlineAt - now`, so on a slow run the remainder fell under
+    // MIN_OPENROUTER_TIMEOUT_MS and the wrapper failed fast WITHOUT ever calling
+    // the model — a passing 504 for the wrong reason, and a failing `abortSpy`
+    // roughly one run in three. Under fake timers the clock only moves when this
+    // test moves it, so the full production deadline is exercised exactly.
+    vi.useFakeTimers();
+    try {
+      const { deps } = makeDeps({
+        analyze: (input) => analyzeWorkspaceReview(input, { requestModel: stalledProvider }),
+      });
 
-    const startedAt = Date.now();
-    const response = await createWorkspaceReviewHandler(deps)(buildRequest());
-    const elapsed = Date.now() - startedAt;
+      const pending = createWorkspaceReviewHandler(deps)(buildRequest());
+      let settled = false;
+      void pending.then(() => {
+        settled = true;
+      });
 
-    expect(response.status).toBe(504);
-    await expect(response.json()).resolves.toEqual({ error: "workspace_review_timeout", deadlineMs: 1_200 });
-    expect(abortSpy).toHaveBeenCalled();
-    expect((observedSignal as unknown as AbortSignal).aborted).toBe(true);
-    // Deterministic, not a platform kill: it ended at the deadline, not later.
-    expect(elapsed).toBeLessThan(5_000);
+      // Let auth, the body read, the digest and validation finish while the
+      // clock stands still, so the model call is genuinely in flight.
+      for (let tick = 0; tick < 20 && observedSignal === null; tick += 1) {
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(observedSignal).not.toBeNull();
+
+      // Deterministic, not a platform kill: still running one millisecond
+      // before the deadline, finished the moment it arrives.
+      await vi.advanceTimersByTimeAsync(WORKSPACE_REVIEW_DEADLINE_MS - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+
+      const response = await pending;
+      expect(response.status).toBe(504);
+      await expect(response.json()).resolves.toEqual({
+        error: "workspace_review_timeout",
+        deadlineMs: WORKSPACE_REVIEW_DEADLINE_MS,
+      });
+      expect(abortSpy).toHaveBeenCalled();
+      expect((observedSignal as unknown as AbortSignal).aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reports the configured deadline in the timeout body", async () => {
@@ -832,6 +859,9 @@ describe("no persistence (spec §5) — module graph", () => {
   it("imports only workspace-scoped and pure review modules", () => {
     expect(imports.sort()).toEqual([
       "./review-errors",
+      // Deadline/attempt-budget constants only (ADR-0002 single source of truth) —
+      // a pure module of numbers, no ledger, queue, or GitHub reach.
+      "./review-invocation-limits",
       "./review-policy",
       "./workspace-analysis",
       "./workspace-payload-validation",
@@ -975,5 +1005,124 @@ describe("survivability log fields (ADR-0002 option C)", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+// --- ADR-0002 option B (TER-44 step 2): the bounded retry, as the log sees it ---
+
+describe("bounded retry observability (ADR-0002 option B)", () => {
+  it("pins the end-to-end deadline at the ADR-0002 value of 180 000 ms", async () => {
+    // The contract number, not a local literal: `review-invocation-limits.ts`
+    // is the single source of truth shared with the gate TTL and the CLI slack.
+    expect(WORKSPACE_REVIEW_DEADLINE_MS).toBe(180_000);
+
+    const { deps } = makeDeps({
+      analyze: async () => {
+        const { WorkspaceReviewTimeoutError } = await import("./workspace-analysis");
+        throw new WorkspaceReviewTimeoutError(WORKSPACE_REVIEW_DEADLINE_MS);
+      },
+    });
+    const response = await createWorkspaceReviewHandler(deps)(buildRequest());
+    expect(response.status).toBe(504);
+    await expect(response.json()).resolves.toEqual({
+      error: "workspace_review_timeout",
+      deadlineMs: 180_000,
+    });
+  });
+
+  it("logs the attempt count and retry reason of a review that succeeded on its second attempt", async () => {
+    const { deps, logs } = makeDeps({
+      analyze: async () => ({
+        ...passingResult,
+        ai: {
+          model: "deepseek/deepseek-v4-flash-0731",
+          latencyMs: 42,
+          provider: "AkashML",
+          attempts: 2,
+          retryReason: "stall",
+          attempt1Provider: "DeepInfra",
+          attempt2Provider: "AkashML",
+        },
+      }),
+    });
+
+    const response = await createWorkspaceReviewHandler(deps)(buildRequest());
+
+    expect(response.status).toBe(200);
+    expect(logs[0]).toMatchObject({
+      outcome: "ok",
+      attempts: 2,
+      retryReason: "stall",
+      attempt1Provider: "DeepInfra",
+      attempt2Provider: "AkashML",
+    });
+  });
+
+  it("logs one attempt and no retry fields on a first-attempt review", async () => {
+    const { deps, logs } = makeDeps({
+      analyze: async () => ({ ...passingResult, ai: { model: "m", latencyMs: 1, attempts: 1 } }),
+    });
+    await createWorkspaceReviewHandler(deps)(buildRequest());
+    expect(logs[0].attempts).toBe(1);
+    expect(logs[0].retryReason).toBeUndefined();
+  });
+
+  it("reads the attempt record off a failed review, so a 500 says how many calls it cost", async () => {
+    const { deps, logs } = makeDeps({
+      analyze: async () => {
+        const { attachWorkspaceAttemptMetadata } = await import("./workspace-analysis");
+        throw attachWorkspaceAttemptMetadata(new Error("provider returned 500"), {
+          attempts: 2,
+          retryReason: "provider_error",
+          attempt1Provider: "DeepInfra",
+          attempt2Provider: "Cloudflare",
+        });
+      },
+    });
+
+    const response = await createWorkspaceReviewHandler(deps)(buildRequest());
+
+    expect(response.status).toBe(500);
+    // The caller's error set is unchanged — only the log gained detail.
+    await expect(response.json()).resolves.toMatchObject({ error: "model_failure" });
+    expect(logs[0]).toMatchObject({
+      outcome: "model_failure",
+      attempts: 2,
+      retryReason: "provider_error",
+      attempt1Provider: "DeepInfra",
+      attempt2Provider: "Cloudflare",
+    });
+  });
+
+  it("says when a retry was warranted but did not fit before the deadline", async () => {
+    const { deps, logs } = makeDeps({
+      analyze: async () => {
+        const { attachWorkspaceAttemptMetadata, WorkspaceModelStallError } = await import("./workspace-analysis");
+        throw attachWorkspaceAttemptMetadata(new WorkspaceModelStallError(20_000), {
+          attempts: 1,
+          retryReason: "stall",
+          retrySkipped: "insufficient_budget",
+        });
+      },
+    });
+
+    await createWorkspaceReviewHandler(deps)(buildRequest());
+
+    expect(logs[0]).toMatchObject({
+      outcome: "model_failure",
+      stallAborted: true,
+      attempts: 1,
+      retryReason: "stall",
+      retrySkipped: "insufficient_budget",
+    });
+  });
+
+  it("still consumes exactly one concurrency slot when the review took two attempts", async () => {
+    const { deps, released } = makeDeps({
+      analyze: async () => ({ ...passingResult, ai: { model: "m", latencyMs: 1, attempts: 2 } }),
+    });
+    await createWorkspaceReviewHandler(deps)(buildRequest());
+    // The gate is per REQUEST, not per model call: two attempts, one slot.
+    expect(released).toHaveLength(1);
   });
 });
