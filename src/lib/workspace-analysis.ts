@@ -100,11 +100,25 @@ export type WorkspaceProviderSort = "latency" | "throughput" | "price";
 export type WorkspaceModelTuning = {
   /** Bounded reasoning budget: sent as `reasoning: { effort }`. */
   reasoningEffort: WorkspaceReasoningEffort;
-  /** Deterministic provider routing: sent as `provider.sort`. */
+  /**
+   * Deterministic provider routing: sent as `provider.sort` on BOTH the
+   * streamed and non-streamed paths. The non-streamed path exists as the
+   * comparison baseline for *streaming and stall detection*, not for routing —
+   * routing determinism is wanted either way.
+   */
   providerSort: WorkspaceProviderSort;
   /** Ask for an SSE stream so a stalled generation is detectable. */
   stream: boolean;
-  /** Abort the attempt when no stream bytes arrive for this long. */
+  /**
+   * Fail the attempt when **no SSE data frame** arrives for this long.
+   *
+   * The window measures time since the last `data:` frame — a content or
+   * reasoning delta, the usage chunk, or `[DONE]`. It does NOT measure time
+   * since the last byte: SSE comment/keepalive lines
+   * (`: OPENROUTER PROCESSING`) and blank separator lines prove only that the
+   * socket is warm, never that the model is generating, and so never reset it.
+   * When streaming, the window also covers the request/headers phase.
+   */
   stallTimeoutMs: number;
 };
 
@@ -397,18 +411,42 @@ const TERMINAL_FINISH_REASONS = new Set(["stop", "length", "content_filter", "to
  * failure mode, and arming the timer only after `fetch()` resolves would let it
  * run to the end-to-end deadline instead of failing fast.
  */
-function withStallDeadline<T>(operation: Promise<T>, stallTimeoutMs: number, abort: () => void): Promise<T> {
-  // The losing side of the race still settles later; swallow it so an aborted
-  // fetch/read never surfaces as an unhandled rejection.
-  operation.catch(() => {});
+function withStallDeadline<T>(
+  operation: Promise<T>,
+  waitMs: number,
+  abort: () => void,
+  windowMs = waitMs,
+): Promise<T> {
+  // Suppress unhandled-rejection noise from the LOSER of the race without
+  // swallowing the rejection itself: the handler goes on a derived promise, so
+  // `operation`'s own rejection still reaches the race below.
+  void operation.then(
+    () => {},
+    () => {},
+  );
   let stallTimer: ReturnType<typeof setTimeout>;
   const stall = new Promise<never>((_, reject) => {
     stallTimer = setTimeout(() => {
       abort();
-      reject(new WorkspaceModelStallError(stallTimeoutMs));
-    }, stallTimeoutMs);
+      reject(new WorkspaceModelStallError(windowMs));
+    }, Math.max(0, waitMs));
+    // Never let a pending stall timer hold the process open.
+    (stallTimer as unknown as { unref?: () => void }).unref?.();
   });
   return Promise.race([operation, stall]).finally(() => clearTimeout(stallTimer!));
+}
+
+/**
+ * An SSE `data:` frame that is not parseable JSON. Silently skipping it would
+ * drop real content (a delta, the usage chunk, or `[DONE]`) and let a truncated
+ * generation pass as a complete one; the same applies to a partial line left in
+ * the buffer at EOF.
+ */
+export class WorkspaceModelMalformedFrameError extends NonRetryableReviewError {
+  constructor() {
+    super("Workspace review model stream contained an unparseable data frame; the generation was cut short");
+    this.name = "WorkspaceModelMalformedFrameError";
+  }
 }
 
 /** A stream whose body ended without announcing completion is a dropped connection, not a review. */
@@ -420,17 +458,22 @@ export class WorkspaceModelTruncatedStreamError extends NonRetryableReviewError 
 }
 
 /**
- * Consume one SSE line. Returns nothing; mutates the accumulator. Throws on a
- * mid-stream error event — OpenRouter reports those as a `data:` frame with a
- * top-level `error` and `finish_reason: "error"` while the HTTP status stays
- * 200, so the only place they can be caught is here.
+ * Consume one SSE line and report what class of line it was, so the caller can
+ * hold the stall clock to *data frames* rather than to bytes. Mutates the
+ * accumulator. Throws on a mid-stream error event — OpenRouter reports those as
+ * a `data:` frame with a top-level `error` and `finish_reason: "error"` while
+ * the HTTP status stays 200, so the only place they can be caught is here — and
+ * on a `data:` frame that is not parseable JSON.
  */
-function consumeStreamLine(line: string, acc: StreamAccumulator): "done" | "continue" {
+type StreamLineKind = "data" | "done" | "ignored";
+
+function consumeStreamLine(line: string, acc: StreamAccumulator): StreamLineKind {
   const trimmed = line.trim();
-  // Keepalive comments (": OPENROUTER PROCESSING") carry no data but do prove
-  // the connection is alive — the stall timer is reset by the read, not here.
-  if (!trimmed || trimmed.startsWith(":")) return "continue";
-  if (!trimmed.startsWith("data:")) return "continue";
+  // Keepalive comments (": OPENROUTER PROCESSING") and blank separator lines
+  // are tolerated but are NOT data: they prove the socket is warm, not that the
+  // model is generating, so they must not reset the stall clock.
+  if (!trimmed || trimmed.startsWith(":")) return "ignored";
+  if (!trimmed.startsWith("data:")) return "ignored";
   const data = trimmed.slice("data:".length).trim();
   if (data === "[DONE]") return "done";
   let chunk: {
@@ -443,8 +486,7 @@ function consumeStreamLine(line: string, acc: StreamAccumulator): "done" | "cont
   try {
     chunk = JSON.parse(data);
   } catch {
-    // A frame we cannot parse is not a reason to discard a good generation.
-    return "continue";
+    throw new WorkspaceModelMalformedFrameError();
   }
   const choice = chunk.choices?.[0];
   const streamError = chunk.error ?? choice?.error;
@@ -461,15 +503,25 @@ function consumeStreamLine(line: string, acc: StreamAccumulator): "done" | "cont
   if (choice?.finish_reason && TERMINAL_FINISH_REASONS.has(choice.finish_reason)) acc.terminated = true;
   const delta = choice?.delta?.content;
   if (typeof delta === "string") acc.text += delta;
-  return "continue";
+  return "data";
 }
 
 /**
- * Read the SSE body, aborting the attempt if no bytes arrive for
- * `stallTimeoutMs`. The stall is enforced by racing each `read()` against a
- * timer promise — the same idiom as the end-to-end deadline below — so a
- * provider that holds the socket open without writing cannot keep us waiting on
- * its cooperation.
+ * Read the SSE body under the stall contract: the attempt fails if no SSE
+ * **data frame** arrives for `stallTimeoutMs`.
+ *
+ * The clock deliberately does NOT track bytes. OpenRouter emits
+ * `: OPENROUTER PROCESSING` keepalive comments, so a provider that holds the
+ * socket warm while generating nothing would reset a byte-based window forever
+ * and escape detection entirely — the Phase B failure mode wearing a disguise.
+ * Only `data:` frames (content or reasoning deltas, the usage chunk, `[DONE]`)
+ * count as progress; comments and blank separator lines are tolerated and
+ * ignored.
+ *
+ * Enforced two ways, because either alone has a hole: a timer armed for the
+ * time REMAINING since the last data frame (so a keepalive trickle still trips
+ * at the window), plus an elapsed check on every read completion (so a read
+ * that returns only keepalives cannot re-arm a full window).
  */
 async function readWorkspaceModelStream(
   body: ReadableStream<Uint8Array>,
@@ -480,22 +532,36 @@ async function readWorkspaceModelStream(
   const decoder = new TextDecoder();
   const acc: StreamAccumulator = { text: "", terminated: false };
   let buffer = "";
+  // The clock starts when the stream does: response headers are the last thing
+  // that counts as progress before the first data frame.
+  let lastDataFrameAt = Date.now();
   try {
     for (;;) {
-      const chunk = await withStallDeadline(reader.read(), stallTimeoutMs, abort);
+      const waitMs = stallTimeoutMs - (Date.now() - lastDataFrameAt);
+      const chunk = await withStallDeadline(reader.read(), waitMs, abort, stallTimeoutMs);
       if (chunk.done) break;
       buffer += decoder.decode(chunk.value, { stream: true });
+      let sawDataFrame = false;
       let newline = buffer.indexOf("\n");
       while (newline !== -1) {
         const line = buffer.slice(0, newline);
         buffer = buffer.slice(newline + 1);
-        if (consumeStreamLine(line, acc) === "done") {
+        const kind = consumeStreamLine(line, acc);
+        if (kind !== "ignored") sawDataFrame = true;
+        if (kind === "done") {
           acc.terminated = true;
           return acc;
         }
         newline = buffer.indexOf("\n");
       }
+      if (sawDataFrame) lastDataFrameAt = Date.now();
+      else if (Date.now() - lastDataFrameAt >= stallTimeoutMs) {
+        abort();
+        throw new WorkspaceModelStallError(stallTimeoutMs);
+      }
     }
+    // A trailing partial line is not "nothing left over": if it is a data frame
+    // it is a truncated one, and consumeStreamLine throws for it.
     if (buffer && consumeStreamLine(buffer, acc) === "done") acc.terminated = true;
     // Clean EOF is not success. Without `[DONE]` or a terminal finish_reason the
     // body simply stopped, and a truncated prefix that happens to parse as a
@@ -592,6 +658,9 @@ export const requestOpenRouterWorkspaceModel: WorkspaceModelRequest = async (req
     throw error;
   } finally {
     request.signal.removeEventListener("abort", onOuterAbort);
+    // Idempotent: on success the body is already fully read, on failure this is
+    // what actually tears the socket down instead of leaving it to GC.
+    controller.abort();
   }
 };
 

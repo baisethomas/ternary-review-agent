@@ -20,7 +20,7 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 
 ## Working on
 
-- TER-44 step 1 (spike C) is **implemented and committed** on `baise/ter-44-survivability-spike` (PR #42: bound reasoning + deterministic provider routing + streaming stall detection in `src/lib/workspace-analysis.ts`), currently in a Ternary fix round (stall timer must cover the pre-headers phase; a stream ending without a terminal marker must be rejected). Not merged, not measured. Measurement happens on production after merge (preview deployments are SSO-gated): one 12-seed live series, adopt at ≥ 80% delivery and p50 < 30 s.
+- TER-44 step 1 (spike C) is **implemented and committed** on `baise/ter-44-survivability-spike` (PR #42: bound reasoning + deterministic provider routing + streaming stall detection in `src/lib/workspace-analysis.ts`), then through two Ternary fix rounds. Round 1 (2 ⛔, committed `cc7f4e9`): the stall window covers the pre-headers phase; a stream ending without `[DONE]` or a terminal `finish_reason` is rejected. **Round 2 (8 findings, uncommitted):** the stall window now measures time since the last SSE *data frame*, not since the last byte — `: OPENROUTER PROCESSING` keepalives and blank lines no longer reset it, so a provider that keeps the socket warm without generating still trips at 20 s; an unparseable `data:` frame (mid-stream, or left partial in the buffer at EOF) fails with `WorkspaceModelMalformedFrameError` instead of being skipped; `provider.sort` is deliberately sent on the non-streamed path too (that path is the baseline for streaming/stall detection, not for routing); plus timer `unref`, a non-swallowing unhandled-rejection guard, and an idempotent socket teardown in `finally`. Not merged, not measured. Measurement happens on production after merge (preview deployments are SSO-gated): one 12-seed live series, adopt at ≥ 80% delivery and p50 < 30 s.
 
 ## Next
 
@@ -62,7 +62,8 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 
 ## Last handoff
 
-- Updated: 2026-08-25 (TER-39 Phase B measurement)
+- Updated: 2026-08-25 (TER-44 spike C, PR #42 fix round 2)
 - By: agent (Claude Code)
-- Branch/worktree: `main` (docs edits uncommitted)
+- Branch/worktree: `baise/ter-44-survivability-spike` (fix round 2 uncommitted; a separate Git agent commits)
 - Last known-good commit: main `ccb0138` (deployed)
+- Verified after fix round 2: `npm run lint` clean; `npx vitest run src/lib/workspace-analysis.test.ts src/lib/workspace-review-route.test.ts` 95 passed (43 + 52); `npx vitest run --dir src` 614 passed / 9 skipped; `npm run build` green (clear `.next/cache` first if the build worker dies with a WasmHash dump).

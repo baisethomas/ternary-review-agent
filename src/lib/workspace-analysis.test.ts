@@ -685,3 +685,142 @@ describe("stream termination (PR #42 finding 2)", () => {
     expect(reviewFrames().at(-1)).toBe("data: [DONE]\n\n");
   });
 });
+
+// --- PR #42 re-review: the stall clock tracks DATA FRAMES, not bytes ---
+
+const keepaliveFrame = ": OPENROUTER PROCESSING\n\n";
+
+function reasoningFrame(text: string): string {
+  return `data: ${JSON.stringify({ id: "gen-1", choices: [{ delta: { reasoning: text } }] })}\n\n`;
+}
+
+/** Emit frame 0 immediately, then one every `gapMs`. */
+function everyMs(gapMs: number) {
+  return (index: number) => (index === 0 ? undefined : new Promise<void>((resolve) => setTimeout(resolve, gapMs)));
+}
+
+describe("stall clock measures data frames, not bytes (PR #42 re-review finding 1)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("stalls at the window when a provider sends only keepalive comments", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    // Socket stays warm — a comment every 6 s — but nothing is ever generated.
+    // A byte-based window would be reset forever and never fire.
+    stubFetch(() => sseResponse(sseStream(Array.from({ length: 10 }, () => keepaliveFrame), everyMs(6_000))));
+
+    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 120_000 }));
+    const expectation = expect(pending).rejects.toBeInstanceOf(WorkspaceModelStallError);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await expectation;
+  });
+
+  it("does not stall while content deltas keep arriving inside the window", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    const json = JSON.stringify(reviewPayload);
+    const mid = Math.floor(json.length / 2);
+    // A data frame every 5 s: each one restarts the window legitimately.
+    stubFetch(() => sseResponse(sseStream(
+      [contentFrame(json.slice(0, mid)), contentFrame(json.slice(mid)), usageFrame, "data: [DONE]\n\n"],
+      everyMs(5_000),
+    )));
+
+    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 120_000 }));
+    await vi.advanceTimersByTimeAsync(25_000);
+    await expect(pending).resolves.toMatchObject({ verdict: "findings" });
+  });
+
+  it("counts reasoning deltas as data frames, not as keepalive noise", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    // 15 s apart, under the 20 s window. If reasoning frames did not count as
+    // progress the clock would still sit at t=0 and this would stall at 20 s.
+    stubFetch(() => sseResponse(sseStream(
+      [
+        reasoningFrame("weighing the diff"),
+        reasoningFrame("still weighing"),
+        contentFrame(JSON.stringify(reviewPayload)),
+        usageFrame,
+        "data: [DONE]\n\n",
+      ],
+      everyMs(15_000),
+    )));
+
+    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 300_000 }));
+    await vi.advanceTimersByTimeAsync(65_000);
+    await expect(pending).resolves.toMatchObject({ verdict: "findings" });
+  });
+
+  it("tolerates keepalive comments and blank separator lines on a healthy stream", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    stubFetch(() => sseResponse(sseStream([
+      keepaliveFrame,
+      "\n",
+      contentFrame(JSON.stringify(reviewPayload)),
+      "\n",
+      keepaliveFrame,
+      usageFrame,
+      "data: [DONE]\n\n",
+    ])));
+
+    await expect(analyzeWorkspaceReview(changesetInput())).resolves.toMatchObject({ verdict: "findings" });
+  });
+});
+
+describe("malformed SSE frames (PR #42 re-review findings 3 and 5)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("fails on an unparseable data frame instead of silently skipping it", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    stubFetch(() => sseResponse(sseStream([
+      contentFrame(JSON.stringify(reviewPayload)),
+      "data: {\"choices\": [ truncated\n\n",
+      usageFrame,
+      "data: [DONE]\n\n",
+    ])));
+
+    await expect(analyzeWorkspaceReview(changesetInput()))
+      .rejects.toThrow(/unparseable data frame/);
+  });
+
+  it("fails on a trailing partial data frame left in the buffer at EOF", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    // No trailing newline: the last frame is cut mid-JSON and the stream ends.
+    stubFetch(() => sseResponse(sseStream([
+      contentFrame(JSON.stringify(reviewPayload)),
+      "data: {\"choices\":[{\"delta\"",
+    ])));
+
+    await expect(analyzeWorkspaceReview(changesetInput()))
+      .rejects.toThrow(/unparseable data frame/);
+  });
+});
+
+describe("deterministic routing applies to both paths (PR #42 re-review finding 7)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("sends provider.sort on the non-streamed path too", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    const fetchMock = stubFetch(() => Response.json({
+      model: "deepseek/deepseek-v4-flash-0731",
+      choices: [{ message: { content: JSON.stringify(reviewPayload) }, finish_reason: "stop" }],
+    }));
+
+    await analyzeWorkspaceReview(changesetInput(), { tuning: { stream: false } });
+
+    const sent = sentBody(fetchMock);
+    expect(sent.provider).toEqual({ require_parameters: true, sort: "latency" });
+    expect(sent).not.toHaveProperty("stream");
+  });
+});
