@@ -20,14 +20,18 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 
 ## Working on
 
-- TER-44 step 1 (spike C) is **implemented and committed** on `baise/ter-44-survivability-spike` (PR #42: bound reasoning + deterministic provider routing + streaming stall detection in `src/lib/workspace-analysis.ts`), then through two Ternary fix rounds. Round 1 (2 ⛔, committed `cc7f4e9`): the stall window covers the pre-headers phase; a stream ending without `[DONE]` or a terminal `finish_reason` is rejected. **Round 2 (8 findings, uncommitted):** the stall window now measures time since the last SSE *data frame*, not since the last byte — `: OPENROUTER PROCESSING` keepalives and blank lines no longer reset it, so a provider that keeps the socket warm without generating still trips at 20 s; an unparseable `data:` frame (mid-stream, or left partial in the buffer at EOF) fails with `WorkspaceModelMalformedFrameError` instead of being skipped; `provider.sort` is deliberately sent on the non-streamed path too (that path is the baseline for streaming/stall detection, not for routing); plus timer `unref`, a non-swallowing unhandled-rejection guard, and an idempotent socket teardown in `finally`. Not merged, not measured. Measurement happens on production after merge (preview deployments are SSO-gated): one 12-seed live series, adopt at ≥ 80% delivery and p50 < 30 s.
+- TER-44 step 1 (spike C) is **merged and measured**. main `f922654` (PR #42) is deployed to production with bound reasoning (`effort: "low"`), `provider.sort: "latency"` and a streamed response with a 20 s data-frame stall window. The 12-seed live series ran 2026-08-26 against production; results in `docs/experiments/workspace-review-dogfood.md` §8.6 and raw data in `docs/experiments/ter44-step1-runs.json`.
+- **Verdict against the ADR-0002 gate (≥ 80% delivery, p50 < 30 s): NOT ADOPT.** Delivery 66.7% server-side / 58.3% caller-observed (Phase B: 31%); server `durationMs` p50 **56,627 ms**, slightly worse than Phase B's ≈ 51 s. Delivery improved, latency did not.
+- Cause is measured, not guessed: `effort: "low"` **is not honoured** by `deepseek-v4-flash-0731` — reasoning ran 884–2,600 tokens against a documented ~819 budget (20% of `WORKSPACE_MAX_OUTPUT_TOKENS` 4,096), a mean **67% of all output tokens**. `provider.sort` is not deterministic (DeepInfra ×6, AkashML ×2 across 8 runs; the model has 20 structured-output endpoints, uptime 18–100%). `stallAborted` fired **zero** times, so the stall window is not the binding constraint. Cost fell to $0.000627/completed review; canaries 12/12 CLEAN; 8/8 reviews in English; S12 control clean.
+- Two defects found while measuring, both recorded in §8.6: (a) `workspace-analysis.ts:729` launders **any** upstream abort into `WorkspaceReviewTimeoutError`, so `workspace_review_timeout` conflates "deadline expired" with "connection died" — run 05 was logged a 504 at 79.9 s of a 120 s deadline, and Phase B's 24 timeouts went through the same path; (b) the scratch driver's `classify()` matched machine error codes while the CLI prints prose, so all 12 runs recorded `ok` — every §8.6 outcome was rebuilt post hoc from CLI text cross-checked against the server log line, matched by `requestBytes`.
 
 ## Next
 
-1. TER-44 step 2: bounded retry (≤ 2 attempts, 180 s end-to-end, second attempt routed away from the failed provider).
-2. (dropped after Ternary ⛔ on #41) slot refunds for failed attempts — input tokens are billed regardless, so the request gate stays the spend bound (≤ 20 invocations/hour with two attempts). Spec §1/§6 and the endpoint doc are amended in #41 with rollout-status lines; they get their final wording when step 2 lands.
-4. TER-45: pin the output contract (English, severity calibration, validation) — can land in parallel with TER-44 steps 2–3.
-5. Re-run the seeded suite incl. S05, `tablet-notes-v3`, `--all`; then the §7.2 generic-agent baseline.
+1. **TER-44 step 1b — decide the model (needs the owner).** ADR-0002's step-1 fallback applies: the reasoning bound is ineffective, so switch model within the price class and re-measure. Cheapest experiment first: test `reasoning: { effort: "none" }` on the incumbent (`exclude: true` does **not** disable reasoning — OpenRouter documents it as hiding, not stopping, so it would not move latency). If that is rejected or ignored, §8.6.7 lists four non-reasoning candidates with `structured_outputs` in the same price class. A model change is a medium-impact decision to record in `DECISIONS.md`; it re-opens every quality number.
+2. Fix the abort/timeout conflation (`workspace-analysis.ts:729`) **before** the next measurement, or delivery figures stay uninterpretable.
+3. TER-44 step 2: bounded retry (≤ 2 attempts, 180 s end-to-end, second attempt routed away from the failed provider). Unaffected by the step-1 result; at 66.7% per-attempt delivery two attempts project to ≈ 89%, but that is arithmetic, not a measurement.
+4. TER-45: pin the output contract (English, severity calibration, validation) — can land in parallel. Language drift did not recur in this series (8/8 English), which is weak evidence at n=8, not a fix.
+5. Re-run the seeded suite incl. S05, `tablet-notes-v3`, `--all`; then the §7.2 generic-agent baseline. S05 is now 0-for-5 across both series.
 6. TER-43 (snapshot truncation) stays deprioritised until `--all` delivers at all; then TER-42, TER-33; TER-18/TER-13 later.
 
 ## Blocked
@@ -43,6 +47,8 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 - Stale agent worktrees accumulate under `.claude/worktrees/`; deletion is a hard stop, so they are left for the human. `.next/` dirs inside them break the stop hook's lint sweep (parked in the session scratchpad when it happened).
 
 ## Verification status
+
+- TER-44 step 1 live series (2026-08-26, production `f922654`): 12 submissions, 12/12 canary pre-flights CLEAN, zero leaks, `digestVerified` true and `droppedByServerCaps` 0 on all 12 server log lines. Outcomes and latency read from the Vercel runtime log lines, not from the scratch driver's tally (its classifier was wrong — see "Working on"). Docs-only change in the working tree; `npm run lint` green.
 
 - TER-39 Phase B (2026-08-25): offline canary baseline re-run green (8/8 clean, exit 0); 45/45 live pre-flights CLEAN, zero canary leaks; `npm run lint` green after the docs edits. The `capture.test.ts` timeout change was verified by `npx vitest run cli/src/capture.test.ts` (17 files / 757 tests passed) plus Ternary's sandbox `test` check on PR #40; the full root suite was not re-run locally for this PR.
 - main `ccb0138`: `npm run lint && npm test` green (12,980 passed), `npm run build` green, production deploy READY (2026-08-25). Ternary review of #38 was 💬 with one open warning: `loadWatchedRepositoriesOrEmpty` in `dashboard-data.ts` swallows every Redis error (not just quota) and shows repos as unwatched — follow-up: surface a "watch status unavailable" state instead.
@@ -62,8 +68,8 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 
 ## Last handoff
 
-- Updated: 2026-08-25 (TER-44 spike C, PR #42 fix round 2)
+- Updated: 2026-08-26 (TER-44 step 1 measured on production; verdict NOT ADOPT)
 - By: agent (Claude Code)
-- Branch/worktree: `baise/ter-44-survivability-spike` (fix round 2 uncommitted; a separate Git agent commits)
-- Last known-good commit: main `ccb0138` (deployed)
+- Branch/worktree: `main` (measurement only; §8.6, `ter44-step1-runs.json` and this file are uncommitted — a separate Git agent commits)
+- Last known-good commit: main `f922654` (deployed, measured)
 - Verified after fix round 2: `npm run lint` clean; `npx vitest run src/lib/workspace-analysis.test.ts src/lib/workspace-review-route.test.ts` 95 passed (43 + 52); `npx vitest run --dir src` 614 passed / 9 skipped; `npm run build` green (clear `.next/cache` first if the build worker dies with a WasmHash dump).

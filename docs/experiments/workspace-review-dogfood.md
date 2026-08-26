@@ -719,6 +719,260 @@ and useful, but it means **redaction does not hide from the reviewer that a
 secret was there** — worth knowing before anyone assumes withheld content is
 invisible.
 
+## 8.6 TER-44 step 1 — spike C measurement (measured 2026-08-26)
+
+**12 live submissions** against production `POST /api/workspace-reviews`
+(deployment `dpl_P3mkTH63AuEEZ9S99tToYBzNCdt3`, main `f922654`), 12 seeds ×
+1 repetition over the same TER-39 fixtures, concurrency 1, teed to disk as they
+arrived. Raw per-run record: `docs/experiments/ter44-step1-runs.json`.
+
+This measures ADR-0002 step 1 (option C): `reasoning: { effort: "low" }`,
+`provider: { require_parameters: true, sort: "latency" }`, and a streamed
+response with a 20 s data-frame stall window. The ADR's adoption gate is
+**delivery ≥ 80% and p50 < 30 s**.
+
+**Verdict: NOT ADOPT — both halves of the gate fail.**
+
+### 8.6.1 Delivery and latency against the gate
+
+Delivery is reported twice, because the two numbers differ and only one of them
+is what a user experiences.
+
+| | Phase B (§8.5.1) | TER-44 step 1 | gate |
+| --- | --- | --- | --- |
+| delivery, server-side (200 logged) | 31.1% (14/45) | **66.7% (8/12)** | ≥ 80% |
+| delivery, caller-observed (review reached the CLI) | 31.1% | **58.3% (7/12)** | — |
+| server `durationMs` min | 8,117 | 27,767 | — |
+| server `durationMs` **p50** | ≈ 51,000 | **56,627** | < 30,000 |
+| server `durationMs` max | 116,342 | 83,960 | — |
+
+Delivery roughly doubled and the worst case improved by 32 s. **p50 did not
+improve — it got slightly worse** (56.6 s vs ≈ 51 s), and the fastest run is now
+3.4× slower than Phase B's fastest. Option C moved availability without moving
+the thing it was designed to move.
+
+Outcome breakdown (server-side):
+
+| Outcome | Count | Runs |
+| --- | --- | --- |
+| `ok` (200) | 8 | 03, 04, 07, 08, 09, 10, 11, 12 |
+| `workspace_review_timeout` (504) | 3 | 01, 02, 05 |
+| `model_failure` (500) | 1 | 06 |
+
+The collector was again not implicated: `digestVerified` true on all 12,
+`droppedByServerCaps` 0, `redactionApplied` 0, and **12/12 canary pre-flights
+CLEAN with zero leaks**.
+
+### 8.6.2 The reasoning bound did not take
+
+This is the finding that decides the next step. `effort: "low"` is documented by
+OpenRouter as *"approximately 20% of max_tokens"*; with
+`WORKSPACE_MAX_OUTPUT_TOKENS = 4_096` that predicts ≈ 819 reasoning tokens.
+
+| run | reasoningTokens | outputTokens | reasoning share |
+| --- | --- | --- | --- |
+| 03-S03 | 2,600 | 3,573 | 72.8% |
+| 04-S04 | 2,157 | 3,197 | 67.5% |
+| 07-S07 | 2,147 | 2,732 | 78.6% |
+| 08-S08 | 1,732 | 2,795 | 62.0% |
+| 09-S09 | 1,482 | 2,598 | 57.0% |
+| 10-S10 | 1,390 | 1,988 | 69.9% |
+| 11-S11 | 884 | 1,442 | 61.3% |
+| 12-S12 | 1,771 | 2,549 | 69.5% |
+
+Median 1,752, range 884–2,600 — **1.1× to 3.2× the documented "low" budget**, and
+a mean of **67% of all output tokens spent on reasoning**. Only the smallest
+payload (S11, 2,030 bytes) came close to the bound. The served model
+(`deepseek-v4-flash-0731`) does not honour the effort bound at "low", which is
+exactly the contingency ADR-0002 option C names: *"If the model does not accept a
+reasoning bound, fall back to a non-reasoning model of the same price class."*
+
+### 8.6.3 Provider routing is still not deterministic
+
+`provider.sort: "latency"` produced **two distinct providers across eight
+completed runs** — DeepInfra ×6, AkashML ×2 — and gives no control over which.
+The catalogue explains why: `deepseek/deepseek-v4-flash-0731` exposes **29
+endpoints, 20 of them structured-output capable, and every one of them a
+reasoning endpoint**, with 30-minute uptime ranging from 18.1% to 100%. Sorting
+a pool that wide by latency is not determinism, it is a different lottery.
+`provider.order` pinning is only meaningful once the pool is small.
+
+### 8.6.4 The stall window never fired, and one "timeout" is not a timeout
+
+`stallAborted` is **absent from all 12 log lines**. The 20 s data-frame stall
+window did not trip once, including on the two runs that burned the full 120 s
+deadline. Whatever these attempts are doing, they are emitting data frames while
+they do it — so a stall detector is not the binding constraint, and tuning its
+window would change nothing.
+
+Run 05-S05 exposes a defect in the instrument rather than the product. It was
+logged `workspace_review_timeout` / 504 at `durationMs` **79,885** — 40 s short
+of the 120 s deadline. The route's `startedAt` (`workspace-review-route.ts:306`)
+is the shared origin of both the deadline and the logged `durationMs`, so this
+cannot be the deadline firing early. The cause is `workspace-analysis.ts:729`:
+
+```
+if (isAbortError(error) || deadlineReached || controller.signal.aborted) throw new WorkspaceReviewTimeoutError(timeoutMs);
+```
+
+`deadlineReached` was false. **Any upstream abort — a provider dropping the
+socket, a connection reset — is laundered into `WorkspaceReviewTimeoutError`**
+and reported as a deadline timeout, carrying the full `timeoutMs` rather than
+the elapsed time. `workspace_review_timeout` therefore conflates "our deadline
+expired" with "the connection died early". Phase B's 24 timeouts were counted
+through this same code path, so **the 53% timeout figure in §8.5.1 may also mix
+upstream aborts into the deadline bucket**. Separating them is a prerequisite for
+trusting any future delivery measurement.
+
+### 8.6.5 Cost
+
+| | Phase B | TER-44 step 1 |
+| --- | --- | --- |
+| cost per completed review | $0.000797 | **$0.000627** |
+| measured spend, completed runs | $0.011162 (14 runs) | $0.005014 (8 runs) |
+
+22% cheaper per completed review, and the 5× per-output-token variance of Phase B
+narrowed — reasoning tokens are now reported, so the cost is explicable rather
+than mysterious. Cost was never the constraint and still is not. Note that
+failed attempts are billed for input and partial generation but log no cost
+field, so true spend per *submission* is higher than the per-completed-review
+figure.
+
+Measured `inputTokens` across the series is **582–1,039** — worth recording
+because §6.2's 20–60k input ceiling is a derived estimate that has never matched
+a measured run, and costing future models against it overstates by 20–60×.
+
+### 8.6.6 Quality sanity on the completed runs
+
+41 findings across 8 completed reviews = **5.1 per review** (Phase B: 6.2).
+
+| id | seeded defect reported? |
+| --- | --- |
+| S03 | **not measured** — 200 server-side (6 findings) but the CLI never received it |
+| S04 | **TP** — `src/audit.ts:7`, unawaited audit write |
+| S07 | **TP** — `app/reports.py:7`, CSV handle never closed |
+| S08 | **FN** — landed on `src/http.ts:12` but described the retry behaviour as *not* retrying on error statuses; the seeded defect is that it retries a non-idempotent POST with no backoff and no 4xx exclusion |
+| S09 | **FN** — landed on `src/cache.ts:5` but reported the return value, not the seeded TOCTOU race |
+| S10 | **TP** — `src/download.ts:7`, path traversal, graded `blocking` |
+| S11 | **TP** — `app/hashing.py:4`, unsalted MD5, graded `blocking` |
+| S12 | **PASS** — negative control clean, no finding against `src/control.ts` |
+| S01, S02, S05, S06 | not measured — no completed run |
+
+```
+seeds measured                      6  (S04, S07, S08, S09, S10, S11)
+TP                                  4
+FN                                  2
+recall (per measured seed)       = 4 / 6 = 66.7%
+negative control S12             = PASS
+```
+
+Two cautions. **Recall is worse than Phase B's 10/10, on six seeds instead of
+ten** — and S09, an FN here, was a clean TP in Phase B that "names the race
+explicitly". That is not a regression caused by this change; it is the run-to-run
+instability §8.5.3 already documented, now visible in the recall column. Six
+seeds is far too small to call either number.
+
+**Language drift did not recur: 8/8 completed reviews were in English**, against
+1 Chinese review in 14 in Phase B. With n=8 this is weak evidence that the
+problem is gone — TER-45 (output contract) is still the fix, not this.
+
+Severity showed the seeded path traversal and weak hash as `blocking`, which is
+better calibrated than Phase B's `warning` for the seeded auth bypass — but S06
+never completed here, so the two are not comparable.
+
+### 8.6.7 Candidate models for step 1b
+
+ADR-0002 step 1's fallback is *"switch model within the same price class and
+re-measure"*. Facts below are READ from OpenRouter's public catalogue
+(`/api/v1/models` and per-model `/endpoints`, fetched 2026-08-26); no
+recommendation is made beyond ranking by price and endpoint-pool determinism.
+
+Filter: `structured_outputs` in `supported_parameters` (the request uses a strict
+`json_schema` with `require_parameters: true`), `reasoning` **absent** from
+`supported_parameters` (true non-reasoning models), ≤ $0.50/M prompt and
+≤ $1.50/M completion.
+
+| model | $/M in | $/M out | ctx | struct. out | reasoning | struct-out endpoints (uptime 30m) | est. $/review @1k in / 3k out |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `mistralai/mistral-small-3.2-24b-instruct` | 0.075 | 0.200 | 131k | yes | none | 3 — DeepInfra 99.9, Parasail 99.8, Mistral 100 | $0.00068 |
+| `qwen/qwen3-coder-30b-a3b-instruct` | 0.070 | 0.280 | 262k | yes | none | 2 — SiliconFlow 99.0, Novita 85.3 | $0.00091 |
+| `openai/gpt-4.1-nano` | 0.100 | 0.400 | 1.05M | yes | none | 3 — OpenAI / Azure, 99.7 | $0.00130 |
+| `qwen/qwen3-235b-a22b-2507` | 0.090 | 0.550 | 262k | yes | none | 9 — Google, Nebius, Parasail 99.3–99.8 | $0.00174 |
+| *incumbent* `deepseek/deepseek-v4-flash-0731` | 0.040 | 0.080 | 1.05M | yes | **always on** | **20** — uptime 18.1–100 | measured $0.00031–0.00104 |
+
+Two limitations, stated rather than papered over:
+
+- **Per-provider latency is not available from the public API.**
+  `throughput_last_30m` and `latency_last_30m` return `null` on every endpoint of
+  every model above; those figures appear only in OpenRouter's web UI. Criterion
+  "documented fast provider" therefore **cannot be satisfied from the
+  catalogue**. `uptime_last_30m` is populated and is substituted above.
+- **Every candidate is unmeasured for review quality.** Phase B and this series
+  measured one model. Switching models re-opens recall, precision, severity and
+  language, none of which are baselined (§7.2 still unrun).
+
+On keeping the incumbent and disabling reasoning instead:
+**`reasoning: { exclude: true }` does not do this.** OpenRouter documents it as
+*"The model will still use reasoning, but it won't be returned in the
+response"* — reasoning is generated and billed either way, so latency would be
+unchanged and we would lose the `reasoningTokens` field that made §8.6.2
+diagnosable. The documented off-switch is **`effort: "none"`**, and models flagged
+`mandatory: true` reject it. Whether `deepseek-v4-flash-0731` accepts
+`effort: "none"` is **untested** — it is the one cheap experiment that could keep
+the incumbent, and it should be run before any model switch. Nor was
+`max_tokens` clamping tested as an indirect bound.
+
+### 8.6.8 What this series did not measure
+
+- **S01, S02, S05, S06** — no completed run, as in Phase B (S05 is now 0-for-5
+  across both series).
+- **Repetitions** — 1 per seed. Every §8.6.6 number rests on a single run.
+- **`tablet-notes-v3`, `--all`, real repositories** — not submitted; egress for
+  this series was fixtures only.
+- **§7.2 generic-agent baseline** — still unrun. Every quality figure here
+  remains un-baselined.
+- **Two runs are contaminated by a local client-side anomaly.** 02-S02 and
+  03-S03 returned CLI wall-clocks of 983 s and 381 s against server durations of
+  120 s and 71 s; on 03-S03 the server logged a 200 with 6 findings that the CLI
+  never surfaced, reporting its 130 s client timeout instead. Runs 04–12 show CLI
+  wall ≈ server `durationMs` + ~1 s, so this is confined to that stretch and is
+  most consistent with local event-loop starvation on the measuring machine, not
+  a reproducible product defect. It needs its own reproduction before anyone
+  treats it as a CLI bug — but it is why caller-observed delivery (58.3%) is
+  reported alongside server-side delivery (66.7%).
+- **The driver's outcome classifier was wrong** and every outcome in this section
+  was rebuilt post hoc. `run-series.sh`'s `classify()` greps for machine error
+  codes (`workspace_review_timeout`, `model_failure`, `rate_limited`) while the
+  CLI prints prose (`cli/src/transmit.ts`), so all 12 runs recorded `ok` in
+  `results.tsv`. Outcomes here come from the CLI message text cross-checked
+  against the server log line for every run, matched by `requestBytes` (all 12
+  distinct). No run was rate-limited or retried: `attempt=1` on every run and no
+  429 text in any captured output.
+
+### 8.6.9 Which lever the data points at
+
+Ranked by what the measurements support, not by preference:
+
+1. **Model switch (ADR-0002 step 1 fallback).** §8.6.2 is direct evidence the
+   reasoning bound is ineffective on this model, and reasoning is 67% of output
+   tokens — the single largest identified contributor to latency. Test
+   `effort: "none"` on the incumbent first (cheap, one series); if it is
+   rejected or ignored, move to a non-reasoning model from §8.6.7.
+2. **Fix the timeout/abort conflation** (§8.6.4) before re-measuring anything.
+   Until upstream aborts stop being reported as deadline timeouts, delivery
+   numbers cannot distinguish "too slow" from "connection died", and neither this
+   series nor Phase B can be read cleanly.
+3. **`provider.order` pinning** is second-order while the pool is 20 endpoints
+   wide (§8.6.3); it becomes useful mainly *after* a model with a small endpoint
+   pool is chosen.
+4. **Stall-window tuning is not indicated.** `stallAborted` never fired (§8.6.4);
+   there is no evidence of a silent-provider failure mode to tune for.
+
+Step 2 (bounded retry, B) is unaffected by this result and still stands: at 66.7%
+per-attempt delivery, two independent attempts would give ≈ 89% — but that is an
+arithmetic projection, not a measurement, and it buys delivery by doubling spend
+and latency rather than by fixing the cause.
+
 ## 9. Recommendation
 
 **REVISE.** Not continue, not stop.

@@ -1,0 +1,197 @@
+{
+  "$comment": "TER-44 step 1 (ADR-0002 option C) raw per-run record. Metadata, digests and adjudication only: no source content, no secrets, no credentials. Token counts, cost, provider and durationMs come from the server-side WorkspaceReviewLogEntry lines and are reproduced here as measured numbers. Outcomes were rebuilt post hoc: the driver's classify() matched machine error codes while the CLI prints prose, so results.tsv recorded every run as ok. Each run is matched to its server log line by requestBytes (all 12 distinct) and timestamp.",
+  "schema": "ter44-step1-runs/1",
+  "generatedUtc": "2026-08-26T02:20:00Z",
+  "endpoint": "POST /api/workspace-reviews (production)",
+  "deploymentId": "dpl_P3mkTH63AuEEZ9S99tToYBzNCdt3",
+  "commit": "f9226546ae0ba61e6d89ee95b4ef710e5f810b76",
+  "modelRequested": "~deepseek/deepseek-v4-flash-latest",
+  "modelServed": "deepseek/deepseek-v4-flash-0731",
+  "tuning": {
+    "reasoningEffort": "low",
+    "providerSort": "latency",
+    "requireParameters": true,
+    "stream": true,
+    "stallTimeoutMs": 20000,
+    "maxOutputTokens": 4096
+  },
+  "gates": { "rateLimitPerHour": 10, "maxConcurrent": 1, "deadlineMs": 120000 },
+  "adrGate": {
+    "source": "docs/adr/0002-workspace-review-model-call-survivability.md, Sequence step 1",
+    "adoptIf": "delivery >= 80% and p50 < 30000 ms",
+    "verdict": "NOT ADOPT",
+    "reason": "delivery 66.7% server-side (58.3% caller-observed) and p50 56,627 ms"
+  },
+  "totals": {
+    "liveSubmissions": 12,
+    "okServerSide": 8,
+    "okCallerObserved": 7,
+    "timeout504": 3,
+    "modelFailure500": 1,
+    "deliveryPctServerSide": 66.7,
+    "deliveryPctCallerObserved": 58.3,
+    "serverDurationMsMin": 27767,
+    "serverDurationMsP50": 56627,
+    "serverDurationMsMax": 83960,
+    "canaryPreflights": 12,
+    "canaryLeaks": 0,
+    "totalFindings": 41,
+    "findingsPerCompletedRun": 5.1,
+    "measuredSpendUsdCompletedRuns": 0.005014,
+    "costPerCompletedReviewUsd": 0.000627,
+    "reasoningTokensMin": 884,
+    "reasoningTokensMedian": 1752,
+    "reasoningTokensMax": 2600,
+    "reasoningShareOfOutputMeanPct": 67.3,
+    "documentedLowBudgetTokens": 819,
+    "stallAbortedCount": 0,
+    "providersObserved": { "DeepInfra": 6, "AkashML": 2 },
+    "nonEnglishReviews": 0,
+    "inputTokensMin": 582,
+    "inputTokensMax": 1039
+  },
+  "phaseBComparison": {
+    "source": "docs/experiments/workspace-review-dogfood.md §8.5.1",
+    "deliveryPct": 31.1,
+    "serverDurationMsP50": 51000,
+    "costPerCompletedReviewUsd": 0.000797,
+    "findingsPerCompletedRun": 6.2
+  },
+  "adjudication": {
+    "method": "docs/experiments/workspace-review-dogfood.md §7.1",
+    "seedsMeasured": 6,
+    "seedsUnmeasured": ["S01", "S02", "S03", "S05", "S06"],
+    "seedsUnmeasuredNote": "S03 returned 200 with 6 findings server-side but the review never reached the CLI, so its findings could not be adjudicated.",
+    "TP": 4,
+    "FN": 2,
+    "recallPerMeasuredSeed": 0.667,
+    "negativeControlS12": "PASS (no finding against src/control.ts)",
+    "caution": "One repetition per seed; six measured seeds. S09 was a clean TP in Phase B and an FN here, which is the run-to-run instability of §8.5.3, not a regression from this change."
+  },
+  "runs": [
+    {
+      "runId": "01-S01", "seed": "S01-off-by-one", "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:792b6b6d83abc408deac11b09972194242566b3c8cf0ad84f924810a595ad77c",
+      "payloadBytes": 4878, "canaryVerdict": "CLEAN",
+      "httpStatus": 504, "outcome": "workspace_review_timeout", "callerReceivedReview": false,
+      "cliExitCode": 3, "wallClockMs": 121040, "serverDurationMs": 120007,
+      "stallAborted": false, "note": "deadline expired"
+    },
+    {
+      "runId": "02-S02", "seed": "S02-null-deref", "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:ac8326f3286915868ad891d0846131684260090499f44fafb4624ff596c1e479",
+      "payloadBytes": 4723, "canaryVerdict": "CLEAN",
+      "httpStatus": 504, "outcome": "workspace_review_timeout", "callerReceivedReview": false,
+      "cliExitCode": 3, "wallClockMs": 983362, "serverDurationMs": 120000,
+      "stallAborted": false, "note": "deadline expired; CLI wall-clock inflated by the local client-side anomaly described in §8.6.8"
+    },
+    {
+      "runId": "03-S03", "seed": "S03-sql-injection", "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:1cd0f9d24c54682f9d7ef6dc39be5789bb83c66deb2d9234f7e3011e4f24f01b",
+      "payloadBytes": 4857, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "callerReceivedReview": false,
+      "cliExitCode": 3, "wallClockMs": 381130, "serverDurationMs": 70593,
+      "provider": "DeepInfra", "inputTokens": 1025, "outputTokens": 3573, "reasoningTokens": 2600,
+      "estimatedCostUsd": 0.00072514, "verdict": "findings", "findingCount": 6,
+      "stallAborted": false,
+      "note": "Server returned a complete review; the CLI reported its 130 s client timeout and surfaced nothing. Findings could not be adjudicated."
+    },
+    {
+      "runId": "04-S04", "seed": "S04-missing-await", "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:827eb1eb8b30aad83e9365a30158cd8a1e21318c51a8ea63e425cd8f2ca7f39d",
+      "payloadBytes": 4814, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "callerReceivedReview": true,
+      "cliExitCode": 1, "wallClockMs": 37978, "serverDurationMs": 36705,
+      "provider": "AkashML", "inputTokens": 1020, "outputTokens": 3197, "reasoningTokens": 2157,
+      "estimatedCostUsd": 0.00103796, "verdict": "findings", "findingCount": 7,
+      "stallAborted": false, "language": "English",
+      "seededDefect": "TP", "seededDefectAt": "src/audit.ts:7"
+    },
+    {
+      "runId": "05-S05", "seed": "S05-swallowed-error", "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:152b17bdea1ebe50f00a49910e841e7e24501bc1a5bd1d03ce79a705c1ac2134",
+      "payloadBytes": 4887, "canaryVerdict": "CLEAN",
+      "httpStatus": 504, "outcome": "workspace_review_timeout", "callerReceivedReview": false,
+      "cliExitCode": 3, "wallClockMs": 80731, "serverDurationMs": 79885,
+      "stallAborted": false,
+      "note": "Logged as a deadline timeout 40 s short of the 120 s deadline. deadlineReached was false; an upstream abort was laundered into WorkspaceReviewTimeoutError at workspace-analysis.ts:729. See §8.6.4."
+    },
+    {
+      "runId": "06-S06", "seed": "S06-auth-bypass", "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:343dd1c4cd4911e930bd9c2c3d00a81e4d4a251e1cf7281ea2c6bfc1578a8fb4",
+      "payloadBytes": 4802, "canaryVerdict": "CLEAN",
+      "httpStatus": 500, "outcome": "model_failure", "callerReceivedReview": false,
+      "cliExitCode": 3, "wallClockMs": 112588, "serverDurationMs": 111637,
+      "stallAborted": false, "note": "not a stall — stallAborted absent"
+    },
+    {
+      "runId": "07-S07", "seed": "S07-resource-leak", "target": "python", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:5bc95b6ddce6667d6b4ffe381be856670b7cb1f486ca3d25b087247ab7a33da0",
+      "payloadBytes": 2062, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "callerReceivedReview": true,
+      "cliExitCode": 1, "wallClockMs": 85474, "serverDurationMs": 83960,
+      "provider": "AkashML", "inputTokens": 592, "outputTokens": 2732, "reasoningTokens": 2147,
+      "estimatedCostUsd": 0.00084784, "verdict": "findings", "findingCount": 4,
+      "stallAborted": false, "language": "English",
+      "seededDefect": "TP", "seededDefectAt": "app/reports.py:7"
+    },
+    {
+      "runId": "08-S08", "seed": "S08-incorrect-retry", "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:a2450d1083331cd024dfb070dc2882acd8f95a2073e1912a579c38680b821b3c",
+      "payloadBytes": 4858, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "callerReceivedReview": true,
+      "cliExitCode": 1, "wallClockMs": 67374, "serverDurationMs": 66554,
+      "provider": "DeepInfra", "inputTokens": 1039, "outputTokens": 2795, "reasoningTokens": 1732,
+      "estimatedCostUsd": 0.00058622, "verdict": "findings", "findingCount": 6,
+      "stallAborted": false, "language": "English",
+      "seededDefect": "FN",
+      "seededDefectNote": "Reported src/http.ts:12 as failing to retry on HTTP error statuses; the seeded defect is that it retries a non-idempotent POST on every non-OK status with no backoff and no 4xx exclusion."
+    },
+    {
+      "runId": "09-S09", "seed": "S09-toctou-write", "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:d6773544e8945787fad014cf89b01f3ab7eaee3b0ebca2ea791213bde71c569c",
+      "payloadBytes": 4764, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "callerReceivedReview": true,
+      "cliExitCode": 1, "wallClockMs": 62613, "serverDurationMs": 61878,
+      "provider": "DeepInfra", "inputTokens": 1005, "outputTokens": 2598, "reasoningTokens": 1482,
+      "estimatedCostUsd": 0.000531656, "verdict": "findings", "findingCount": 6,
+      "stallAborted": false, "language": "English",
+      "seededDefect": "FN",
+      "seededDefectNote": "Reported src/cache.ts:5 returning the path instead of the cached value, not the seeded TOCTOU race. Phase B scored this seed TP."
+    },
+    {
+      "runId": "10-S10", "seed": "S10-path-traversal", "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:66cb4308863f54ed56cedba92414f8f4e1f1bf6f5e711f0bf9b4fd8424fc63ff",
+      "payloadBytes": 4743, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "callerReceivedReview": true,
+      "cliExitCode": 1, "wallClockMs": 38258, "serverDurationMs": 37592,
+      "provider": "DeepInfra", "inputTokens": 1001, "outputTokens": 1988, "reasoningTokens": 1390,
+      "estimatedCostUsd": 0.00043792, "verdict": "findings", "findingCount": 4,
+      "stallAborted": false, "language": "English",
+      "seededDefect": "TP", "seededDefectAt": "src/download.ts:7", "seededDefectSeverity": "blocking"
+    },
+    {
+      "runId": "11-S11", "seed": "S11-weak-hash", "target": "python", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:7565690f6622be723ab722d5e7ca2a641fe44100a76e027fc4bc6ca83b50e43d",
+      "payloadBytes": 2030, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "callerReceivedReview": true,
+      "cliExitCode": 1, "wallClockMs": 28250, "serverDurationMs": 27767,
+      "provider": "DeepInfra", "inputTokens": 582, "outputTokens": 1442, "reasoningTokens": 884,
+      "estimatedCostUsd": 0.00030612, "verdict": "findings", "findingCount": 3,
+      "stallAborted": false, "language": "English",
+      "seededDefect": "TP", "seededDefectAt": "app/hashing.py:4", "seededDefectSeverity": "blocking"
+    },
+    {
+      "runId": "12-S12", "seed": "S12-style-only-control", "target": "ordinary", "captureMode": "default", "kind": "changeset",
+      "digest": "sha256:bd6182571ac146c8400e9699f5314ea99cd54c03a47641b37af49522841807b4",
+      "payloadBytes": 4742, "canaryVerdict": "CLEAN",
+      "httpStatus": 200, "outcome": "ok", "callerReceivedReview": true,
+      "cliExitCode": 1, "wallClockMs": 51942, "serverDurationMs": 51376,
+      "provider": "DeepInfra", "inputTokens": 1029, "outputTokens": 2549, "reasoningTokens": 1771,
+      "estimatedCostUsd": 0.00054114, "verdict": "findings", "findingCount": 5,
+      "stallAborted": false, "language": "English",
+      "seededDefect": "PASS",
+      "seededDefectNote": "Negative control: no finding against src/control.ts. Byte-identical digest to Phase B runs 01-S12-r1 and 13b-S12-r2 (sha256:bd6182…07b4), which returned 5 English findings in 28.3 s and 3 Chinese findings in 116.3 s respectively; this run returned 5 English findings in 51.4 s."
+    }
+  ]
+}
