@@ -376,7 +376,48 @@ type StreamAccumulator = {
   model?: string;
   provider?: string;
   usage?: OpenRouterUsage;
+  /**
+   * Whether the stream announced its own end. OpenRouter's streaming doc
+   * documents exactly two terminal signals: the `data: [DONE]` sentinel and a
+   * chunk carrying `finish_reason: "error"` (handled as a throw below). The
+   * OpenAI-compatible `finish_reason` values `stop`/`length`/`content_filter`/
+   * `tool_calls` are NOT documented on that page, so they are accepted as
+   * belt-and-braces terminators for providers that omit `[DONE]` — never as the
+   * primary signal.
+   */
+  terminated: boolean;
 };
+
+const TERMINAL_FINISH_REASONS = new Set(["stop", "length", "content_filter", "tool_calls"]);
+
+/**
+ * Race one awaited step against the stall window. Used for BOTH the
+ * request/headers phase and each body read: a provider that accepts the
+ * connection and then hangs before sending headers is the exact Phase B
+ * failure mode, and arming the timer only after `fetch()` resolves would let it
+ * run to the end-to-end deadline instead of failing fast.
+ */
+function withStallDeadline<T>(operation: Promise<T>, stallTimeoutMs: number, abort: () => void): Promise<T> {
+  // The losing side of the race still settles later; swallow it so an aborted
+  // fetch/read never surfaces as an unhandled rejection.
+  operation.catch(() => {});
+  let stallTimer: ReturnType<typeof setTimeout>;
+  const stall = new Promise<never>((_, reject) => {
+    stallTimer = setTimeout(() => {
+      abort();
+      reject(new WorkspaceModelStallError(stallTimeoutMs));
+    }, stallTimeoutMs);
+  });
+  return Promise.race([operation, stall]).finally(() => clearTimeout(stallTimer!));
+}
+
+/** A stream whose body ended without announcing completion is a dropped connection, not a review. */
+export class WorkspaceModelTruncatedStreamError extends NonRetryableReviewError {
+  constructor() {
+    super("Workspace review model stream ended without a completion marker; the generation was cut short");
+    this.name = "WorkspaceModelTruncatedStreamError";
+  }
+}
 
 /**
  * Consume one SSE line. Returns nothing; mutates the accumulator. Throws on a
@@ -415,6 +456,9 @@ function consumeStreamLine(line: string, acc: StreamAccumulator): "done" | "cont
   if (chunk.model) acc.model = chunk.model;
   if (chunk.provider) acc.provider = chunk.provider;
   if (chunk.usage) acc.usage = chunk.usage;
+  // Reading continues past a terminal finish_reason: the usage chunk and the
+  // `[DONE]` sentinel normally follow it.
+  if (choice?.finish_reason && TERMINAL_FINISH_REASONS.has(choice.finish_reason)) acc.terminated = true;
   const delta = choice?.delta?.content;
   if (typeof delta === "string") acc.text += delta;
   return "continue";
@@ -434,34 +478,29 @@ async function readWorkspaceModelStream(
 ): Promise<StreamAccumulator> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
-  const acc: StreamAccumulator = { text: "" };
+  const acc: StreamAccumulator = { text: "", terminated: false };
   let buffer = "";
   try {
     for (;;) {
-      let stallTimer: ReturnType<typeof setTimeout>;
-      const stall = new Promise<never>((_, reject) => {
-        stallTimer = setTimeout(() => {
-          abort();
-          reject(new WorkspaceModelStallError(stallTimeoutMs));
-        }, stallTimeoutMs);
-      });
-      let chunk: ReadableStreamReadResult<Uint8Array>;
-      try {
-        chunk = await Promise.race([reader.read(), stall]);
-      } finally {
-        clearTimeout(stallTimer!);
-      }
+      const chunk = await withStallDeadline(reader.read(), stallTimeoutMs, abort);
       if (chunk.done) break;
       buffer += decoder.decode(chunk.value, { stream: true });
       let newline = buffer.indexOf("\n");
       while (newline !== -1) {
         const line = buffer.slice(0, newline);
         buffer = buffer.slice(newline + 1);
-        if (consumeStreamLine(line, acc) === "done") return acc;
+        if (consumeStreamLine(line, acc) === "done") {
+          acc.terminated = true;
+          return acc;
+        }
         newline = buffer.indexOf("\n");
       }
     }
-    if (buffer) consumeStreamLine(buffer, acc);
+    if (buffer && consumeStreamLine(buffer, acc) === "done") acc.terminated = true;
+    // Clean EOF is not success. Without `[DONE]` or a terminal finish_reason the
+    // body simply stopped, and a truncated prefix that happens to parse as a
+    // valid review would otherwise be published as one.
+    if (!acc.terminated) throw new WorkspaceModelTruncatedStreamError();
     return acc;
   } finally {
     reader.releaseLock();
@@ -485,7 +524,7 @@ export const requestOpenRouterWorkspaceModel: WorkspaceModelRequest = async (req
   else request.signal.addEventListener("abort", onOuterAbort, { once: true });
   let response: Response;
   try {
-    response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const pending = fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -494,6 +533,14 @@ export const requestOpenRouterWorkspaceModel: WorkspaceModelRequest = async (req
       body: JSON.stringify(buildWorkspaceModelRequestBody(request)),
       signal: controller.signal,
     });
+    // The stall window covers the request/headers phase too, but ONLY when
+    // streaming: with `stream: true` headers arrive promptly, so silence here
+    // means a hung provider. A non-streamed response legitimately withholds
+    // headers until the whole generation is buffered, so that path stays
+    // governed by the end-to-end deadline alone.
+    response = request.tuning.stream
+      ? await withStallDeadline(pending, request.tuning.stallTimeoutMs, () => controller.abort())
+      : await pending;
   } catch (error) {
     request.signal.removeEventListener("abort", onOuterAbort);
     throw error;

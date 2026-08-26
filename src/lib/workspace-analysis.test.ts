@@ -604,3 +604,84 @@ describe("stall error survives the deadline-abort path", () => {
     await expectation;
   });
 });
+
+describe("stall window covers the request phase, not just the body (PR #42 finding 1)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("aborts a provider that hangs before response headers, at the stall window not the deadline", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    // Connection accepted, nothing ever returned: fetch never settles.
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+
+    const pending = analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 120_000 }));
+    const expectation = expect(pending).rejects.toBeInstanceOf(WorkspaceModelStallError);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await expectation;
+  });
+
+  it("leaves the non-streamed path governed by the deadline, not the stall window", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    // A buffered (non-streamed) response legitimately withholds headers until
+    // the whole generation is done — 30 s here, past the 20 s stall window.
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => {
+      setTimeout(() => resolve(Response.json({
+        model: "deepseek/deepseek-v4-flash-0731",
+        choices: [{ message: { content: JSON.stringify(reviewPayload) }, finish_reason: "stop" }],
+      })), 30_000);
+    })));
+
+    const pending = analyzeWorkspaceReview(
+      changesetInput({ deadlineAt: Date.now() + 120_000 }),
+      { tuning: { stream: false } },
+    );
+    await vi.advanceTimersByTimeAsync(30_000);
+    await expect(pending).resolves.toMatchObject({ verdict: "findings" });
+  });
+});
+
+describe("stream termination (PR #42 finding 2)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("rejects a schema-valid review whose stream ended without a completion marker", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    const json = JSON.stringify(reviewPayload);
+    const mid = Math.floor(json.length / 2);
+    // Complete, schema-valid JSON — but the connection simply drops: no
+    // `[DONE]`, no terminal finish_reason. Accepting this would let a truncated
+    // generation that happens to parse be published as a review.
+    stubFetch(() => sseResponse(sseStream([
+      contentFrame(json.slice(0, mid)),
+      contentFrame(json.slice(mid)),
+    ])));
+
+    await expect(analyzeWorkspaceReview(changesetInput()))
+      .rejects.toThrow(/ended without a completion marker/);
+  });
+
+  it("accepts a stream terminated by finish_reason alone, for providers that omit [DONE]", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    stubFetch(() => sseResponse(sseStream([
+      contentFrame(JSON.stringify(reviewPayload)),
+      usageFrame,
+    ])));
+
+    await expect(analyzeWorkspaceReview(changesetInput())).resolves.toMatchObject({ verdict: "findings" });
+  });
+
+  it("keeps [DONE] as the terminal signal on the happy path", () => {
+    // OpenRouter's streaming doc documents exactly two terminal signals:
+    // `data: [DONE]` and a chunk with finish_reason "error". The happy-path
+    // fixture must exercise the documented one.
+    expect(reviewFrames().at(-1)).toBe("data: [DONE]\n\n");
+  });
+});
