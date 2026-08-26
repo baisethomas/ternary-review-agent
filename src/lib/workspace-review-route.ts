@@ -14,7 +14,16 @@
 import { NonRetryableReviewError } from "./review-errors";
 import type { ReviewSeverity } from "./review-policy";
 import { WORKSPACE_MAX_FINDINGS } from "./workspace-review-prompts";
-import { WorkspaceModelConnectionError, WorkspaceModelStallError, WorkspaceReviewTimeoutError, analyzeWorkspaceReview } from "./workspace-analysis";
+import {
+  WORKSPACE_MODEL_TUNING_DEFAULTS,
+  WorkspaceModelConnectionError,
+  WorkspaceModelStallError,
+  WorkspaceReviewTimeoutError,
+  analyzeWorkspaceReview,
+  resolveWorkspaceModelTuningFromEnv,
+  type WorkspaceProviderSortSetting,
+  type WorkspaceReasoningSetting,
+} from "./workspace-analysis";
 import {
   MAX_CANONICAL_PAYLOAD_BYTES,
   PAYLOAD_DIGEST_HEADER,
@@ -86,6 +95,17 @@ export type WorkspaceReviewLogEntry = {
   outputTokens?: number;
   reasoningTokens?: number;
   estimatedCostUsd?: number;
+  /**
+   * The resolved survivability tuning (ADR-0002 option C; defaults < env, per
+   * `resolveWorkspaceModelTuningFromEnv`) — the route does not receive
+   * `deps.tuning` per-call overrides, so this is exactly what the analysis
+   * wrapper used. `"omit"` means the corresponding key was not sent on the
+   * wire. Logged so a measurement series can read the configuration off the
+   * log line instead of inferring it from `reasoningTokens` (dogfood report
+   * §8.7.2).
+   */
+  reasoningEffort?: WorkspaceReasoningSetting;
+  providerSort?: WorkspaceProviderSortSetting;
   /** True when the attempt died on the stream stall window rather than the deadline (ADR-0002 C). */
   stallAborted?: boolean;
   /**
@@ -311,6 +331,14 @@ export function createWorkspaceReviewHandler(deps: WorkspaceReviewRouteDeps) {
 
   return async function handleWorkspaceReviewRequest(request: Request): Promise<Response> {
     const startedAt = now();
+    // The route never passes `deps.tuning` per-call overrides to `analyze`, so
+    // defaults < env is exactly what the analysis wrapper resolves and uses
+    // for this request (workspace-analysis.ts's own precedence). Resolved once,
+    // up front, purely for the log line — it does not affect the request in
+    // any way, and is attached to every log entry below, including ones
+    // emitted before the model call (e.g. auth/validation failures), because
+    // it is env-only and does not depend on anything the request supplies.
+    const resolvedTuning = { ...WORKSPACE_MODEL_TUNING_DEFAULTS, ...resolveWorkspaceModelTuningFromEnv() };
     const finish = (
       status: number,
       outcome: string,
@@ -318,7 +346,15 @@ export function createWorkspaceReviewHandler(deps: WorkspaceReviewRouteDeps) {
       entry: Partial<WorkspaceReviewLogEntry> = {},
       headers?: Record<string, string>,
     ) => {
-      log({ event: "workspace_review", outcome, status, durationMs: now() - startedAt, ...entry });
+      log({
+        event: "workspace_review",
+        outcome,
+        status,
+        durationMs: now() - startedAt,
+        reasoningEffort: resolvedTuning.reasoningEffort,
+        providerSort: resolvedTuning.providerSort,
+        ...entry,
+      });
       return errorResponse(status, body, headers);
     };
 
@@ -444,6 +480,8 @@ export function createWorkspaceReviewHandler(deps: WorkspaceReviewRouteDeps) {
         digestVerified: true,
         model,
         droppedByServerCaps: dropped,
+        reasoningEffort: resolvedTuning.reasoningEffort,
+        providerSort: resolvedTuning.providerSort,
       };
 
       // Steps 6–8 — the wrapper owns server-side redaction (spec §4.3) and the

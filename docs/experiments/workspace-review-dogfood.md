@@ -973,6 +973,268 @@ per-attempt delivery, two independent attempts would give ≈ 89% — but that i
 arithmetic projection, not a measurement, and it buys delivery by doubling spend
 and latency rather than by fixing the cause.
 
+## 8.7 TER-44 step 1b — Experiment A: effort `none` on the incumbent (measured 2026-08-26)
+
+**12 live submissions** against production `POST /api/workspace-reviews`
+(deployment `dpl_5GiJiTpJYF1phGMevA8aYHdt9goy`, main `dc6cf4d`), the same 12
+seeds × 1 repetition over the same TER-39 fixtures, concurrency 1, teed to disk
+as they arrived. Raw per-run record: `docs/experiments/ter44-step1b-runs.json`.
+
+The only change from §8.6 is one environment variable:
+`WORKSPACE_MODEL_REASONING_EFFORT=none`. Same model
+(`~deepseek/deepseek-v4-flash-latest`, served as `deepseek-v4-flash-0731`), same
+`provider.sort: "latency"`, same `require_parameters: true`, same streamed
+response with a 20 s stall window, same 120 s deadline. §8.6.7 named this as *"the
+one cheap experiment that could keep the incumbent"*; this is that experiment.
+
+**Verdict: PASS — both halves of the ADR-0002 gate are met for the first time.**
+
+### 8.7.1 Delivery and latency against the gate
+
+| | TER-44 step 1 (§8.6.1) | **Experiment A** | gate |
+| --- | --- | --- | --- |
+| delivery, server-side (200 logged) | 66.7% (8/12) | **91.7% (11/12)** | ≥ 80% |
+| delivery, caller-observed (review reached the CLI) | 58.3% (7/12) | **91.7% (11/12)** | — |
+| server `durationMs` min | 27,767 | **12,239** | — |
+| server `durationMs` **p50** | 56,627 | **28,381** | < 30,000 |
+| server `durationMs` max | 83,960 | **65,788** | — |
+
+p50 fell by **28.2 s (−50%)** and the fastest run by 15.5 s. The gate is met on
+the completed runs and also on the whole series: including the one failure at its
+logged `durationMs`, p50 is 29,386 ms — still under 30 s, so the result does not
+depend on which denominator is used.
+
+Server-side and caller-observed delivery are **the same number** this time. The
+client-side anomaly of §8.6.8 (CLI wall-clocks of 983 s and 381 s against server
+durations of 120 s and 71 s) did not recur: on all 12 runs the CLI wall-clock is
+server `durationMs` + 0.6–1.5 s. That is consistent with §8.6.8's reading of it
+as local event-loop starvation on the measuring machine rather than a product
+defect, and it remains unreproduced.
+
+Outcome breakdown (server-side):
+
+| Outcome | Count | Runs |
+| --- | --- | --- |
+| `ok` (200) | 11 | 01, 02, 04, 05, 06, 07, 08, 09, 10, 11, 12 |
+| `model_failure` (500) | 1 | 03 |
+| `workspace_review_timeout` (504) | **0** | — |
+
+**No run hit the deadline.** Every failure mode that dominated Phase B (24
+timeouts) and step 1 (3 timeouts) is absent. The collector was again not
+implicated: `digestVerified` true on all 12, `droppedByServerCaps` 0,
+`redactionApplied` 0, and **12/12 canary pre-flights CLEAN with zero leaks**.
+All 12 payload digests are byte-identical to the step-1 series where the seeds
+match, so the two series are comparable run-for-run.
+
+### 8.7.2 The reasoning bound took
+
+This is the finding §8.6.2 predicted and could not test.
+
+| | step 1 (`effort: "low"`) | Experiment A (`effort: "none"`) |
+| --- | --- | --- |
+| `reasoningTokens` per completed run | 884 – 2,600 (median 1,752) | **0 on all 11** |
+| reasoning share of output tokens | 67.3% mean | **0%** |
+
+`deepseek-v4-flash-0731` **does accept `effort: "none"`** — the model is not
+flagged `mandatory: true`, and the served endpoints honour the bound rather than
+mapping it to the nearest supported behaviour, which is what happened to `"low"`.
+Output tokens fell correspondingly: 652–2,139 here against 1,442–3,573 in step 1,
+on the same payloads.
+
+One caveat on how this is verified. The `WorkspaceReviewLogEntry` shape
+(`workspace-review-route.ts`) carries `model`, `provider`, token counts,
+`stallAborted` and `upstreamAborted` — but **not the tuning that produced them**.
+There is therefore no log field that says "effort none was sent". The evidence is
+indirect and twofold: `reasoningTokens: 0` on 11 of 11 completed runs where the
+identical payloads previously produced 884–2,600, and
+`resolveWorkspaceModelTuningFromEnv` raising `WorkspaceModelTuningConfigError`
+before the model call on any value outside the documented enum — so a deployment
+serving 200s at all proves the variable parsed as one of the accepted values. If
+a future series needs this stated rather than inferred, the log entry should
+carry the resolved tuning.
+
+### 8.7.3 The stall window still never fired, and the one failure is not a timeout
+
+`stallAborted` is **absent from all 12 log lines** for the third series running.
+The 20 s data-frame stall window has now not tripped once across 24 measured
+runs. §8.6.9 item 4 stands: there is no evidence of a silent-provider failure
+mode to tune for.
+
+Run 03-S03 failed as `model_failure` / 500 at `durationMs` 57,250 — and the new
+`upstreamAborted` field is **absent**, which is itself the result. The
+classification work of step 1b is doing its job: this was neither a deadline
+timeout (which would be 504 with `workspace_review_timeout`) nor a dropped
+connection (which would carry `upstreamAborted: true`). It is a plain provider
+failure — a non-OK HTTP status, a provider error frame, or a malformed/unparsable
+response. The `model` field logged the requested alias
+(`~deepseek/deepseek-v4-flash-latest`) rather than a served model id, so no
+provider was recorded and the attempt produced no usable response. **For the
+first time the timeout bucket is empty and the remaining failure is correctly
+attributed**, which is exactly what §8.6.9 item 2 asked for before any delivery
+number could be trusted.
+
+### 8.7.4 Provider routing, and a cost dispersion worth naming
+
+`provider.sort: "latency"` again produced a spread rather than determinism —
+**three distinct providers across eleven completed runs**:
+
+| provider | runs | `durationMs` p50 | measured $/M tokens |
+| --- | --- | --- | --- |
+| DeepInfra | 6 | 31,623 | **0.141** |
+| Cloudflare | 3 | 27,559 | **0.929** |
+| AkashML | 2 | 44,620 | 0.227 |
+
+The latency spread is unremarkable. The **price spread is not**: Cloudflare bills
+**6.6× DeepInfra per token for the identical model**, and the two most expensive
+runs of the series (06-S06 at $0.00260, 09-S09 at $0.00226) are Cloudflare runs
+that produced fewer tokens than cheaper DeepInfra runs. Sorting a 20-endpoint
+pool by latency selects on one axis and leaves the other unbounded. This is a
+second, independent argument for §8.6.9 item 3 — `provider.order` pinning becomes
+useful once the pool is small — and it is the first time the dogfood series has
+measured *provider* price dispersion rather than reasoning-token variance as the
+cost driver.
+
+### 8.7.5 Cost
+
+| | Phase B | step 1 | **Experiment A** |
+| --- | --- | --- | --- |
+| cost per completed review | $0.000797 | $0.000627 | **$0.000859** |
+| measured spend, completed runs | $0.011162 (14) | $0.005014 (8) | **$0.009448 (11)** |
+
+Per-review cost rose 37% over step 1 despite reasoning tokens going to zero. The
+increase is **entirely provider price dispersion, not tokens**: excluding the
+three Cloudflare runs, the other eight completed reviews average $0.000462, which
+is *cheaper* than step 1. Cost was never the constraint and still is not — the
+worst run in this series cost a quarter of a cent — but the driver has changed,
+and the fix for it is routing, not the reasoning bound.
+
+Measured `inputTokens` across the series is **582–1,040**, consistent with
+step 1's 582–1,039 and still 20–60× below §6.2's derived 20–60k estimate.
+
+### 8.7.6 Quality sanity on the completed runs
+
+90 findings across 11 completed reviews = **8.2 per review** (step 1: 5.1;
+Phase B: 6.2). Turning reasoning off made the reviewer *more* voluminous, not
+less. Most of the extra volume is repeated re-reporting of the `ordinary`
+fixture's pre-existing planted defects (the `src/db.ts` SQL injection, the
+`src/index.ts` off-by-one, the `src/config.ts` and `local-notes.txt` credential
+files), which §7.1 counts as `TP_extra` rather than false positives — but it does
+mean the seeded defect is now one finding among eight or twelve rather than one
+among five.
+
+| id | seeded defect reported? |
+| --- | --- |
+| S01 | **TP** — `src/pagination.ts:10`, slice returns one element too many |
+| S02 | **TP** — `src/profile.ts:10`, null dereference on optional `user` |
+| S03 | **not measured** — `model_failure`, no review returned |
+| S04 | **TP (weak)** — `src/audit.ts:6`; landed on the right line and its suggested fix adds the missing `await`, but the explanation frames the defect as write-before-delete ordering rather than the unawaited promise |
+| S05 | **TP** — `src/sync.ts:9`, "errors from `remote.push` are silently swallowed" |
+| S06 | **TP** — `src/admin.ts:7`, impersonation bypasses the ownership check |
+| S07 | **TP** — `app/reports.py:8`, file handle leak |
+| S08 | **FN** — landed on `src/http.ts:8` but reported an attempt-count off-by-one (`attempts+1` requests); the seeded defect is retrying a non-idempotent POST with no backoff and no 4xx exclusion |
+| S09 | **TP** — `src/cache.ts:5`, "`cacheOnce` has a TOCTOU race condition", named explicitly |
+| S10 | **TP** — `src/download.ts:8`, path traversal, graded `blocking` |
+| S11 | **TP** — `app/hashing.py:5`, unsalted MD5, graded `blocking` |
+| S12 | **PASS** — negative control clean; 9 findings, **none against `src/control.ts`** |
+
+```
+seeds measured                     11  (all but S03)
+TP                                 10  (9 unambiguous + S04 weak)
+FN                                  1  (S08)
+recall (per measured seed)       = 10 / 11 = 90.9%   (9/11 = 81.8% if S04 is scored FN)
+negative control S12             = PASS
+```
+
+Three things are genuinely new here rather than noise.
+
+**S05 completed for the first time.** It was 0-for-4 in Phase B and 0-for-1 in
+step 1 — 0-for-5 across both series, and §8.6.8 listed it as unmeasured. It
+completed here in 34.9 s and the seeded swallowed-error was reported. **S06 and
+S03's sibling S01/S02 also completed**, so 11 of 12 seeds now have a measured
+adjudication against 6 in step 1. The recall figure rests on a denominator nearly
+twice as large.
+
+**S09 flipped back to TP.** It was a clean TP in Phase B, an FN in step 1, and a
+TP again here — naming the TOCTOU race explicitly. That is the run-to-run
+instability of §8.5.3 visible in the recall column across three series, and it is
+a reason to treat any single-repetition recall number, including this one, as a
+signal rather than a benchmark.
+
+**S08 is an FN for the second series running**, and in both cases the reviewer
+landed on the right file and line while describing a different problem. Two
+independent misses on the same seed with the same failure shape is the one place
+in this table where the evidence points at the reviewer rather than at variance.
+
+Severity is better calibrated than step 1 on the security seeds — path traversal
+and weak hashing both `blocking` — but the S06 auth bypass came back `warning`,
+the same miscalibration Phase B recorded for that seed. TER-45 (output contract)
+remains the fix.
+
+**Language drift did not recur: 11/11 completed reviews were in English.**
+Combined with step 1's 8/8, that is 19 consecutive English reviews since Phase
+B's 1-in-14 Chinese review. Still weak evidence at this n, and still TER-45's job
+to guarantee rather than observe.
+
+### 8.7.7 What this series did not measure
+
+- **S03** — the one failed run; unmeasured, not a miss.
+- **Repetitions** — 1 per seed, as before. Every §8.7.6 number rests on a single
+  run, and §8.5.3 has already shown byte-identical payloads returning different
+  reviews.
+- **`tablet-notes-v3`, `--all`, real repositories** — not submitted; egress for
+  this series was fixtures only. The payload-size ceiling that killed every run
+  above 10 KB in Phase B is **untested under this configuration**; every payload
+  here was 2.0–4.9 KB.
+- **§7.2 generic-agent baseline** — still unrun. Every quality figure here
+  remains un-baselined.
+- **Whether `effort: "none"` is stable across providers.** Three providers served
+  these 11 runs and all three returned `reasoningTokens: 0`, but a fourth
+  endpoint from the 20-wide pool could behave differently, and the pool is not
+  pinned.
+- **Experiment B** (`mistralai/mistral-small-3.2-24b-instruct`, reasoning
+  `omit`) — not run. Experiment A passing the gate makes it optional rather than
+  necessary; see §8.7.8.
+- **The series was interrupted.** The driver was killed during its hourly-gate
+  sleep after run 09; runs 10–12 were resumed from the same fixtures, patches and
+  wrapper ~54 minutes later, which is why they fall in a second gate window.
+  Nothing about the runs themselves differs — same script path, same
+  canary pre-flight, same dry-run digest record — but 10–12 sample a different
+  hour, and §8.5.1 showed availability moving by the hour.
+
+### 8.7.8 What this means for ADR-0002
+
+The ADR's step 1 says: *"Adopt if delivery ≥ 80% and p50 < 30 s; otherwise switch
+model within the same price class and re-measure."* Experiment A meets both
+conditions on the incumbent, at one environment variable's cost and with no code
+change. On the measurements:
+
+1. **The incumbent is retained.** The §8.6.7 model-switch shortlist
+   (`mistral-small-3.2-24b-instruct` and the other three non-reasoning
+   candidates) is not needed to clear the gate, and switching would re-open
+   recall, precision, severity and language, none of which are baselined. Keeping
+   the model keeps the 19-review English streak and the seeded-defect history
+   comparable.
+2. **`effort: "none"` should become the default, not an env override.**
+   `WORKSPACE_MODEL_TUNING_DEFAULTS.reasoningEffort` is still `"low"`, which
+   §8.6.2 measured as ineffective on this model. Leaving the working value only
+   in a Vercel environment variable means the repository's default disagrees with
+   production — the exact "two silent versions of the truth" the ADR set out to
+   avoid. This is a medium-impact model-configuration decision and belongs in
+   `DECISIONS.md`.
+3. **Step 2 (bounded retry) is no longer load-bearing for delivery**, though it is
+   still the ADR's accepted plan. At 91.7% per-attempt delivery, a second attempt
+   projects to ≈ 99% — but it also doubles worst-case latency against a p50 that
+   now has real headroom under the deadline. Whether the marginal 8 points are
+   worth that is a product call, not a measurement, and it should be made
+   deliberately rather than executed because the ADR listed it.
+4. **`provider.order` pinning is now the strongest remaining lever**, and §8.7.4
+   gives it a second justification the ADR did not have: a 6.6× per-token price
+   spread across providers of the same model, on top of the latency spread.
+5. **The size ceiling is the biggest untested risk.** Every payload in this
+   series was under 5 KB. Phase B's hard finding — 0-for-4 on 43 KB, 0-for-2 on
+   30 KB — has never been retested, and a 91.7% delivery rate on 5 KB fixtures
+   does not license any claim about a real repository.
+
 ## 9. Recommendation
 
 **REVISE.** Not continue, not stop.

@@ -913,4 +913,37 @@ describe("survivability log fields (ADR-0002 option C)", () => {
     expect(logs[0].outcome).toBe("workspace_review_timeout");
     expect(logs[0].upstreamAborted).toBeUndefined();
   });
+
+  // D-20260826-0500-workspace-review-reasoning-none: the route logs the
+  // resolved tuning (defaults < env — see workspace-analysis.ts) so a
+  // measurement series can read the configuration off the log line instead of
+  // inferring it from `reasoningTokens` (dogfood report §8.7.2).
+  it("logs the resolved reasoningEffort and providerSort defaults on a completed review", async () => {
+    const { deps, logs } = makeDeps();
+    await createWorkspaceReviewHandler(deps)(buildRequest());
+    expect(logs[0]).toMatchObject({ reasoningEffort: "none", providerSort: "latency" });
+  });
+
+  it("logs the env override of WORKSPACE_MODEL_REASONING_EFFORT rather than the code default", async () => {
+    vi.stubEnv("WORKSPACE_MODEL_REASONING_EFFORT", "high");
+    vi.stubEnv("WORKSPACE_MODEL_PROVIDER_SORT", "price");
+    try {
+      const { deps, logs } = makeDeps();
+      await createWorkspaceReviewHandler(deps)(buildRequest());
+      expect(logs[0]).toMatchObject({ reasoningEffort: "high", providerSort: "price" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("logs the resolved tuning on a non-ok outcome too (rejected before the model call)", async () => {
+    vi.stubEnv("WORKSPACE_MODEL_REASONING_EFFORT", "omit");
+    try {
+      const { deps, logs } = makeDeps();
+      await createWorkspaceReviewHandler(deps)(buildRequest({ token: "wrong-token" }));
+      expect(logs[0]).toMatchObject({ outcome: "unauthorized:token_mismatch", reasoningEffort: "omit" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });

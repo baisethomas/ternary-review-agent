@@ -430,9 +430,13 @@ describe("workspace model request parameters (ADR-0002 option C)", () => {
     vi.unstubAllEnvs();
   });
 
-  it("defaults to a bounded reasoning budget, latency-sorted routing, and a 20s stall window", () => {
+  // Default is "none", not "low" (D-20260826-0500-workspace-review-reasoning-none):
+  // §8.7 measured "low" as a silent no-op on the incumbent model and "none" as
+  // the value that cleared the ADR-0002 delivery gate. Changed by decision, not
+  // by accident — see WORKSPACE_MODEL_TUNING_DEFAULTS's doc comment.
+  it("defaults to a bounded reasoning budget (none, per §8.7), latency-sorted routing, and a 20s stall window", () => {
     expect(WORKSPACE_MODEL_TUNING_DEFAULTS).toEqual({
-      reasoningEffort: "low",
+      reasoningEffort: "none",
       providerSort: "latency",
       stream: true,
       stallTimeoutMs: 20_000,
@@ -450,7 +454,7 @@ describe("workspace model request parameters (ADR-0002 option C)", () => {
       tuning: WORKSPACE_MODEL_TUNING_DEFAULTS,
     });
 
-    expect(body.reasoning).toEqual({ effort: "low" });
+    expect(body.reasoning).toEqual({ effort: "none" });
     // require_parameters must survive: the request uses a strict json_schema.
     expect(body.provider).toEqual({ require_parameters: true, sort: "latency" });
     expect(body.stream).toBe(true);
@@ -515,7 +519,7 @@ describe("workspace model request parameters (ADR-0002 option C)", () => {
       tuning: { ...WORKSPACE_MODEL_TUNING_DEFAULTS, providerSort: "omit" },
     });
     expect(body.provider).toEqual({ require_parameters: true });
-    expect(body.reasoning).toEqual({ effort: "low" });
+    expect(body.reasoning).toEqual({ effort: "none" });
   });
 });
 

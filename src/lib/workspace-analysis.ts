@@ -174,8 +174,20 @@ export type WorkspaceModelTuning = {
   stallTimeoutMs: number;
 };
 
+/**
+ * Default reasoning effort is `"none"`, not `"low"` (changed 2026-08-26,
+ * D-20260826-0500-workspace-review-reasoning-none). §8.6.2 measured `"low"`
+ * as a no-op on the incumbent `deepseek/deepseek-v4-flash` — the model
+ * silently ignored the bound and kept reasoning at 884–2,600 tokens per
+ * call. TER-44 step 1b Experiment A (dogfood report §8.7) then measured
+ * `effort: "none"` against the same fixtures: `reasoningTokens: 0` on 11 of
+ * 11 completed runs, 91.7% delivery, p50 28.4 s — clearing the ADR-0002
+ * survivability gate for the first time. This promotes that env-only
+ * measurement to the repository default; `WORKSPACE_MODEL_REASONING_EFFORT`
+ * still overrides it per `resolveWorkspaceModelTuningFromEnv` below.
+ */
 export const WORKSPACE_MODEL_TUNING_DEFAULTS: WorkspaceModelTuning = {
-  reasoningEffort: "low",
+  reasoningEffort: "none",
   providerSort: "latency",
   stream: true,
   stallTimeoutMs: 20_000,
