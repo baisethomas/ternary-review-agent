@@ -8,7 +8,15 @@ Ship the Workspace Review (CLI) initiative — Linear project "Workspace Review 
 
 ## Current phase
 
-TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call survivability per ADR-0002 (accepted, option "C then B"), with TER-45 (output contract) queued behind it. **TER-44 step 1b Experiment A cleared the ADR-0002 gate on 2026-08-26** (§8.7) — the survivability question is answered. Step 1b's default promotion landed (D-20260826-0500-workspace-review-reasoning-none). **This branch implements TER-44 step 2 — ADR-0002 option B, bounded retry — code and contract docs only; it is unmeasured.**
+TER-39 closed 2026-08-25 (owner accepted **REVISE**). TER-44 (model-call
+survivability per ADR-0002, accepted option "C then B") is now **implemented and
+measured through step 2**; TER-45 (output contract) is queued behind it. Step 2 —
+bounded retry — merged as main `59a0b05` (#46) and was measured live on
+2026-08-26: **14/14 delivered, and zero retries fired**, so the mechanism itself
+produced no evidence about itself. The headline result of the series is not the
+retry: it is that **`todo-app --all` (30 KB) delivered 2-for-2** after going
+0-for-2 in Phase B, which retires the payload-size ceiling as the project's
+biggest untested risk at that size.
 
 ## Completed
 
@@ -16,28 +24,62 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 - TER-39 Phase A offline measurement (#36, main `7ab64c7`): `docs/experiments/workspace-review-dogfood.md`, fixtures `cli/scripts/dogfood-fixtures.sh`, harness `cli/scripts/dogfood-measure.ts`, 12 seeded-defect patches in `docs/experiments/seeds/`. All five target classes captured; secret canaries 8/8 excluded.
 - TER-39 Phase B live measurement (2026-08-25): 45 live submissions, results in `docs/experiments/workspace-review-dogfood.md` §8.5 + `docs/experiments/phase-b-runs.json`. **Delivery rate 31%** (14 ok / 24 timeout / 7 model_failure); recall 10/10 measured seeds, precision 90.9%, S12 control passed 2/2; measured cost $0.000797 per completed review. §9 recommendation: **REVISE**.
 - Ratchet `793fbcb` adapted: `AGENTS.md` canonical contract, thin `CLAUDE.md`, `.ratchet/` memory (#37, main `50030f7`).
+- TER-44 step 2 measurement (2026-08-26, ADR-0002 sequence item 3, partial): 14 live submissions against production `dpl_FPryknWTbnVHHdGo4qn2XBoaRjGf`. Results in `docs/experiments/workspace-review-dogfood.md` §8.8 + `docs/experiments/ter44-step2-runs.json`. **Delivery 100% (14/14) per request and per attempt; `attempts` is 1 on all 14 log lines.** All 12 seeds adjudicated for the first time (recall 12/12, S12 control PASS, 14/14 English); `todo-app --all` 2-for-2 at 30,455 bytes.
 - TER-44 step 1 (spike C, #42, main `f922654`) and step 1b (env-tunable tuning + abort/timeout separation, #44, main `dc6cf4d`), both merged and deployed.
 - Redis-quota + build fix (#38, main `ccb0138`): dashboard poll 30 s, guarded watched-repo read, `cli/scripts` excluded from root tsconfig. Vercel plan is Pro since 2026-08-25 (D-20260825-0400).
 
 ## Working on
 
-- **TER-44 step 2 — bounded retry (ADR-0002 option B), implemented on `baise/ter-44-step2-bounded-retry`, NOT measured.** `analyzeWorkspaceReview` now makes **at most two** attempts against the **same model**. The second runs only when attempt 1 failed a delivery-shaped failure (stall, dead connection, truncated stream, malformed SSE frame, attempt-budget expiry, provider error frame, retryable HTTP status, or a schema-invalid answer) **and** a full 80 s attempt budget plus the 15 s assembly reserve still fits before the deadline; it is routed away from the failed provider with OpenRouter `provider.ignore` (verified against the provider-routing docs) when attempt 1 named one. 401/400/413, an invalid tuning env, and the end-to-end deadline are never retried.
-- **Deadline moved to 180 000 ms**, with the attempt budget, assembly reserve, max attempts and gate TTL now living together in `src/lib/review-invocation-limits.ts` (single source of truth). Gate concurrency TTL 150 s → **210 s**; CLI `DEFAULT_TIMEOUT_MS` 130 s → **190 s**. `src/app/api/**` untouched (`maxDuration = 300` already had headroom) and the `workspace-review/1` payload schema and CLI error-code set are unchanged.
-- **Observability:** the log line gains `attempts` (1|2), `retryReason`, `retrySkipped` (`insufficient_budget`), `attempt1Provider`/`attempt2Provider`; `WorkspaceReviewResult.ai` gains the same fields additively. One request still consumes exactly one rate-limit slot — the gate bounds invocations at twice its size.
-- Two shape choices recorded as **D-20260826-0600-workspace-review-bounded-retry**: schema-invalid answers are retryable, and the 80 s cap binds only while a retry is still possible (the final attempt is bounded by the deadline, so the contract's deterministic 504 stays reachable).
-- Contract docs amended in the same change: `docs/workspace-review-spec.md` §1 decision 6 + §6, `docs/workspace-review-endpoint.md` §1/§3/§4 step 7/§4 step 10/§5/§6. No measurement sections added — ADR-0002 sequence item 3 (the seeded re-run under two attempts) is still outstanding.
+- **Nothing in flight.** TER-44 step 2 is merged (main `59a0b05`) and now
+  measured. This change is docs-only: §8.8 of the dogfood report,
+  `docs/experiments/ter44-step2-runs.json`, and this file. No source touched, no
+  `src/app/api/**` change.
+- **What the measurement actually says.** Delivery cleared the ADR gate outright
+  (100% against ≥ 80%). The p50 half **splits on the denominator**: 29,652 ms
+  across all 14 submissions (PASS) but **32,364 ms across the 12 seeded fixture
+  runs** (FAIL), and the fixture subset is the like-for-like comparison against
+  Experiment A's 28,381 ms. p50 rose ~4 s on byte-identical payloads with no
+  retries to blame it on.
+- **The retry path is unexercised in production.** No second attempt ran, so
+  `retryReason`, `retrySkipped` and `attempt2Provider` never appeared, and the
+  180 s deadline, the 80 s attempt budget, the insufficient-budget guard, the
+  `provider.ignore` routing and the 190 s CLI timeout are all unmeasured live.
+  The slowest attempt took 48.1 s — 27% of the deadline. PR #46's step-2 code
+  remains verified by unit tests only. Nothing misbehaved; nothing was tested.
+- **Provider routing, not retry, is now the whole latency story.** Four providers
+  served the series and the mix moved by gate window: window 1 was
+  DeepInfra-dominated at a 37.7 s p50, window 2 was entirely Reka at a 4.2 s p50
+  — a 10× gap on the same model, same payloads, same tuning. Third consecutive
+  series in which `provider.sort: "latency"` failed to produce determinism.
 
 ## Next
 
-1. ~~Make `effort: "none"` the repository default (medium-impact → `DECISIONS.md`).~~ **Done, this PR** (D-20260826-0500-workspace-review-reasoning-none): `WORKSPACE_MODEL_TUNING_DEFAULTS.reasoningEffort` is now `"none"`, matching production. The repo default and production no longer disagree.
-2. ~~Decide whether step 2 (bounded retry, B) is still wanted.~~ **Implemented on this branch, unmeasured.** The open item is now the measurement: re-run the seeded series under two attempts (ADR-0002 sequence item 3) and confirm the ~8-point delivery gain is real before treating 180 s / two attempts as the settled shape.
-3. **`provider.order` pinning** is now the strongest remaining lever, on latency *and* on the 6.6× price spread (§8.7.4).
-4. **Retest the payload-size ceiling.** Every payload in this series was 2.0–4.9 KB. Phase B's 0-for-4 on 43 KB and 0-for-2 on 30 KB has never been retested, and 91.7% on 5 KB fixtures licenses no claim about a real repository. This is now the biggest untested risk.
-5. **Experiment B** (`OPENROUTER_MODEL=mistralai/mistral-small-3.2-24b-instruct`, `WORKSPACE_MODEL_REASONING_EFFORT=omit`) is **optional, not required** — Experiment A cleared the gate on the incumbent. Running it would re-open recall, precision, severity and language, none of which are baselined. Only worth it if the owner wants a cheaper/more deterministic 3-endpoint pool.
-6. ~~Add the resolved tuning to `WorkspaceReviewLogEntry`.~~ **Done, this PR**: `reasoningEffort`/`providerSort` (resolved, `"omit"` when unsent) are on every Workspace Review log line.
-7. TER-45: pin the output contract (English, severity calibration, validation). 19 consecutive English reviews across step 1 + Experiment A is weak evidence, not a fix; S06's auth bypass still came back `warning`.
-8. Re-run the seeded suite incl. `tablet-notes-v3`, `--all`; then the §7.2 generic-agent baseline, still unrun.
-9. TER-43 (snapshot truncation) stays deprioritised until `--all` delivers at all; then TER-42, TER-33; TER-18/TER-13 later.
+1. **`provider.order` pinning** is the strongest remaining lever, now on three
+   independent grounds: the 10× latency spread of §8.8.2, the 6.6× price spread
+   of §8.7.4, and the fact that delivery no longer needs fixing. This is the
+   obvious next ticket.
+2. **Decide what to do about the unexercised retry.** Two clean series in a row
+   means the failure mode option B was built for is not currently reproducible in
+   production. Either (a) accept it as cheap insurance and say so explicitly, or
+   (b) exercise it deliberately (a fault-injection env or a preview deployment
+   pointed at a slow provider) so the path has live evidence before it is relied
+   on. Do not let "delivery is 100%" stand in as proof the retry works.
+3. **`tablet-notes-v3` (43 KB) is now the only untested payload size.** 30 KB
+   passed 2-for-2; 43 KB remains 0-for-4 from Phase B and was deliberately not
+   submitted this series. It is the last surviving evidence for a size ceiling.
+4. **Repetitions on the seeds.** Still 1 per seed. The two `--all` repetitions
+   disagreed on which issue leads, on byte-identical bytes — §8.5.3 instability,
+   now observed on a real repository. Any single-repetition recall number,
+   including this series' 12/12, is a signal and not a benchmark.
+5. **§7.2 generic-agent baseline** — still unrun. Every quality figure in §8.5
+   through §8.8 remains un-baselined.
+6. TER-45 (output contract): pin English, severity calibration, validation. 33
+   consecutive English reviews is weak evidence, not a fix. Severity moved in
+   **both** directions this series — S06's auth bypass finally graded `blocking`,
+   S11's unsalted MD5 regressed to `warning` on identical bytes.
+7. TER-43 (snapshot truncation) can be reassessed: `droppedByServerCaps` was 0 on
+   both `--all` runs, so the 400,000-byte cap did not bind on this repository.
+   Then TER-42, TER-33; TER-18/TER-13 later.
 
 ## Blocked
 
@@ -53,6 +95,7 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 
 ## Verification status
 
+- **TER-44 step 2 measurement (2026-08-26), RAN live:** 14 live submissions against production `dpl_FPryknWTbnVHHdGo4qn2XBoaRjGf` (main `59a0b05`) — 12 seeded fixture runs plus 2 `todo-app --all` repetitions. **14/14 `ok`, 0 timeouts, 0 model failures, `attempts: 1` on all 14.** Every run matched to its server log line by `requestBytes` (the two `--all` runs share a byte count and were disambiguated by timestamp order) and cross-checked against the CLI output. 14/14 canary pre-flights CLEAN, `digestVerified` true 14/14, `droppedByServerCaps` 0. The CLI was rebuilt before the series and `cli/dist/transmit.js` was read back to confirm `DEFAULT_TIMEOUT_MS = 190_000`. `reasoningEffort: "none"` and `providerSort: "latency"` were **read off every log line**, not inferred. `npm run lint` clean after the docs edits. **Not verified:** the retry path itself (zero second attempts), 43 KB payloads, seed repetitions, the §7.2 baseline, and per-finding precision.
 - **TER-44 step 1b Experiment A (2026-08-26), RAN live:** 12 live submissions against production `dpl_5GiJiTpJYF1phGMevA8aYHdt9goy`; 11 ok / 1 `model_failure` / 0 timeouts; every run matched to its server log line by `requestBytes` (all 12 distinct) and cross-checked against the CLI output. 12/12 canary pre-flights CLEAN. `npm run lint` clean after the docs edits. **Not verified:** any payload above 5 KB, any repetition, the §7.2 baseline, and whether `effort: "none"` holds on the 17 endpoints of the pool that did not serve these runs.
 - **PR #44 (TER-44 step 1b), merged as main `dc6cf4d`. Previously RAN locally:** `npm run lint` exit 0, clean. `npx vitest run --dir src src/lib/workspace-analysis.test.ts src/lib/workspace-review-route.test.ts` → **118 passed** (analysis 60, route 58). `npx vitest run --dir src` → **637 passed / 9 skipped, 80 files**. `npm run build` green, all 17 routes compiled. (`--dir src` excludes the stale copies under `.claude/worktrees/`, which a root-level run also picks up.) Both behaviour fixes passed reproduce-revert-restore: reverting the abort classification failed 2 tests, reverting the undici message set failed 5. Nothing about live OpenRouter behaviour is verified here — the model experiments are the next measurement, not this PR.
 - TER-39 Phase B (2026-08-25): offline canary baseline re-run green (8/8 clean, exit 0); 45/45 live pre-flights CLEAN, zero canary leaks; `npm run lint` green after the docs edits. The `capture.test.ts` timeout change was verified by `npx vitest run cli/src/capture.test.ts` (17 files / 757 tests passed) plus Ternary's sandbox `test` check on PR #40; the full root suite was not re-run locally for this PR.
@@ -61,7 +104,10 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 
 ## Open risks / assumptions
 
-- Phase-B quality numbers are **un-baselined** (§7.2 never ran) and rest on 14 completed reviews, one repeated seed, one real repository. Read recall as "not obviously broken", not as an accuracy figure.
+- **Bounded retry (ADR-0002 option B) is installed and unproven.** Zero second attempts across 14 live requests, so the retry, the 180 s deadline, the 80 s attempt budget, the budget guard and the `provider.ignore` routing have no live evidence. Do not cite §8.8's 100% delivery as proof the mechanism works.
+- **Latency is now governed by provider selection, not by the model.** §8.8.2 measured a 10× p50 gap between gate windows (DeepInfra 37.7 s vs Reka 4.2 s) on the same model and payloads. The ADR's `p50 < 30 s` gate consequently passes or fails depending on which hour and which denominator you use.
+- **The payload-size ceiling is half-retired.** 30 KB (`todo-app --all`) now delivers 2-for-2; 43 KB (`tablet-notes-v3`) is still 0-for-4 from Phase B and untested since. Do not generalise the 30 KB result upward.
+- Quality numbers remain **un-baselined** (§7.2 never ran) across all four series. §8.8 reports recall 12/12 — the first series in which every seed returned a review — but on one repetition each, and it rests on scoring S04 and S08 as weak TPs (10/12 = 83.3% if both are scored FN). Read recall as "not obviously broken", not as an accuracy figure.
 - Precision (90.9%) is the least trustworthy number in the report: the `ordinary` fixture's baseline is dense with genuine defects, so §7.1 routes most findings to `TP_extra` rather than FP.
 - OpenRouter per-token price varies by **provider**, not just by run: §8.7.4 measured a 6.6× gap across three providers serving the same model in one series. Phase B's unexplained 5× output-token cost variance is now resolved into two causes — unreported reasoning tokens (fixed by `effort: "none"`) and provider price dispersion (open; needs `provider.order`). Measured per-review spend is still the number to plan with.
 - Greptile comparison pricing must still be supplied by the human; placeholder remains in §6.4.
@@ -73,10 +119,19 @@ TER-39 closed 2026-08-25 (owner accepted **REVISE**). Now TER-44: model-call sur
 
 ## Last handoff
 
-- Updated: 2026-08-26 (TER-44 step 2 — bounded retry implemented; unmeasured)
+- Updated: 2026-08-26 (TER-44 step 2 measured; §8.8 written)
 - By: agent (Claude Code)
-- Branch: `baise/ter-44-step2-bounded-retry` off main `003c7c1`. Uncommitted working tree: `src/lib/review-invocation-limits.ts` (+test), `src/lib/workspace-analysis.ts` (+test), `src/lib/workspace-review-route.ts` (+test), `src/lib/workspace-review-gate.ts` (+test), `src/lib/workspace-review-types.ts`, `cli/src/transmit.ts` (+test), `docs/workspace-review-spec.md`, `docs/workspace-review-endpoint.md`, `.ratchet/DECISIONS.md`, this file. **No `src/app/api/**` change, no payload-schema change, no CLI error-code change.** A separate Git agent commits.
-- Three deadline tests that used short REAL timers (route `deterministic timeout`, analysis `still calls it a timeout when our own deadline aborted the connection` and `still reports the deadline race as a timeout`) were rewritten onto `vi.useFakeTimers` + `advanceTimersByTimeAsync`. With a real 1.1–1.2 s deadline the request's own setup (auth, bounded body read, digest, validation) could push the remainder under `MIN_OPENROUTER_TIMEOUT_MS`, so the wrapper failed fast without ever calling the model — a 504 for the wrong reason, failing ~1 run in 3. The route test now exercises the real 180 s deadline. Test-only change; both still fail under a targeted revert.
-- Verified locally: `npm run lint` clean; `npx vitest run --exclude '**/.claude/**'` over the four touched suites → 165 passed (analysis 72, route 68, gate 17, limits 8); `cd cli && npm test` → 237 passed; `npm run build` green. Seven reproduce-revert-restore checks ran (max attempts, `provider.ignore`, budget guard, schema-invalid retry, attempt cap, deadline constant, CLI timeout) — each failed the tests it should and passed again on restore.
-- **Not verified:** anything about live OpenRouter behaviour under two attempts. Delivery, latency, and spend under the retry are unmeasured; the deployed numbers in §8.7 are single-attempt.
-- Stale `.claude/worktrees/` copies still get picked up by a bare `vitest run` and now fail the route module-graph test (it reads the ROOT source via `process.cwd()` and compares it against each worktree's own expected import list). Deleting them is a hard stop, so they are left for the human; use `--exclude '**/.claude/**'` (or `--dir src`) for a clean signal. (The load-flaky deadline tests noted earlier are fixed — see above.)
+- Branch: `main` at `59a0b05`. Uncommitted working tree from this measurement:
+  `docs/experiments/workspace-review-dogfood.md` (new §8.8),
+  `docs/experiments/ter44-step2-runs.json` (new), this file. **Docs only — no
+  source, no `src/app/api/**`, no schema change.** A separate Git agent commits.
+- Series artefacts (scratchpad, not committed): per-run CLI transcripts, dry-run
+  digest records, canary JSON, joined server-log record. The seeded fixtures were
+  patch-reverted after every run and re-checked clean at the end; the detached
+  `todo-app` scratch worktree was removed and `git worktree list` confirms only
+  the main checkout remains.
+- **The one thing a fresh agent should not misread:** 100% delivery is *not*
+  evidence that bounded retry works. Zero retries fired. Delivery was already
+  91.7% single-attempt in Experiment A on the same tuning, and the one failure
+  there (S03) completed here on attempt 1 unaided. Treat option B as installed
+  and unproven.
