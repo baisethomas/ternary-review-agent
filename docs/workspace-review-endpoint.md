@@ -6,7 +6,7 @@ Scope: the synchronous internal Workspace Review endpoint, its authentication, l
 ## 1. Route
 
 - `POST /api/workspace-reviews` — one new route file: `src/app/api/workspace-reviews/route.ts`.
-- `export const maxDuration = 300` (platform ceiling); the enforced end-to-end deadline is **120,000 ms** (spec §6), leaving headroom so the platform never kills us mid-flight.
+- `export const maxDuration = 300` (platform ceiling); the enforced end-to-end deadline is **180,000 ms** per spec §6 as amended by ADR-0002 (**currently 120,000 ms** in the deployed route until TER-44 step 2 lands), leaving headroom so the platform never kills us mid-flight.
 - No other public API route changes. The route is a thin shell: parse → validate → delegate to `src/lib` modules (each with sibling tests), mirroring how `reviews/run` delegates to `internal-review-service`.
 
 ## 2. Authentication (alpha-simple, per spec)
@@ -30,7 +30,7 @@ Scope: the synchronous internal Workspace Review endpoint, its authentication, l
 4. Validate the versioned canonical payload: `schemaVersion` must be `"workspace-review/1"` (else 400 naming accepted versions); full strict schema validation (unknown fields rejected, enums exact, integers only) against the same rules the CLI applies — shared fixtures (`cli/fixtures/*.payload.json` + canonical bytes + digests) are the conformance suite for **both** sides. Verify the transported digest header (`X-Ternary-Payload-Digest`) matches SHA-256 of the received bytes → 422 on mismatch.
 5. Enforce server-owned limits and effective policy (spec §4.4 table). Client-requested values are capped or overridden; they can never raise: model, token budget (4,096 max output tokens), context size, finding count (50), finding text lengths, severity behavior, deadline.
 6. Apply server-side `redactSecrets` to all inbound text as defense in depth (already implemented at the analysis wrapper boundary — the route adds nothing but must not bypass it).
-7. Run analysis via `analyzeWorkspaceReview` (the Phase 3 wrapper): **single model attempt, no fallback chain**, deadline abort, deterministic timeout.
+7. Run analysis via `analyzeWorkspaceReview` (the Phase 3 wrapper): **at most two attempts, same model family, no cross-vendor fallback chain** (ADR-0002), each streamed with stall detection, bounded reasoning, and deterministic provider routing; deadline abort, deterministic timeout. Every request consumes one rate-limit slot regardless of outcome — with two attempts that bounds model invocations at twice the gate. *Rollout: the deployed route still makes one non-streamed attempt; streaming/stall detection/reasoning bound/provider routing are TER-44 step 1 (PR #42, unmerged), the second attempt is step 2.*
 8. Validate every returned finding against the submitted manifest (already implemented in the wrapper: normalize, reject absolute/traversal, drop-and-count unknown paths).
 9. Return the bounded advisory result (below).
 10. Logging: request metadata only (timing, byte sizes, model, token counts, cost, verdict, dropped/redaction counters). **Never** source, context, prompts containing source, payload bytes, or credentials.
@@ -39,7 +39,7 @@ Scope: the synchronous internal Workspace Review endpoint, its authentication, l
 
 - `202`-style semantics are wrong here (nothing is queued); success is **200** with the advisory result:
   `{ verdict: "pass" | "findings", summary, findings[], evidence[], ai?, redactionApplied, droppedFindings }` — the existing `WorkspaceReviewResult` shape, text fields bounded per §4.4.
-- **Timeout:** deterministic **504** `{ error: "workspace_review_timeout", deadlineMs: 120000 }` after the in-flight model request is aborted. Never a platform kill, never a hang.
+- **Timeout:** deterministic **504** `{ error: "workspace_review_timeout", deadlineMs: <deadline> }` after the in-flight model request is aborted (`deadlineMs` is 120000 today, 180000 once TER-44 step 2 lands). Never a platform kill, never a hang.
 - All errors are structured `{ error: <stable_code>, ... }`; codes: `unauthorized`, `unsupported_encoding`, `payload_too_large` (`reason`, `maxBytes`), `unsupported_schema_version` (`acceptedVersions`), `invalid_payload` (`field`, `message` — flat on the body, not nested; there is no `file` key), `digest_mismatch` (`reason`), `rate_limited` / `concurrency_ceiling` (`retryAfterSeconds`, plus a standard `Retry-After` response header), `workspace_review_timeout` (`deadlineMs`), `model_failure` (`message`), `gate_unavailable`. This is the exact set the CLI's `mapErrorResponse` (`cli/src/transmit.ts`) switches on; anything else maps to its `unexpected_status` fallback rather than crashing. The CLI also carries its own transport-local codes that never come from the server: `client_timeout`, `aborted` (a local SIGINT/interrupt, mapped distinctly from `client_timeout` so it is never reported as a server-caused timeout), `network_error`, `malformed_response`, `unexpected_status`, `usage_missing_endpoint`, `usage_missing_token`.
 - **No persistence, no idempotency** (spec §5): no ledger rows, no queue jobs, no `Idempotency-Key` semantics. An identical resubmission performs and bills a fresh model call.
 
