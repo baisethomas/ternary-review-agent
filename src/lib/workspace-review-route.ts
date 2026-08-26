@@ -14,7 +14,7 @@
 import { NonRetryableReviewError } from "./review-errors";
 import type { ReviewSeverity } from "./review-policy";
 import { WORKSPACE_MAX_FINDINGS } from "./workspace-review-prompts";
-import { WorkspaceModelStallError, WorkspaceReviewTimeoutError, analyzeWorkspaceReview } from "./workspace-analysis";
+import { WorkspaceModelConnectionError, WorkspaceModelStallError, WorkspaceReviewTimeoutError, analyzeWorkspaceReview } from "./workspace-analysis";
 import {
   MAX_CANONICAL_PAYLOAD_BYTES,
   PAYLOAD_DIGEST_HEADER,
@@ -88,6 +88,13 @@ export type WorkspaceReviewLogEntry = {
   estimatedCostUsd?: number;
   /** True when the attempt died on the stream stall window rather than the deadline (ADR-0002 C). */
   stallAborted?: boolean;
+  /**
+   * True when the upstream connection aborted before the deadline (reset,
+   * hang-up, dropped socket). Together with `stallAborted` and the 504 outcome
+   * this is what lets the next series separate "deadline expired" from
+   * "connection died" — Phase B could not.
+   */
+  upstreamAborted?: boolean;
   verdict?: string;
   findingCount?: number;
   redactionApplied?: number;
@@ -471,7 +478,11 @@ export function createWorkspaceReviewHandler(deps: WorkspaceReviewRouteDeps) {
         // line distinguishes it so the spike can separate a provider that went
         // quiet from a review that genuinely took too long.
         const stall = error instanceof WorkspaceModelStallError ? { stallAborted: true } : {};
-        return finish(500, "model_failure", { error: "model_failure", message }, { ...metadata, ...stall });
+        // Same 500 `model_failure` to the caller — the CLI's error set is
+        // unchanged — but the log says the connection died rather than leaving
+        // it indistinguishable from a provider 500.
+        const upstream = error instanceof WorkspaceModelConnectionError ? { upstreamAborted: true } : {};
+        return finish(500, "model_failure", { error: "model_failure", message }, { ...metadata, ...stall, ...upstream });
       }
 
       // Step 9 — the bounded advisory result.

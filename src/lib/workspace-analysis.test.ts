@@ -8,7 +8,10 @@ import {
   requestOpenRouterWorkspaceModel,
   WORKSPACE_MAX_OUTPUT_TOKENS,
   WORKSPACE_MODEL_TUNING_DEFAULTS,
+  resolveWorkspaceModelTuningFromEnv,
+  WorkspaceModelConnectionError,
   WorkspaceModelStallError,
+  WorkspaceModelTuningConfigError,
   WorkspaceReviewTimeoutError,
   WorkspaceSandboxEvidenceRejectedError,
   type WorkspaceModelRequest,
@@ -482,6 +485,250 @@ describe("workspace model request parameters (ADR-0002 option C)", () => {
     expect(sent.reasoning).toEqual({ effort: "minimal" });
     expect(sent.provider).toEqual({ require_parameters: true, sort: "latency" });
     expect(sent.stream).toBe(true);
+  });
+
+  it("sends no reasoning key at all for the `omit` setting, keeping require_parameters", () => {
+    const body = buildWorkspaceModelRequestBody({
+      model: "mistralai/mistral-small-3.2-24b-instruct",
+      systemPrompt: "s",
+      input: "i",
+      schema: {},
+      maxOutputTokens: 16,
+      signal: new AbortController().signal,
+      tuning: { ...WORKSPACE_MODEL_TUNING_DEFAULTS, reasoningEffort: "omit" },
+    });
+    // Not `reasoning: {}`, not `reasoning: { effort: "omit" }` — absent. Under
+    // require_parameters a reasoning param excludes every provider of a
+    // non-reasoning model.
+    expect(body).not.toHaveProperty("reasoning");
+    expect(body.provider).toEqual({ require_parameters: true, sort: "latency" });
+  });
+
+  it("sends no provider.sort for the `omit` setting, keeping require_parameters", () => {
+    const body = buildWorkspaceModelRequestBody({
+      model: "test/model",
+      systemPrompt: "s",
+      input: "i",
+      schema: {},
+      maxOutputTokens: 16,
+      signal: new AbortController().signal,
+      tuning: { ...WORKSPACE_MODEL_TUNING_DEFAULTS, providerSort: "omit" },
+    });
+    expect(body.provider).toEqual({ require_parameters: true });
+    expect(body.reasoning).toEqual({ effort: "low" });
+  });
+});
+
+describe("env-tunable model knobs (TER-44 step 1b)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("keeps the defaults when neither variable is set", () => {
+    expect(resolveWorkspaceModelTuningFromEnv({})).toEqual({});
+    // An env var present but empty is "not configured", as on Vercel.
+    expect(resolveWorkspaceModelTuningFromEnv({
+      WORKSPACE_MODEL_REASONING_EFFORT: "",
+      WORKSPACE_MODEL_PROVIDER_SORT: "  ",
+    })).toEqual({});
+  });
+
+  it("accepts every documented OpenRouter effort plus `omit`", () => {
+    for (const effort of ["max", "xhigh", "high", "medium", "low", "minimal", "none", "omit"]) {
+      expect(resolveWorkspaceModelTuningFromEnv({ WORKSPACE_MODEL_REASONING_EFFORT: effort }))
+        .toEqual({ reasoningEffort: effort });
+    }
+    for (const sort of ["latency", "throughput", "price", "omit"]) {
+      expect(resolveWorkspaceModelTuningFromEnv({ WORKSPACE_MODEL_PROVIDER_SORT: sort }))
+        .toEqual({ providerSort: sort });
+    }
+  });
+
+  it("fails fast on an invalid value instead of falling back to the default", () => {
+    expect(() => resolveWorkspaceModelTuningFromEnv({ WORKSPACE_MODEL_REASONING_EFFORT: "lowish" }))
+      .toThrow(WorkspaceModelTuningConfigError);
+    expect(() => resolveWorkspaceModelTuningFromEnv({ WORKSPACE_MODEL_REASONING_EFFORT: "LOW" }))
+      .toThrow(/WORKSPACE_MODEL_REASONING_EFFORT="LOW"/);
+    expect(() => resolveWorkspaceModelTuningFromEnv({ WORKSPACE_MODEL_PROVIDER_SORT: "fastest" }))
+      .toThrow(/expected one of: latency, throughput, price, omit/);
+  });
+
+  it("maps WORKSPACE_MODEL_REASONING_EFFORT=none onto the request body", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    vi.stubEnv("WORKSPACE_MODEL_REASONING_EFFORT", "none");
+    const fetchMock = stubFetch(() => sseResponse(sseStream(reviewFrames())));
+
+    await analyzeWorkspaceReview(changesetInput());
+
+    expect(sentBody(fetchMock).reasoning).toEqual({ effort: "none" });
+  });
+
+  it("maps WORKSPACE_MODEL_REASONING_EFFORT=omit onto a body with no reasoning key", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    vi.stubEnv("WORKSPACE_MODEL_REASONING_EFFORT", "omit");
+    vi.stubEnv("WORKSPACE_MODEL_PROVIDER_SORT", "omit");
+    const fetchMock = stubFetch(() => sseResponse(sseStream(reviewFrames())));
+
+    await analyzeWorkspaceReview(changesetInput());
+
+    const sent = sentBody(fetchMock);
+    expect(sent).not.toHaveProperty("reasoning");
+    expect(sent.provider).toEqual({ require_parameters: true });
+  });
+
+  it("fails the review on an invalid env value rather than reviewing with the default", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    vi.stubEnv("WORKSPACE_MODEL_PROVIDER_SORT", "cheapest");
+    const requestModel = vi.fn<WorkspaceModelRequest>();
+
+    await expect(analyzeWorkspaceReview(changesetInput(), { requestModel }))
+      .rejects.toThrow(WorkspaceModelTuningConfigError);
+    expect(requestModel).not.toHaveBeenCalled();
+  });
+
+  it("lets a per-call override win over env, so tests are never at the mercy of the deployment", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    vi.stubEnv("WORKSPACE_MODEL_REASONING_EFFORT", "none");
+    const fetchMock = stubFetch(() => sseResponse(sseStream(reviewFrames())));
+
+    await analyzeWorkspaceReview(changesetInput(), { tuning: { reasoningEffort: "high" } });
+
+    expect(sentBody(fetchMock).reasoning).toEqual({ effort: "high" });
+  });
+});
+
+/** The exact shape undici raises when a connection dies (see UNDICI_CONNECTION_FAILURE_MESSAGES). */
+function undiciError(message: "fetch failed" | "terminated", code = "ECONNRESET"): TypeError {
+  return new TypeError(message, { cause: Object.assign(new Error(code), { code }) });
+}
+
+describe("undici connection failures are not timeouts (TER-44 step 1b)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("classifies a fetch() rejection (connection reset before any response) as a connection error", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    // Node's fetch does not throw AbortError for a reset socket — it throws
+    // `TypeError: fetch failed` with an ECONNRESET cause.
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(undiciError("fetch failed"))));
+
+    const promise = analyzeWorkspaceReview(changesetInput({ deadlineAt: 61_000 }), { now: () => 1_000 });
+    await expect(promise).rejects.toBeInstanceOf(WorkspaceModelConnectionError);
+    await expect(promise).rejects.not.toBeInstanceOf(WorkspaceReviewTimeoutError);
+    // The cause code survives into the message, so a log line says which failure it was.
+    await expect(promise).rejects.toThrow(/fetch failed \(ECONNRESET\)/);
+  });
+
+  it("classifies a mid-stream body cut (reader.read() rejection) as a connection error", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    const frames = reviewFrames();
+    vi.stubGlobal("fetch", vi.fn(async () => sseResponse(new ReadableStream<Uint8Array>({
+      start(controller) {
+        // One good frame, then the socket dies the way undici reports it.
+        controller.enqueue(new TextEncoder().encode(frames[0]));
+      },
+      pull(controller) {
+        controller.error(undiciError("terminated"));
+      },
+    }))));
+
+    const promise = analyzeWorkspaceReview(changesetInput({ deadlineAt: 61_000 }), { now: () => 1_000 });
+    await expect(promise).rejects.toBeInstanceOf(WorkspaceModelConnectionError);
+    await expect(promise).rejects.toThrow(/terminated \(ECONNRESET\)/);
+  });
+
+  it("classifies a buffered-body cut on the non-streamed path too", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body: null,
+      json: () => Promise.reject(undiciError("terminated")),
+    } as unknown as Response)));
+
+    await expect(analyzeWorkspaceReview(changesetInput({ deadlineAt: 61_000 }), { now: () => 1_000, tuning: { stream: false } }))
+      .rejects.toBeInstanceOf(WorkspaceModelConnectionError);
+  });
+
+  it("leaves an unrelated TypeError alone — a bug is not a dead connection", async () => {
+    const requestModel: WorkspaceModelRequest = () => Promise.reject(new TypeError("x.map is not a function"));
+
+    const promise = analyzeWorkspaceReview(changesetInput({ deadlineAt: 61_000 }), { now: () => 1_000, requestModel });
+    await expect(promise).rejects.not.toBeInstanceOf(WorkspaceModelConnectionError);
+    await expect(promise).rejects.toThrow(/is not a function/);
+  });
+
+  it("leaves a malformed-review failure a plain model failure, not a connection error", async () => {
+    const requestModel: WorkspaceModelRequest = async () => ({ text: "not json at all" });
+
+    const promise = analyzeWorkspaceReview(changesetInput({ deadlineAt: 61_000 }), { now: () => 1_000, requestModel });
+    await expect(promise).rejects.not.toBeInstanceOf(WorkspaceModelConnectionError);
+    await expect(promise).rejects.toThrow(/not valid review JSON/);
+  });
+
+  it("still calls it a timeout when our own deadline aborted the connection", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    // The deadline fires, aborts the socket, and undici surfaces the cut body
+    // as `TypeError: terminated`. The deadline flag must still win.
+    vi.stubGlobal("fetch", vi.fn(async () => sseResponse(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        return new Promise<void>((resolve) => {
+          setTimeout(() => {
+            controller.error(undiciError("terminated"));
+            resolve();
+          }, 1_500);
+        });
+      },
+    }))));
+
+    await expect(analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 1_100 })))
+      .rejects.toBeInstanceOf(WorkspaceReviewTimeoutError);
+  });
+});
+
+describe("abort vs deadline (TER-44 step 1b)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("reports an upstream abort that is not the deadline as a connection error, not a timeout", async () => {
+    const requestModel: WorkspaceModelRequest = () => {
+      const aborted = new Error("The operation was aborted.");
+      aborted.name = "AbortError";
+      return Promise.reject(aborted);
+    };
+
+    // Deadline is 60 s away and never fires: nothing here is a timeout.
+    const promise = analyzeWorkspaceReview(changesetInput({ deadlineAt: 61_000 }), {
+      now: () => 1_000,
+      requestModel,
+    });
+    await expect(promise).rejects.toBeInstanceOf(WorkspaceModelConnectionError);
+    await expect(promise).rejects.not.toBeInstanceOf(WorkspaceReviewTimeoutError);
+    await expect(promise).rejects.toThrow(/connection ended before the deadline/);
+  });
+
+  it("still reports the deadline race as a timeout", async () => {
+    const requestModel: WorkspaceModelRequest = ({ signal }) =>
+      new Promise<never>((_, reject) => {
+        // A provider that surfaces our own deadline abort as an AbortError:
+        // the deadline flag, not the error shape, decides the classification.
+        signal.addEventListener("abort", () => {
+          const aborted = new Error("The operation was aborted.");
+          aborted.name = "AbortError";
+          reject(aborted);
+        });
+      });
+
+    await expect(analyzeWorkspaceReview(changesetInput({ deadlineAt: Date.now() + 1_100 }), { requestModel }))
+      .rejects.toBeInstanceOf(WorkspaceReviewTimeoutError);
   });
 });
 
