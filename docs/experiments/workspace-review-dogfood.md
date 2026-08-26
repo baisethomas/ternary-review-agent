@@ -1235,6 +1235,211 @@ change. On the measurements:
    30 KB — has never been retested, and a 91.7% delivery rate on 5 KB fixtures
    does not license any claim about a real repository.
 
+## 8.8 TER-44 step 2 — bounded-retry measurement (measured 2026-08-26)
+
+**14 live submissions** against production `POST /api/workspace-reviews`
+(deployment `dpl_FPryknWTbnVHHdGo4qn2XBoaRjGf`, main `59a0b05`): the 12 seeds ×
+1 repetition over the same TER-39 fixtures, plus **two repetitions of
+`todo-app --all`** — the 30 KB snapshot that went 0-for-2 in Phase B — from a
+detached scratch worktree of `d31c0c2`. Concurrency 1, two hourly gate windows,
+teed to disk as they arrived. Raw per-run record:
+`docs/experiments/ter44-step2-runs.json`.
+
+This is ADR-0002 sequence item 3, partially: `tablet-notes-v3` was deliberately
+not submitted and the §7.2 baseline is still unrun.
+
+What changed since §8.7 is the shape the ADR asked for: at most **two** attempts
+inside a **180 s** deadline, each bounded at 80 s with a 15 s assembly reserve,
+the second routed away from attempt 1's provider via `provider.ignore`; CLI
+client timeout 190 s. Same model, same `effort: "none"`, same
+`provider.sort: "latency"`.
+
+**Verdict: delivery PASS, and the retry mechanism produced no evidence about
+itself.**
+
+### 8.8.1 Every request succeeded on the first attempt
+
+| | Experiment A (§8.7) | **step 2** | gate |
+| --- | --- | --- | --- |
+| delivery, per request | 91.7% (11/12) | **100% (14/14)** | ≥ 80% |
+| delivery, per attempt | 91.7% (11/12) | **100% (14/14)** | — |
+| requests that needed attempt 2 | n/a | **0** | — |
+| model invocations for 14 requests | n/a | **14** | ≤ 28 |
+
+`attempts` is **1 on all fourteen log lines**. `retryReason`, `retrySkipped` and
+`attempt2Provider` are absent throughout, `stallAborted` and `upstreamAborted`
+are absent for the fourth series running, and there was no 504 and no 500.
+
+The honest reading is not "bounded retry delivered 100%". It is: **the series
+never gave the retry anything to do.** Every number below is a single-attempt
+number. The 180 s deadline, the 80 s attempt budget, the insufficient-budget
+guard, the `provider.ignore` routing and the 190 s CLI timeout are all
+**unexercised in production** — the slowest attempt in the series took 48.1 s,
+27% of the deadline. The step-2 code paths that PR #46 added remain verified by
+unit tests only.
+
+The four things this report was watching for in the retry path — attempt 2 sent
+back to attempt 1's provider, a retry fired on a non-retryable class, a 504
+logged with `attempts: 1` and budget still remaining, a spurious
+`retrySkipped` — **none occurred, and none could have**, because no second
+attempt ran. That is not a clean bill of health for the mechanism; it is an
+absence of data.
+
+### 8.8.2 Latency: the gate splits on the denominator
+
+| | Experiment A (12 seeds) | **step 2, 12 seeds** | **step 2, all 14** |
+| --- | --- | --- | --- |
+| `durationMs` min | 12,239 | **1,990** | 1,990 |
+| `durationMs` **p50** | **28,381** | **32,364** | **29,652** |
+| `durationMs` max | 65,788 | **48,109** | 48,109 |
+
+Against the ADR's `p50 < 30 s`, the whole series passes at 29,652 ms and the
+like-for-like fixture subset **fails at 32,364 ms**. §8.7's 28,381 ms was
+measured on the 12-seed denominator, so the comparable number is the one that
+misses — p50 rose about **4 s on byte-identical payloads with zero retries
+fired**. The retry cannot be blamed for it; nothing retried.
+
+What did move is the provider mix, and it moved by gate window:
+
+| provider | runs | `durationMs` p50 | measured USD per M tokens |
+| --- | --- | --- | --- |
+| DeepInfra | 7 | 37,713 | **0.140** |
+| Reka | 5 | **4,190** | 0.321 |
+| AkashML | 1 | 46,632 | 0.225 |
+| Fireworks | 1 | 17,183 | **0.492** |
+
+Window 1 (09:24–09:32 UTC, runs 01–09) was DeepInfra-dominated and slow: its
+first three runs took 46.6–48.1 s. Window 2 (10:25–10:27 UTC, runs 10–14) was
+**entirely Reka** and returned four of its five reviews in 2.0–4.2 s. Same
+model, same payloads, same tuning; a 10× latency gap decided by which endpoint
+`sort: "latency"` happened to select that hour. This is §8.5.1's
+"availability moves by the hour" restated as a latency finding, and it is the
+third consecutive series in which `provider.sort` has failed to produce
+determinism. §8.7.4's conclusion stands and strengthens: **`provider.order`
+pinning is the lever, not the retry.**
+
+Caller wall-clock was server `durationMs` + 0.7–2.8 s on all 14 runs.
+
+### 8.8.3 The large payload delivered — the first time in this project
+
+This is the result the series was worth running for.
+
+| | Phase B | **step 2** |
+| --- | --- | --- |
+| `todo-app --all`, 30,455 bytes | **0 of 2** | **2 of 2** |
+| server `durationMs` | — (both cut at the 120 s deadline) | **3,213 / 27,469** |
+| findings | — | 3 / 5 |
+| `inputTokens` | — | 8,653 |
+| cost per run | — | USD 0.00245 / 0.00271 |
+
+Payload digest `sha256:e7efd46e…`, 26 manifest entries, 24 files with content,
+`app/favicon.ico` manifest-only as binary and `package-lock.json` manifest-only
+as oversize. `droppedByServerCaps` was **0** — the 400,000-byte snapshot cap was
+never approached, so TER-43's truncation problem did not bind on this repository.
+Both runs completed on attempt 1 and neither came close to the deadline. Canary
+pre-flight CLEAN on both.
+
+`inputTokens` of 8,653 is 7–8× the fixture runs' 582–1,219 and still an order of
+magnitude below §6.2's derived 20–60k estimate. **§8.7.7's "biggest untested
+risk" is now tested at 30 KB and it passed.** It is not tested at 43 KB:
+`tablet-notes-v3` remains 0-for-4 and unretested, and it is now the only
+surviving evidence for a payload-size ceiling.
+
+The two reviews of the byte-identical snapshot do not agree on what matters most.
+r1 leads with an unvalidated `prompt`/`model` forwarded to OpenRouter; r2 leads
+with an API key exposed through a response header and a missing request size
+limit. Both flag the AI route, both are plausible, neither is wrong — and this is
+the first time §8.5.3's byte-identical-payload instability has been observed on a
+**real repository** rather than a fixture. Two repetitions is also the first
+repetition data anywhere in the TER-44 series.
+
+### 8.8.4 Cost
+
+| | Phase B | step 1 | Experiment A | **step 2** |
+| --- | --- | --- | --- | --- |
+| cost per completed fixture review (USD) | 0.000797 | 0.000627 | 0.000859 | **0.000662** |
+| cost per `--all` review (USD) | — | — | — | **0.002579** |
+| measured spend, whole series (USD) | 0.011162 (14) | 0.005014 (8) | 0.009448 (11) | **0.013107 (14)** |
+
+Fixture cost fell 23% against Experiment A, entirely because no Cloudflare
+endpoint served this series. The real-repository review costs **~4× a fixture
+review** and is still a quarter of a cent. Cost has never been the constraint and
+this series does not change that — but worst-case spend per request has silently
+doubled with the retry, and no run here exercised it, so the 0.0026 `--all`
+figure is a **best-case** number, not a bound.
+
+### 8.8.5 Quality sanity — all twelve seeds measured for the first time
+
+101 findings across the 12 fixture runs = **8.4 per review** (Experiment A: 8.2;
+step 1: 5.1). Volume is stable.
+
+| id | seeded defect reported? |
+| --- | --- |
+| S01 | **TP** — `src/pagination.ts:9`, off-by-one slice, `blocking` |
+| S02 | **TP** — `src/profile.ts:6`, null dereference on optional `user`, `blocking` |
+| S03 | **TP** — `src/search.ts:10`, SQL injection, `blocking`. **First completion ever** |
+| S04 | **TP (weak)** — `src/audit.ts:6`; the fix awaits `remove()` first, but the explanation still frames it as write-before-delete ordering, exactly as in Experiment A |
+| S05 | **TP** — `src/sync.ts:9`, push errors silently swallowed, `warning` |
+| S06 | **TP** — `src/admin.ts:7`, impersonation bypass, **`blocking`** |
+| S07 | **TP** — `app/reports.py:5`, file handle leak, `warning` |
+| S08 | **TP (weak)** — `src/http.ts:7`; names the missing backoff and the non-selective 5xx retry, but not that a non-idempotent POST is being retried at all |
+| S09 | **TP** — `src/cache.ts:6`, check-then-write race, named |
+| S10 | **TP** — `src/download.ts:8`, path traversal, `blocking` |
+| S11 | **TP** — `app/hashing.py:5`, unsalted MD5, **`warning`** |
+| S12 | **PASS** — control clean; 9 findings, **none against `src/control.ts`**, and the summary calls that change benign |
+
+```
+seeds measured                     12  (all of them, for the first time)
+TP                                 12  (10 unambiguous + S04, S08 weak)
+FN                                  0
+recall (per measured seed)       = 12 / 12 = 100%   (10/12 = 83.3% if S04 and S08 are scored FN)
+negative control S12              = PASS
+```
+
+**S03 completed for the first time in the project.** It was `model_failure` in
+both Phase B and Experiment A, so its seeded SQL injection had never been
+adjudicated; it came back `blocking` with a parameterised-query fix.
+
+**S08 flipped from FN to TP (weak)**, and this is the least safe row in the
+table. In step 1 and Experiment A the reviewer landed on the right line and
+described an attempt-count off-by-one; here it names the missing backoff and the
+non-selective 5xx retry — two of the seed's three components — but still never
+says that retrying a non-idempotent POST is the defect. The output genuinely
+changed; whether that clears the bar is a judgement call, and 100% recall rests
+on it.
+
+**Severity moved in both directions.** S06's auth bypass finally came back
+`blocking`, correcting a miscalibration Phase B and Experiment A both recorded.
+S11's unsalted MD5 regressed from `blocking` to `warning` on byte-identical
+bytes. That is instability, not improvement, and it is TER-45's problem.
+
+**14/14 reviews were in English**, bringing the streak to 33 consecutive English
+reviews since Phase B's single Chinese one. Still an observation, not a
+guarantee.
+
+Collector integrity held: `digestVerified` true on 14/14, `droppedByServerCaps`
+0, `redactionApplied` 0, **14/14 canary pre-flights CLEAN with zero leaks**.
+`reasoningEffort: "none"` and `providerSort: "latency"` are now **read off every
+log line** rather than inferred, closing §8.7.2's verification gap;
+`reasoningTokens` is 0 on all 14, including both 8.6k-token `--all` runs.
+
+### 8.8.6 What this series did not measure
+
+- **The retry itself.** Zero second attempts. Everything ADR-0002 option B adds
+  is unmeasured under live conditions.
+- **`tablet-notes-v3` (43 KB)** — not submitted. The only surviving evidence for
+  a payload-size ceiling is Phase B's 0-for-4 on it.
+- **Repetitions on the seeds** — still 1 each. Only `--all` was repeated, and its
+  two runs disagreed on which issue leads.
+- **§7.2 generic-agent baseline** — still unrun. Every quality figure above
+  remains un-baselined.
+- **Precision** — the 101 findings were not adjudicated one by one; only the
+  seeded defect and the S12 control were scored.
+- **Whether 100% delivery is the retry or the hour.** Experiment A's single
+  failure was a `model_failure` on S03, and S03 completed here on attempt 1
+  without help. Two clean series in a row on the same tuning is the simpler
+  explanation, and it does not require the retry to exist.
+
 ## 9. Recommendation
 
 **REVISE.** Not continue, not stop.
