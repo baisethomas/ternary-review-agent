@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { analyzeWorkspaceReview, WORKSPACE_MAX_OUTPUT_TOKENS } from "./workspace-analysis";
+import { analyzeWorkspaceReview, WORKSPACE_MAX_OUTPUT_TOKENS, WorkspaceModelStallError } from "./workspace-analysis";
 import { WORKSPACE_MAX_FINDINGS } from "./workspace-review-prompts";
 import { computePayloadDigest, type PayloadCaps } from "./workspace-payload-validation";
 import {
@@ -774,5 +774,59 @@ describe("no persistence (spec §5) — module graph", () => {
 
   it("mentions no idempotency key handling", () => {
     expect(source.toLowerCase()).not.toContain("idempotency-key");
+  });
+});
+
+describe("survivability log fields (ADR-0002 option C)", () => {
+  it("logs the served model, provider, and reasoning tokens on a completed review", async () => {
+    const { deps, logs } = makeDeps({
+      analyze: async () => ({
+        verdict: "pass" as const,
+        summary: "Clean.",
+        findings: [],
+        evidence: [],
+        redactionApplied: 0,
+        droppedFindings: { unknownPath: 0 },
+        ai: {
+          model: "deepseek/deepseek-v4-flash-0731",
+          latencyMs: 40,
+          provider: "DeepInfra",
+          inputTokens: 100,
+          outputTokens: 40,
+          reasoningTokens: 12,
+          estimatedCostUsd: 0.002,
+        },
+      }),
+    });
+    await createWorkspaceReviewHandler(deps)(buildRequest());
+    expect(logs[0]).toMatchObject({
+      outcome: "ok",
+      model: "deepseek/deepseek-v4-flash-0731",
+      provider: "DeepInfra",
+      reasoningTokens: 12,
+    });
+    expect(logs[0].stallAborted).toBeUndefined();
+  });
+
+  it("marks a stream-stall failure distinctly from an ordinary model failure", async () => {
+    const { deps, logs } = makeDeps({
+      analyze: async () => {
+        throw new WorkspaceModelStallError(20_000);
+      },
+    });
+    const response = await createWorkspaceReviewHandler(deps)(buildRequest());
+    expect(response.status).toBe(500);
+    expect(logs[0]).toMatchObject({ outcome: "model_failure", stallAborted: true });
+  });
+
+  it("leaves stallAborted unset for a model failure that was not a stall", async () => {
+    const { deps, logs } = makeDeps({
+      analyze: async () => {
+        throw new Error("provider returned 500");
+      },
+    });
+    await createWorkspaceReviewHandler(deps)(buildRequest());
+    expect(logs[0].outcome).toBe("model_failure");
+    expect(logs[0].stallAborted).toBeUndefined();
   });
 });

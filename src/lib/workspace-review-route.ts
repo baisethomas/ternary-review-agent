@@ -14,7 +14,7 @@
 import { NonRetryableReviewError } from "./review-errors";
 import type { ReviewSeverity } from "./review-policy";
 import { WORKSPACE_MAX_FINDINGS } from "./workspace-review-prompts";
-import { WorkspaceReviewTimeoutError, analyzeWorkspaceReview } from "./workspace-analysis";
+import { WorkspaceModelStallError, WorkspaceReviewTimeoutError, analyzeWorkspaceReview } from "./workspace-analysis";
 import {
   MAX_CANONICAL_PAYLOAD_BYTES,
   PAYLOAD_DIGEST_HEADER,
@@ -81,9 +81,13 @@ export type WorkspaceReviewLogEntry = {
   evidenceEntries?: number;
   digestVerified?: boolean;
   model?: string;
+  provider?: string;
   inputTokens?: number;
   outputTokens?: number;
+  reasoningTokens?: number;
   estimatedCostUsd?: number;
+  /** True when the attempt died on the stream stall window rather than the deadline (ADR-0002 C). */
+  stallAborted?: boolean;
   verdict?: string;
   findingCount?: number;
   redactionApplied?: number;
@@ -463,7 +467,11 @@ export function createWorkspaceReviewHandler(deps: WorkspaceReviewRouteDeps) {
           );
         }
         const message = error instanceof NonRetryableReviewError || error instanceof Error ? error.message : "model failure";
-        return finish(500, "model_failure", { error: "model_failure", message }, metadata);
+        // A stall is a model_failure like any other to the caller, but the log
+        // line distinguishes it so the spike can separate a provider that went
+        // quiet from a review that genuinely took too long.
+        const stall = error instanceof WorkspaceModelStallError ? { stallAborted: true } : {};
+        return finish(500, "model_failure", { error: "model_failure", message }, { ...metadata, ...stall });
       }
 
       // Step 9 — the bounded advisory result.
@@ -474,8 +482,10 @@ export function createWorkspaceReviewHandler(deps: WorkspaceReviewRouteDeps) {
         durationMs: now() - startedAt,
         ...metadata,
         model: result.ai?.model ?? model,
+        ...(result.ai?.provider !== undefined ? { provider: result.ai.provider } : {}),
         ...(result.ai?.inputTokens !== undefined ? { inputTokens: result.ai.inputTokens } : {}),
         ...(result.ai?.outputTokens !== undefined ? { outputTokens: result.ai.outputTokens } : {}),
+        ...(result.ai?.reasoningTokens !== undefined ? { reasoningTokens: result.ai.reasoningTokens } : {}),
         ...(result.ai?.estimatedCostUsd !== undefined ? { estimatedCostUsd: result.ai.estimatedCostUsd } : {}),
         verdict: result.verdict,
         findingCount: result.findings.length,

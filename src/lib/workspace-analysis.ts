@@ -2,10 +2,16 @@
  * Workspace Review analysis wrapper (docs/workspace-review-spec.md §3, §6).
  *
  * A narrow, source-agnostic seam around the model call: it needs no GitHub
- * API, no publisher, no queue, and no persistence. Per the Hobby-plan fixed
- * decision it performs exactly ONE model attempt — the PR pipeline's
- * DeepSeek→OpenAI cascade in `review-route-service.ts` stays PR-queue-only —
- * with a deterministic deadline that aborts the in-flight request.
+ * API, no publisher, no queue, and no persistence. It performs exactly ONE
+ * model attempt — the PR pipeline's DeepSeek→OpenAI cascade in
+ * `review-route-service.ts` stays PR-queue-only — with a deterministic
+ * deadline that aborts the in-flight request.
+ *
+ * ADR-0002 (option C, TER-44 step 1) makes that one attempt survivable rather
+ * than adding attempts: a bounded reasoning budget, deterministic provider
+ * routing, and a streamed response whose silence is detected inside a stall
+ * window instead of at the end-to-end deadline. The bounded retry (option B)
+ * is a separate step and is deliberately NOT here yet.
  */
 
 import { MIN_OPENROUTER_TIMEOUT_MS } from "./openrouter-review-provider";
@@ -57,10 +63,83 @@ export class WorkspaceSandboxEvidenceRejectedError extends NonRetryableReviewErr
   }
 }
 
+/**
+ * Stall abort (ADR-0002 option C): a streamed generation that stops producing
+ * bytes is dead, not slow. Failing it inside the stall window instead of at the
+ * end-to-end deadline is the whole point — it is a *distinct* error so the
+ * measurement can tell "provider went quiet" apart from "review took too long".
+ */
+export class WorkspaceModelStallError extends NonRetryableReviewError {
+  readonly stallMs: number;
+  constructor(stallMs: number) {
+    super(`Workspace review model stream stalled: no bytes received for ${stallMs}ms`);
+    this.name = "WorkspaceModelStallError";
+    this.stallMs = stallMs;
+  }
+}
+
+/**
+ * OpenRouter reasoning-effort bound. Enum verified against OpenRouter's
+ * chat-completion schema (`reasoning.effort`: max | xhigh | high | medium |
+ * low | minimal | none). NOTE: the `deepseek/deepseek-v4-flash` model page
+ * documents only `high` and `xhigh` as natively supported, and OpenRouter maps
+ * unsupported efforts to the nearest supported behaviour — so a "low" bound may
+ * be a no-op on that model. That is exactly what the TER-44 spike measures.
+ */
+export type WorkspaceReasoningEffort = "max" | "xhigh" | "high" | "medium" | "low" | "minimal" | "none";
+
+/** OpenRouter `provider.sort` values (provider-routing docs). Sorting disables load balancing. */
+export type WorkspaceProviderSort = "latency" | "throughput" | "price";
+
+/**
+ * Survivability knobs for the single model attempt (ADR-0002 option C).
+ * Deliberately an option object rather than literals in the fetch body: the
+ * spike has to be able to move each knob and re-measure without a code change
+ * to the transport.
+ */
+export type WorkspaceModelTuning = {
+  /** Bounded reasoning budget: sent as `reasoning: { effort }`. */
+  reasoningEffort: WorkspaceReasoningEffort;
+  /**
+   * Deterministic provider routing: sent as `provider.sort` on BOTH the
+   * streamed and non-streamed paths. The non-streamed path exists as the
+   * comparison baseline for *streaming and stall detection*, not for routing —
+   * routing determinism is wanted either way.
+   */
+  providerSort: WorkspaceProviderSort;
+  /** Ask for an SSE stream so a stalled generation is detectable. */
+  stream: boolean;
+  /**
+   * Fail the attempt when **no SSE data frame** arrives for this long.
+   *
+   * The window measures time since the last `data:` frame — a content or
+   * reasoning delta, the usage chunk, or `[DONE]`. It does NOT measure time
+   * since the last byte: SSE comment/keepalive lines
+   * (`: OPENROUTER PROCESSING`) and blank separator lines prove only that the
+   * socket is warm, never that the model is generating, and so never reset it.
+   * When streaming, the window also covers the request/headers phase.
+   */
+  stallTimeoutMs: number;
+};
+
+export const WORKSPACE_MODEL_TUNING_DEFAULTS: WorkspaceModelTuning = {
+  reasoningEffort: "low",
+  providerSort: "latency",
+  stream: true,
+  stallTimeoutMs: 20_000,
+};
+
 export type WorkspaceModelResponse = {
   text: string;
   model?: string;
-  usage?: { inputTokens?: number; outputTokens?: number; estimatedCostUsd?: number };
+  /** Serving provider slug, when OpenRouter reports one (metadata only). */
+  provider?: string;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    reasoningTokens?: number;
+    estimatedCostUsd?: number;
+  };
 };
 
 export type WorkspaceModelRequestArgs = {
@@ -70,6 +149,7 @@ export type WorkspaceModelRequestArgs = {
   schema: unknown;
   maxOutputTokens: number;
   signal: AbortSignal;
+  tuning: WorkspaceModelTuning;
 };
 
 export type WorkspaceModelRequest = (request: WorkspaceModelRequestArgs) => Promise<WorkspaceModelResponse>;
@@ -77,6 +157,8 @@ export type WorkspaceModelRequest = (request: WorkspaceModelRequestArgs) => Prom
 export type WorkspaceAnalysisDeps = {
   requestModel?: WorkspaceModelRequest;
   now?: () => number;
+  /** Per-call overrides of the survivability knobs; unset fields keep the defaults. */
+  tuning?: Partial<WorkspaceModelTuning>;
 };
 
 function isAbortError(error: unknown) {
@@ -249,38 +331,308 @@ function filterFindingsByPath(
   return { findings: kept, unknownPath };
 }
 
-/** Default OpenRouter transport: one request, strict schema, no fallback chain. */
+/**
+ * OpenRouter usage block, shared by the streamed and non-streamed paths.
+ * `cost` and `completion_tokens_details.reasoning_tokens` are always present
+ * when available — OpenRouter's usage-accounting docs state that usage is
+ * included automatically and that `usage: { include: true }` /
+ * `stream_options: { include_usage: true }` are deprecated no-ops, so neither
+ * is sent (sending them under `require_parameters: true` would only risk
+ * narrowing the provider pool).
+ */
+type OpenRouterUsage = {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  completion_tokens_details?: { reasoning_tokens?: number };
+  cost?: number;
+};
+
+function toWorkspaceUsage(usage: OpenRouterUsage | undefined): WorkspaceModelResponse["usage"] {
+  const reasoningTokens = usage?.completion_tokens_details?.reasoning_tokens;
+  return {
+    ...(usage?.prompt_tokens !== undefined ? { inputTokens: usage.prompt_tokens } : {}),
+    ...(usage?.completion_tokens !== undefined ? { outputTokens: usage.completion_tokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    ...(usage?.cost !== undefined ? { estimatedCostUsd: usage.cost } : {}),
+  };
+}
+
+/**
+ * Build the request body. The survivability parameters all come from `tuning`
+ * so the spike can move them without touching this function:
+ *
+ * - `reasoning.effort` — bounded reasoning budget (reasoning-tokens docs).
+ * - `provider.sort` — deterministic routing; sorting disables load balancing
+ *   and makes the router try providers in sorted order (provider-routing docs).
+ * - `provider.require_parameters` — kept `true` because the request uses a
+ *   strict `json_schema` response format; every `deepseek-v4-flash` endpoint
+ *   lists both `reasoning` and `response_format`/`structured_outputs` in its
+ *   `supported_parameters`, so this does not shrink the pool.
+ * - `stream` — so a silent provider is detectable before the deadline.
+ */
+export function buildWorkspaceModelRequestBody(request: WorkspaceModelRequestArgs): Record<string, unknown> {
+  return {
+    model: request.model,
+    max_tokens: request.maxOutputTokens,
+    messages: [
+      { role: "system", content: request.systemPrompt },
+      { role: "user", content: request.input },
+    ],
+    response_format: { type: "json_schema", json_schema: { name: "workspace_review", strict: true, schema: request.schema } },
+    reasoning: { effort: request.tuning.reasoningEffort },
+    provider: { require_parameters: true, sort: request.tuning.providerSort },
+    ...(request.tuning.stream ? { stream: true } : {}),
+  };
+}
+
+type StreamAccumulator = {
+  text: string;
+  model?: string;
+  provider?: string;
+  usage?: OpenRouterUsage;
+  /**
+   * Whether the stream announced its own end. OpenRouter's streaming doc
+   * documents exactly two terminal signals: the `data: [DONE]` sentinel and a
+   * chunk carrying `finish_reason: "error"` (handled as a throw below). The
+   * OpenAI-compatible `finish_reason` values `stop`/`length`/`content_filter`/
+   * `tool_calls` are NOT documented on that page, so they are accepted as
+   * belt-and-braces terminators for providers that omit `[DONE]` — never as the
+   * primary signal.
+   */
+  terminated: boolean;
+};
+
+const TERMINAL_FINISH_REASONS = new Set(["stop", "length", "content_filter", "tool_calls"]);
+
+/**
+ * Race one awaited step against the stall window. Used for BOTH the
+ * request/headers phase and each body read: a provider that accepts the
+ * connection and then hangs before sending headers is the exact Phase B
+ * failure mode, and arming the timer only after `fetch()` resolves would let it
+ * run to the end-to-end deadline instead of failing fast.
+ */
+function withStallDeadline<T>(
+  operation: Promise<T>,
+  waitMs: number,
+  abort: () => void,
+  windowMs = waitMs,
+): Promise<T> {
+  // Suppress unhandled-rejection noise from the LOSER of the race without
+  // swallowing the rejection itself: the handler goes on a derived promise, so
+  // `operation`'s own rejection still reaches the race below.
+  void operation.then(
+    () => {},
+    () => {},
+  );
+  let stallTimer: ReturnType<typeof setTimeout>;
+  const stall = new Promise<never>((_, reject) => {
+    stallTimer = setTimeout(() => {
+      abort();
+      reject(new WorkspaceModelStallError(windowMs));
+    }, Math.max(0, waitMs));
+    // Never let a pending stall timer hold the process open.
+    (stallTimer as unknown as { unref?: () => void }).unref?.();
+  });
+  return Promise.race([operation, stall]).finally(() => clearTimeout(stallTimer!));
+}
+
+/**
+ * An SSE `data:` frame that is not parseable JSON. Silently skipping it would
+ * drop real content (a delta, the usage chunk, or `[DONE]`) and let a truncated
+ * generation pass as a complete one; the same applies to a partial line left in
+ * the buffer at EOF.
+ */
+export class WorkspaceModelMalformedFrameError extends NonRetryableReviewError {
+  constructor() {
+    super("Workspace review model stream contained an unparseable data frame; the generation was cut short");
+    this.name = "WorkspaceModelMalformedFrameError";
+  }
+}
+
+/** A stream whose body ended without announcing completion is a dropped connection, not a review. */
+export class WorkspaceModelTruncatedStreamError extends NonRetryableReviewError {
+  constructor() {
+    super("Workspace review model stream ended without a completion marker; the generation was cut short");
+    this.name = "WorkspaceModelTruncatedStreamError";
+  }
+}
+
+/**
+ * Consume one SSE line and report what class of line it was, so the caller can
+ * hold the stall clock to *data frames* rather than to bytes. Mutates the
+ * accumulator. Throws on a mid-stream error event — OpenRouter reports those as
+ * a `data:` frame with a top-level `error` and `finish_reason: "error"` while
+ * the HTTP status stays 200, so the only place they can be caught is here — and
+ * on a `data:` frame that is not parseable JSON.
+ */
+type StreamLineKind = "data" | "done" | "ignored";
+
+function consumeStreamLine(line: string, acc: StreamAccumulator): StreamLineKind {
+  const trimmed = line.trim();
+  // Keepalive comments (": OPENROUTER PROCESSING") and blank separator lines
+  // are tolerated but are NOT data: they prove the socket is warm, not that the
+  // model is generating, so they must not reset the stall clock.
+  if (!trimmed || trimmed.startsWith(":")) return "ignored";
+  if (!trimmed.startsWith("data:")) return "ignored";
+  const data = trimmed.slice("data:".length).trim();
+  if (data === "[DONE]") return "done";
+  let chunk: {
+    model?: string;
+    provider?: string;
+    error?: { message?: string };
+    choices?: Array<{ delta?: { content?: string | null }; finish_reason?: string | null; error?: { message?: string } }>;
+    usage?: OpenRouterUsage;
+  };
+  try {
+    chunk = JSON.parse(data);
+  } catch {
+    throw new WorkspaceModelMalformedFrameError();
+  }
+  const choice = chunk.choices?.[0];
+  const streamError = chunk.error ?? choice?.error;
+  if (streamError) {
+    throw new NonRetryableReviewError(
+      `Workspace review model call failed: ${streamError.message ?? "generation ended with an error"}`,
+    );
+  }
+  if (chunk.model) acc.model = chunk.model;
+  if (chunk.provider) acc.provider = chunk.provider;
+  if (chunk.usage) acc.usage = chunk.usage;
+  // Reading continues past a terminal finish_reason: the usage chunk and the
+  // `[DONE]` sentinel normally follow it.
+  if (choice?.finish_reason && TERMINAL_FINISH_REASONS.has(choice.finish_reason)) acc.terminated = true;
+  const delta = choice?.delta?.content;
+  if (typeof delta === "string") acc.text += delta;
+  return "data";
+}
+
+/**
+ * Read the SSE body under the stall contract: the attempt fails if no SSE
+ * **data frame** arrives for `stallTimeoutMs`.
+ *
+ * The clock deliberately does NOT track bytes. OpenRouter emits
+ * `: OPENROUTER PROCESSING` keepalive comments, so a provider that holds the
+ * socket warm while generating nothing would reset a byte-based window forever
+ * and escape detection entirely — the Phase B failure mode wearing a disguise.
+ * Only `data:` frames (content or reasoning deltas, the usage chunk, `[DONE]`)
+ * count as progress; comments and blank separator lines are tolerated and
+ * ignored.
+ *
+ * Enforced two ways, because either alone has a hole: a timer armed for the
+ * time REMAINING since the last data frame (so a keepalive trickle still trips
+ * at the window), plus an elapsed check on every read completion (so a read
+ * that returns only keepalives cannot re-arm a full window).
+ */
+async function readWorkspaceModelStream(
+  body: ReadableStream<Uint8Array>,
+  stallTimeoutMs: number,
+  abort: () => void,
+): Promise<StreamAccumulator> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const acc: StreamAccumulator = { text: "", terminated: false };
+  let buffer = "";
+  // The clock starts when the stream does: response headers are the last thing
+  // that counts as progress before the first data frame.
+  let lastDataFrameAt = Date.now();
+  try {
+    for (;;) {
+      const waitMs = stallTimeoutMs - (Date.now() - lastDataFrameAt);
+      const chunk = await withStallDeadline(reader.read(), waitMs, abort, stallTimeoutMs);
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      let sawDataFrame = false;
+      let newline = buffer.indexOf("\n");
+      while (newline !== -1) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        const kind = consumeStreamLine(line, acc);
+        if (kind !== "ignored") sawDataFrame = true;
+        if (kind === "done") {
+          acc.terminated = true;
+          return acc;
+        }
+        newline = buffer.indexOf("\n");
+      }
+      if (sawDataFrame) lastDataFrameAt = Date.now();
+      else if (Date.now() - lastDataFrameAt >= stallTimeoutMs) {
+        abort();
+        throw new WorkspaceModelStallError(stallTimeoutMs);
+      }
+    }
+    // A trailing partial line is not "nothing left over": if it is a data frame
+    // it is a truncated one, and consumeStreamLine throws for it.
+    if (buffer && consumeStreamLine(buffer, acc) === "done") acc.terminated = true;
+    // Clean EOF is not success. Without `[DONE]` or a terminal finish_reason the
+    // body simply stopped, and a truncated prefix that happens to parse as a
+    // valid review would otherwise be published as one.
+    if (!acc.terminated) throw new WorkspaceModelTruncatedStreamError();
+    return acc;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/**
+ * Default OpenRouter transport: one request, strict schema, no fallback chain,
+ * bounded reasoning, deterministic provider routing, and (by default) a
+ * streamed response with stall detection.
+ */
 export const requestOpenRouterWorkspaceModel: WorkspaceModelRequest = async (request) => {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new NonRetryableReviewError("Workspace review requires OPENROUTER_API_KEY");
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: request.model,
-      max_tokens: request.maxOutputTokens,
-      messages: [
-        { role: "system", content: request.systemPrompt },
-        { role: "user", content: request.input },
-      ],
-      response_format: { type: "json_schema", json_schema: { name: "workspace_review", strict: true, schema: request.schema } },
-      provider: { require_parameters: true },
-    }),
-    signal: request.signal,
-  });
+  // The stall abort needs its own controller: aborting the caller's signal
+  // would make a stall indistinguishable from the end-to-end deadline, which
+  // is precisely the distinction the spike is measuring.
+  const controller = new AbortController();
+  const onOuterAbort = () => controller.abort();
+  if (request.signal.aborted) controller.abort();
+  else request.signal.addEventListener("abort", onOuterAbort, { once: true });
+  let response: Response;
+  try {
+    const pending = fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(buildWorkspaceModelRequestBody(request)),
+      signal: controller.signal,
+    });
+    // The stall window covers the request/headers phase too, but ONLY when
+    // streaming: with `stream: true` headers arrive promptly, so silence here
+    // means a hung provider. A non-streamed response legitimately withholds
+    // headers until the whole generation is buffered, so that path stays
+    // governed by the end-to-end deadline alone.
+    response = request.tuning.stream
+      ? await withStallDeadline(pending, request.tuning.stallTimeoutMs, () => controller.abort())
+      : await pending;
+  } catch (error) {
+    request.signal.removeEventListener("abort", onOuterAbort);
+    throw error;
+  }
   try {
     if (!response.ok) {
       const message = `Workspace review model call failed (${response.status}): ${await response.text()}`;
       throw isRetryableHttpStatus(response.status) ? new Error(message) : new NonRetryableReviewError(message);
     }
+    if (request.tuning.stream) {
+      if (!response.body) throw new NonRetryableReviewError("Workspace review model response did not include output");
+      const acc = await readWorkspaceModelStream(response.body, request.tuning.stallTimeoutMs, () => controller.abort());
+      if (!acc.text) throw new NonRetryableReviewError("Workspace review model response did not include output");
+      return {
+        text: acc.text,
+        ...(acc.model ? { model: acc.model } : {}),
+        ...(acc.provider ? { provider: acc.provider } : {}),
+        usage: toWorkspaceUsage(acc.usage),
+      };
+    }
     const payload = await response.json() as {
       model?: string;
+      provider?: string;
       error?: { message?: string };
       choices?: Array<{ message?: { content?: string | null }; error?: { message?: string } }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
+      usage?: OpenRouterUsage;
     };
     const choice = payload.choices?.[0];
     const providerError = choice?.error ?? payload.error;
@@ -290,11 +642,8 @@ export const requestOpenRouterWorkspaceModel: WorkspaceModelRequest = async (req
     return {
       text,
       ...(payload.model ? { model: payload.model } : {}),
-      usage: {
-        ...(payload.usage?.prompt_tokens !== undefined ? { inputTokens: payload.usage.prompt_tokens } : {}),
-        ...(payload.usage?.completion_tokens !== undefined ? { outputTokens: payload.usage.completion_tokens } : {}),
-        ...(payload.usage?.cost !== undefined ? { estimatedCostUsd: payload.usage.cost } : {}),
-      },
+      ...(payload.provider ? { provider: payload.provider } : {}),
+      usage: toWorkspaceUsage(payload.usage),
     };
   } catch (error) {
     // On the deadline-abort path (and any other failure before the body is fully
@@ -307,6 +656,11 @@ export const requestOpenRouterWorkspaceModel: WorkspaceModelRequest = async (req
       // ignore: body cleanup is best-effort
     }
     throw error;
+  } finally {
+    request.signal.removeEventListener("abort", onOuterAbort);
+    // Idempotent: on success the body is already fully read, on failure this is
+    // what actually tears the socket down instead of leaving it to GC.
+    controller.abort();
   }
 };
 
@@ -331,6 +685,7 @@ export async function analyzeWorkspaceReview(
   }
 
   const requestModel = deps.requestModel ?? requestOpenRouterWorkspaceModel;
+  const tuning: WorkspaceModelTuning = { ...WORKSPACE_MODEL_TUNING_DEFAULTS, ...deps.tuning };
   const now = deps.now ?? Date.now;
   const startedAt = now();
   const timeoutMs = Math.floor(input.deadlineAt - startedAt);
@@ -362,11 +717,15 @@ export async function analyzeWorkspaceReview(
         schema: workspaceReviewSchema,
         maxOutputTokens: WORKSPACE_MAX_OUTPUT_TOKENS,
         signal: controller.signal,
+        tuning,
       }),
       deadline,
     ]);
   } catch (error) {
     if (error instanceof WorkspaceReviewTimeoutError) throw error;
+    // A stall is a delivery failure with its own cause; it must never be
+    // laundered into the generic deadline error by the abort check below.
+    if (error instanceof WorkspaceModelStallError) throw error;
     if (isAbortError(error) || deadlineReached || controller.signal.aborted) throw new WorkspaceReviewTimeoutError(timeoutMs);
     throw error;
   } finally {
@@ -408,8 +767,10 @@ export async function analyzeWorkspaceReview(
     ai: {
       model: response.model ?? input.policy.model,
       latencyMs: now() - startedAt,
+      ...(response.provider !== undefined ? { provider: response.provider } : {}),
       ...(response.usage?.inputTokens !== undefined ? { inputTokens: response.usage.inputTokens } : {}),
       ...(response.usage?.outputTokens !== undefined ? { outputTokens: response.usage.outputTokens } : {}),
+      ...(response.usage?.reasoningTokens !== undefined ? { reasoningTokens: response.usage.reasoningTokens } : {}),
       ...(response.usage?.estimatedCostUsd !== undefined ? { estimatedCostUsd: response.usage.estimatedCostUsd } : {}),
     },
   };

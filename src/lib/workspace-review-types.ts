@@ -116,8 +116,12 @@ export type WorkspaceReviewResult = {
   ai?: {
     model: string;
     latencyMs: number;
+    /** Serving provider slug when the transport reports one; metadata only. */
+    provider?: string;
     inputTokens?: number;
     outputTokens?: number;
+    /** Reasoning tokens when the provider reports them (ADR-0002: where the latency went). */
+    reasoningTokens?: number;
     estimatedCostUsd?: number;
   };
 };
