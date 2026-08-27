@@ -129,7 +129,11 @@ export type WorkspaceReviewResult = {
      * schema is unchanged and the CLI ignores fields it does not know.
      */
     attempts?: number;
-    /** Why attempt 1 was retry-eligible, when a retry happened (error class or HTTP status). */
+    /**
+     * Why attempt 1 was retry-eligible, when a retry happened (error class or
+     * HTTP status; `schema_invalid` and `language_invalid` are the two
+     * output-contract failures, and their retry carries a corrective message).
+     */
     retryReason?: string;
     /** Serving provider per attempt, when reported; attempt 2 is routed away from attempt 1's. */
     attempt1Provider?: string;

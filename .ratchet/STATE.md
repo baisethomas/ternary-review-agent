@@ -30,7 +30,29 @@ biggest untested risk at that size.
 
 ## Working on
 
-- **Nothing in flight.** TER-44 step 2 is merged (main `59a0b05`) and now
+- **TER-45 (output contract), implemented, uncommitted in an agent worktree**
+  (`.claude/worktrees/agent-a039721de60c640f4`, branch
+  `worktree-agent-a039721de60c640f4`). Three behaviours: (1) the workspace
+  system prompts gained an output contract — English-only string fields, a
+  severity rubric graded by *consequence* with one example per level, and an
+  explicit ban on style/naming/formatting findings; both prompt versions bumped
+  to `-v2`. (2) `src/lib/workspace-review-language.ts` (new) rejects non-English
+  review text server-side inside `parseWorkspaceReviewOutput`, so a non-English
+  review is never returned. (3) The bounded retry gained a corrective message: a
+  `language_invalid` or `schema_invalid` first answer is retried once with a
+  third `user` message naming what was wrong; a second bad answer fails
+  deterministically (500 `model_failure`, `attempts: 2`). Two seeded eval cases
+  added (S06 auth bypass → blocking, S08 non-idempotent retry → warning); the
+  workspace suite is 12 cases. No `src/app/api/**`, no schema change, no
+  migration. Decision recorded as D-20260827-0100.
+- **What is NOT proven by this.** The language check is unit-tested only; it has
+  never seen a live non-English generation (33 consecutive English reviews is
+  why the risk was judged low, not zero). The severity rubric is advisory prompt
+  text with no server enforcement — whether it actually stabilises the
+  `blocking`/`warning` grading that moved in both directions in §8.8 is an
+  open measurement, not a claim. `-v2` invalidates every prompt-version-labelled
+  quality number in §8.5–§8.8 for comparison purposes.
+- **Previously: nothing in flight.** TER-44 step 2 is merged (main `59a0b05`) and now
   measured. This change is docs-only: §8.8 of the dogfood report,
   `docs/experiments/ter44-step2-runs.json`, and this file. No source touched, no
   `src/app/api/**` change.
@@ -73,10 +95,11 @@ biggest untested risk at that size.
    including this series' 12/12, is a signal and not a benchmark.
 5. **§7.2 generic-agent baseline** — still unrun. Every quality figure in §8.5
    through §8.8 remains un-baselined.
-6. TER-45 (output contract): pin English, severity calibration, validation. 33
-   consecutive English reviews is weak evidence, not a fix. Severity moved in
-   **both** directions this series — S06's auth bypass finally graded `blocking`,
-   S11's unsalted MD5 regressed to `warning` on identical bytes.
+6. **TER-45 is implemented (see "Working on") and needs a measurement**, not
+   more code: re-run the seeded series under prompt `-v2` and check whether the
+   severity rubric holds S06 at `blocking` and S11 at `blocking` across
+   repetitions. Severity moved in **both** directions in §8.8 on identical
+   bytes, so a single post-v2 series proves nothing on its own.
 7. TER-43 (snapshot truncation) can be reassessed: `droppedByServerCaps` was 0 on
    both `--all` runs, so the 400,000-byte cap did not bind on this repository.
    Then TER-42, TER-33; TER-18/TER-13 later.
@@ -95,6 +118,17 @@ biggest untested risk at that size.
 
 ## Verification status
 
+- **TER-45 (2026-08-27), RAN locally in the agent worktree:** `npm run lint`
+  exit 0, clean. `npx vitest run --dir src` → **681 passed / 9 skipped, 85
+  files** (was 637/9 before; +8 language, +6 prompts, +4 analysis, +2 eval
+  cases). `npm run build` green, all 17 routes compiled (the `.next/` directory
+  it created was moved out of the worktree, not deleted — a recursive delete is
+  a hard stop). Both behaviour changes passed reproduce-revert-restore:
+  reverting the language check inside `parseWorkspaceReviewOutput` failed **6**
+  tests (4 parse-level, 2 retry-level), reverting the correction-message append
+  in `buildWorkspaceModelRequestBody` failed **1**. **Not verified:** anything
+  live — no OpenRouter call was made, so the `-v2` prompt text has never been
+  sent to a model, and the language check has never rejected a real generation.
 - **TER-44 step 2 measurement (2026-08-26), RAN live:** 14 live submissions against production `dpl_FPryknWTbnVHHdGo4qn2XBoaRjGf` (main `59a0b05`) — 12 seeded fixture runs plus 2 `todo-app --all` repetitions. **14/14 `ok`, 0 timeouts, 0 model failures, `attempts: 1` on all 14.** Every run matched to its server log line by `requestBytes` (the two `--all` runs share a byte count and were disambiguated by timestamp order) and cross-checked against the CLI output. 14/14 canary pre-flights CLEAN, `digestVerified` true 14/14, `droppedByServerCaps` 0. The CLI was rebuilt before the series and `cli/dist/transmit.js` was read back to confirm `DEFAULT_TIMEOUT_MS = 190_000`. `reasoningEffort: "none"` and `providerSort: "latency"` were **read off every log line**, not inferred. `npm run lint` clean after the docs edits. **Not verified:** the retry path itself (zero second attempts), 43 KB payloads, seed repetitions, the §7.2 baseline, and per-finding precision.
 - **TER-44 step 1b Experiment A (2026-08-26), RAN live:** 12 live submissions against production `dpl_5GiJiTpJYF1phGMevA8aYHdt9goy`; 11 ok / 1 `model_failure` / 0 timeouts; every run matched to its server log line by `requestBytes` (all 12 distinct) and cross-checked against the CLI output. 12/12 canary pre-flights CLEAN. `npm run lint` clean after the docs edits. **Not verified:** any payload above 5 KB, any repetition, the §7.2 baseline, and whether `effort: "none"` holds on the 17 endpoints of the pool that did not serve these runs.
 - **PR #44 (TER-44 step 1b), merged as main `dc6cf4d`. Previously RAN locally:** `npm run lint` exit 0, clean. `npx vitest run --dir src src/lib/workspace-analysis.test.ts src/lib/workspace-review-route.test.ts` → **118 passed** (analysis 60, route 58). `npx vitest run --dir src` → **637 passed / 9 skipped, 80 files**. `npm run build` green, all 17 routes compiled. (`--dir src` excludes the stale copies under `.claude/worktrees/`, which a root-level run also picks up.) Both behaviour fixes passed reproduce-revert-restore: reverting the abort classification failed 2 tests, reverting the undici message set failed 5. Nothing about live OpenRouter behaviour is verified here — the model experiments are the next measurement, not this PR.
@@ -119,9 +153,26 @@ biggest untested risk at that size.
 
 ## Last handoff
 
-- Updated: 2026-08-26 (TER-44 step 2 measured; §8.8 written)
-- By: agent (Claude Code)
-- Branch: `main` at `59a0b05`. Uncommitted working tree from this measurement:
+- Updated: 2026-08-27 (TER-45 output contract implemented)
+- By: agent (Claude Code, implementation worker)
+- Branch: `worktree-agent-a039721de60c640f4` in
+  `.claude/worktrees/agent-a039721de60c640f4`, branched from main `d65deea`.
+  Uncommitted: `src/lib/workspace-review-language.ts` (+ test, both new),
+  `src/lib/workspace-review-prompts.ts` (+ test),
+  `src/lib/workspace-analysis.ts` (+ test), doc comments in
+  `workspace-review-route.ts` and `workspace-review-types.ts`,
+  `src/lib/workspace-eval.test.ts` case counts, two new fixture directories
+  under `evals/workspace/cases/`, `docs/workspace-review-endpoint.md` §4,
+  `.ratchet/STATE.md`, `.ratchet/DECISIONS.md`. **No `src/app/api/**`, no
+  `vercel.json`, no migration, no payload-schema change.** A separate Git agent
+  commits.
+- **The one thing a fresh agent should not misread about TER-45:** the English
+  check and the corrective retry are proven by unit tests only. No model has
+  seen the `-v2` prompt and no real generation has been rejected. Do not report
+  "non-English output is fixed" — report "non-English output is now rejected
+  and re-prompted, unmeasured in production".
+- Previous handoff (2026-08-26, TER-44 step 2 measured; §8.8 written), main
+  `59a0b05`. Uncommitted working tree from that measurement:
   `docs/experiments/workspace-review-dogfood.md` (new §8.8),
   `docs/experiments/ter44-step2-runs.json` (new), this file. **Docs only — no
   source, no `src/app/api/**`, no schema change.** A separate Git agent commits.

@@ -12,6 +12,7 @@
  */
 
 import { extractReviewJsonPayload } from "./openrouter-review-provider";
+import { assertEnglishReviewText } from "./workspace-review-language";
 import type {
   CheckEvidence,
   WorkspaceAnalysisInput,
@@ -20,10 +21,10 @@ import type {
 } from "./workspace-review-types";
 
 /** Bump when the changeset system prompt text changes materially. */
-export const WORKSPACE_CHANGESET_PROMPT_VERSION = "workspace-changeset-v1";
+export const WORKSPACE_CHANGESET_PROMPT_VERSION = "workspace-changeset-v2";
 
 /** Bump when the snapshot system prompt text changes materially. */
-export const WORKSPACE_SNAPSHOT_PROMPT_VERSION = "workspace-snapshot-v1";
+export const WORKSPACE_SNAPSHOT_PROMPT_VERSION = "workspace-snapshot-v2";
 
 /** Bounded advisory report cap (spec §4.4). */
 export const WORKSPACE_MAX_FINDINGS = 50;
@@ -48,7 +49,17 @@ export type WorkspacePromptBudgets = {
   [K in keyof typeof WORKSPACE_PROMPT_BUDGETS]: number;
 };
 
-const sharedFindingContract = `Return strict JSON with: summary and findings. Each finding has a ruleId for its stable review-rule family (for example security-authorization or correctness-concurrency), plus a unique findingKey that combines that rule with the affected symbol and remains stable when line numbers or wording change. Each finding also has severity (blocking|warning|suggestion), file, optional line, title, explanation, and optional suggestedFix. Every finding's file must be a path that appears in the provided material — never invent or guess file locations; if you cannot place a problem in a provided path, omit the finding. Report at most ${WORKSPACE_MAX_FINDINGS} findings, most material first. Do not report style preferences.`;
+/**
+ * The output contract (TER-45): language, severity calibration, and what is not
+ * a finding. Severity is graded by CONSEQUENCE, not by how sure the model is —
+ * §8.8 of the dogfood report measured the same seeded defect graded `blocking`
+ * in one run and `warning` in the next on byte-identical bytes. The English
+ * clause is enforced server-side by `assertEnglishReviewText`; the rubric and
+ * the style prohibition are advisory only.
+ */
+const outputContract = `Write every string field — summary, title, explanation, suggestedFix — in English. Identifiers, literals, paths, and code excerpts may be quoted verbatim in their original form. Grade severity by the consequence if the defect reaches production, never by how confident you are: use blocking for an exploitable security defect, data loss or corruption, or a crash on a reachable path (for example an authorization check that can be bypassed); use warning for a correctness defect that produces wrong behaviour without those consequences (for example retrying a non-idempotent POST with no backoff); use suggestion for a concrete improvement with no correctness impact. Do not report style preferences, naming, or formatting: a finding whose only content is how the code is written, rather than what it does wrong, must be omitted entirely.`;
+
+const sharedFindingContract = `Return strict JSON with: summary and findings. Each finding has a ruleId for its stable review-rule family (for example security-authorization or correctness-concurrency), plus a unique findingKey that combines that rule with the affected symbol and remains stable when line numbers or wording change. Each finding also has severity (blocking|warning|suggestion), file, optional line, title, explanation, and optional suggestedFix. Every finding's file must be a path that appears in the provided material — never invent or guess file locations; if you cannot place a problem in a provided path, omit the finding. Report at most ${WORKSPACE_MAX_FINDINGS} findings, most material first. ${outputContract}`;
 
 const evidenceTrustContract = `Evidence provenance is explicit: entries with trust "unverified_client" are client-reported local output that was never verified — treat them as unconfirmed claims, not proof, and say "client-reported" if you cite them. Only entries with trust "isolated" ran in an isolated sandbox.`;
 
@@ -229,12 +240,24 @@ type RawWorkspaceFinding = {
 /**
  * Parse and validate the model's Workspace Review output. Strictness matches
  * the PR provider: exact schema fields, non-empty finding identity, unique
- * finding keys, plus the bounded-report finding cap.
+ * finding keys, plus the bounded-report finding cap. Adds one check the PR
+ * provider does not have: every model-authored string must be English
+ * (`assertEnglishReviewText`), which the caller maps to its own retry reason.
  */
 export function parseWorkspaceReviewOutput(text: string): { summary: string; findings: WorkspaceFinding[] } {
   const value: unknown = JSON.parse(extractReviewJsonPayload(text));
   assertMatchesSchema(value, workspaceReviewSchema);
   const raw = value as { summary: string; findings: RawWorkspaceFinding[] };
+  // Output contract (TER-45): the prompt asks for English; this is where a
+  // non-English answer is actually rejected, before any of it is reported.
+  assertEnglishReviewText(raw.summary, "review.summary");
+  raw.findings.forEach((finding, index) => {
+    assertEnglishReviewText(finding.title, `review.findings[${index}].title`);
+    assertEnglishReviewText(finding.explanation, `review.findings[${index}].explanation`);
+    if (finding.suggestedFix !== null) {
+      assertEnglishReviewText(finding.suggestedFix, `review.findings[${index}].suggestedFix`);
+    }
+  });
   if (raw.findings.length > WORKSPACE_MAX_FINDINGS) throw new Error(`review reports more than ${WORKSPACE_MAX_FINDINGS} findings`);
   const findings: WorkspaceFinding[] = raw.findings.map((finding) => ({
     ruleId: finding.ruleId,

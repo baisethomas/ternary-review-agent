@@ -1,0 +1,23 @@
+{
+  "id": "seeded-nonidempotent-retry",
+  "title": "POST helper retries a non-idempotent request with no backoff and no 4xx exclusion",
+  "tags": [
+    "correctness",
+    "retry",
+    "changeset",
+    "seeded"
+  ],
+  "kind": "changeset",
+  "expectedFindings": [
+    {
+      "ruleId": "correctness-retry",
+      "severity": "warning",
+      "file": "src/http.ts",
+      "line": 9,
+      "lineTolerance": 5,
+      "titleContains": "retr",
+      "required": true
+    }
+  ],
+  "expectedNonFindings": []
+}

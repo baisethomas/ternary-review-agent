@@ -80,6 +80,33 @@ describe("workspace prompt versions", () => {
       expect(getWorkspaceSystemPrompt(kind)).toContain("never invent or guess file locations");
     }
   });
+
+  it("pins every model-authored string to English while allowing verbatim code", () => {
+    for (const kind of ["changeset", "snapshot"] as const) {
+      const prompt = getWorkspaceSystemPrompt(kind);
+      expect(prompt).toContain("summary, title, explanation, suggestedFix — in English");
+      expect(prompt).toContain("quoted verbatim");
+    }
+  });
+
+  it("states the severity rubric with one example per level, graded by consequence", () => {
+    for (const kind of ["changeset", "snapshot"] as const) {
+      const prompt = getWorkspaceSystemPrompt(kind);
+      expect(prompt).toContain("Grade severity by the consequence");
+      expect(prompt).toContain("never by how confident you are");
+      expect(prompt).toContain("blocking for an exploitable security defect, data loss or corruption, or a crash on a reachable path");
+      expect(prompt).toContain("an authorization check that can be bypassed");
+      expect(prompt).toContain("warning for a correctness defect that produces wrong behaviour without those consequences");
+      expect(prompt).toContain("retrying a non-idempotent POST with no backoff");
+      expect(prompt).toContain("suggestion for a concrete improvement with no correctness impact");
+    }
+  });
+
+  it("forbids style-only, naming, and formatting findings in both prompts", () => {
+    for (const kind of ["changeset", "snapshot"] as const) {
+      expect(getWorkspaceSystemPrompt(kind)).toContain("Do not report style preferences, naming, or formatting");
+    }
+  });
 });
 
 describe("buildWorkspaceReviewInput", () => {
@@ -198,5 +225,22 @@ describe("parseWorkspaceReviewOutput", () => {
       findingKey: `security-authorization:allow-${index}`,
     }));
     expect(() => parseWorkspaceReviewOutput(JSON.stringify({ summary: "s", findings }))).toThrow(/more than/);
+  });
+
+  it.each([
+    ["summary", { summary: "授权检查可以被绕过。", findings: [] }, "review.summary"],
+    ["title", { summary: "s", findings: [{ ...validFinding, title: "授权检查被绕过" }] }, "review.findings[0].title"],
+    ["explanation", { summary: "s", findings: [{ ...validFinding, explanation: "授权检查可以被绕过。" }] }, "review.findings[0].explanation"],
+    ["suggestedFix", { summary: "s", findings: [{ ...validFinding, suggestedFix: "恢复授权检查。" }] }, "review.findings[0].suggestedFix"],
+  ])("rejects a non-English %s", (_label, payload, path) => {
+    expect(() => parseWorkspaceReviewOutput(JSON.stringify(payload))).toThrow(`${path} has non-English text`);
+  });
+
+  it("accepts English findings that quote non-ASCII identifiers verbatim", () => {
+    const parsed = parseWorkspaceReviewOutput(JSON.stringify({
+      summary: "One blocking issue.",
+      findings: [{ ...validFinding, explanation: "The constant `授权` is compared with the wrong operand." }],
+    }));
+    expect(parsed.findings).toHaveLength(1);
   });
 });

@@ -144,7 +144,9 @@ export type WorkspaceReviewLogEntry = {
    * how many model requests this ONE request sent; the rate-limit slot is still
    * consumed exactly once, so the hourly gate bounds invocations at twice its
    * size. `retryReason` names why attempt 1 was retry-eligible (its error class
-   * or HTTP status), `retrySkipped` says a retry was warranted but did not fit
+   * or HTTP status — including `schema_invalid` and `language_invalid`, the two
+   * output-contract failures whose retry also carries a corrective message),
+   * `retrySkipped` says a retry was warranted but did not fit
    * before the deadline, and the provider fields say who served each attempt —
    * attempt 2 is routed away from attempt 1's provider. All metadata only.
    */

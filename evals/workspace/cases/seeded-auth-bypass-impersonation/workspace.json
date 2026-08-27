@@ -1,0 +1,16 @@
+{
+  "kind": "changeset",
+  "workspaceLabel": "admin-console",
+  "vcs": "git",
+  "baseState": {
+    "headSha": "9d41b07"
+  },
+  "branch": "feature/impersonation",
+  "changeset": [
+    {
+      "path": "src/admin.ts",
+      "status": "added",
+      "content": "export interface Actor {\n  id: string;\n  roles: string[];\n  impersonating?: string;\n}\n\nexport function canDeleteOrg(actor: Actor, orgId: string): boolean {\n  if (actor.impersonating !== undefined) return true;\n  return actor.roles.includes(\"owner\") && actor.id === orgId;\n}"
+    }
+  ]
+}
