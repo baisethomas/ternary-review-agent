@@ -254,7 +254,9 @@ export function parseWorkspaceReviewOutput(text: string): { summary: string; fin
   raw.findings.forEach((finding, index) => {
     assertEnglishReviewText(finding.title, `review.findings[${index}].title`);
     assertEnglishReviewText(finding.explanation, `review.findings[${index}].explanation`);
-    if (finding.suggestedFix !== null) {
+    // `!= null` covers undefined too, so the language check stays safe if the
+    // schema ever makes suggestedFix optional (Ternary review of #48).
+    if (finding.suggestedFix != null) {
       assertEnglishReviewText(finding.suggestedFix, `review.findings[${index}].suggestedFix`);
     }
   });

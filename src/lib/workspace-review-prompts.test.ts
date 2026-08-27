@@ -243,4 +243,26 @@ describe("parseWorkspaceReviewOutput", () => {
     }));
     expect(parsed.findings).toHaveLength(1);
   });
+
+  it("rejects a finding that omits suggestedFix via the schema, not a TypeError", () => {
+    const findingWithoutSuggestedFix: Partial<typeof validFinding> = { ...validFinding };
+    delete findingWithoutSuggestedFix.suggestedFix;
+    let caught: unknown;
+    try {
+      parseWorkspaceReviewOutput(JSON.stringify({ summary: "s", findings: [findingWithoutSuggestedFix] }));
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBeInstanceOf(TypeError);
+    expect((caught as Error).message).toMatch(/has invalid fields/);
+  });
+
+  it("accepts suggestedFix: null and omits it from the output", () => {
+    const parsed = parseWorkspaceReviewOutput(JSON.stringify({
+      summary: "s",
+      findings: [{ ...validFinding, suggestedFix: null }],
+    }));
+    expect(parsed.findings[0]).not.toHaveProperty("suggestedFix");
+  });
 });
