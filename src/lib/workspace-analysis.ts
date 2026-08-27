@@ -29,6 +29,7 @@ import {
 import { isRetryableHttpStatus, NonRetryableReviewError } from "./review-errors";
 import { reviewSeverities } from "./review-policy";
 import { redactSecrets } from "./secret-redaction";
+import { WorkspaceReviewNonEnglishError } from "./workspace-review-language";
 import {
   buildWorkspaceReviewInput,
   getWorkspaceSystemPrompt,
@@ -155,6 +156,21 @@ export class WorkspaceReviewOutputInvalidError extends NonRetryableReviewError {
 }
 
 /**
+ * The answer was schema-valid but not written in English (TER-45 output
+ * contract). A subclass of the schema-invalid error because it is the same kind
+ * of failure — the model answered, the answer is unusable — and the same retry
+ * budget covers it; it is distinguished only so the retry can carry a *specific*
+ * corrective message and the log can say which contract was broken.
+ */
+export class WorkspaceReviewLanguageError extends WorkspaceReviewOutputInvalidError {
+  constructor(detail: string, cause?: unknown) {
+    super(detail, cause);
+    this.name = "WorkspaceReviewLanguageError";
+    this.message = `Workspace review response was not written in English: ${detail}`;
+  }
+}
+
+/**
  * Build the error for a non-OK OpenRouter HTTP response, carrying the status so
  * the retry policy can read it back. Retryable statuses (5xx, 429, …) stay a
  * plain `Error` and non-retryable ones (401/400/413) stay a
@@ -229,7 +245,9 @@ export function workspaceAttemptMetadataFromError(error: unknown): WorkspaceAtte
  * Retryable — all delivery failures, not judgement failures: a stall, a dead
  * connection, a truncated stream, a malformed SSE frame, an attempt that blew
  * its own budget, a provider error frame, a retryable HTTP status (5xx/429/408/
- * 409/425), and a schema-invalid answer (see `WorkspaceReviewOutputInvalidError`).
+ * 409/425), a schema-invalid answer (see `WorkspaceReviewOutputInvalidError`)
+ * and a non-English answer (see `WorkspaceReviewLanguageError`). The last two
+ * are the only reasons that also carry a corrective message into attempt 2.
  *
  * Never retryable: the end-to-end deadline (there is no time left by
  * definition), a non-retryable HTTP status (401/400/413 — a second identical
@@ -245,11 +263,29 @@ export function workspaceRetryReason(error: unknown): string | undefined {
   if (error instanceof WorkspaceModelTruncatedStreamError) return "truncated_stream";
   if (error instanceof WorkspaceModelMalformedFrameError) return "malformed_frame";
   if (error instanceof WorkspaceModelProviderError) return "provider_error";
+  // Before the schema-invalid check: the language error is a subclass of it.
+  if (error instanceof WorkspaceReviewLanguageError) return "language_invalid";
   if (error instanceof WorkspaceReviewOutputInvalidError) return "schema_invalid";
   const status = workspaceModelHttpStatus(error);
   if (status !== undefined && isRetryableHttpStatus(status)) return `http_${status}`;
   return undefined;
 }
+
+/**
+ * The corrective message attempt 2 carries, keyed by retry reason.
+ *
+ * Only the two output-contract reasons have one: they are the reasons where
+ * attempt 1 actually produced an answer, so there is something to correct.
+ * Every delivery failure (stall, connection, HTTP status, …) retries the
+ * identical request on a different provider — telling the model to "respond
+ * again" when it never responded would only add noise to the prompt.
+ */
+const WORKSPACE_RETRY_CORRECTIONS: Readonly<Record<string, string | undefined>> = {
+  language_invalid:
+    "Your previous answer contained non-English text. Respond again with every string field (summary, title, explanation, suggestedFix) written in English.",
+  schema_invalid:
+    "Your previous answer was not valid review JSON. Respond again with a single JSON object that matches the required schema exactly.",
+};
 
 /**
  * OpenRouter reasoning-effort bound. Enum verified against OpenRouter's
@@ -430,6 +466,14 @@ export type WorkspaceModelRequestArgs = {
    * a tuning knob — attempt 1 never sends it.
    */
   ignoreProviders?: readonly string[];
+  /**
+   * A corrective instruction appended as a third message when attempt 1's
+   * answer broke the output contract (TER-45): unparseable JSON, or text that
+   * was not English. Per-attempt state like `ignoreProviders`, not a tuning
+   * knob — attempt 1 never sends it, and a delivery failure never sets it
+   * (there was no answer to correct).
+   */
+  correction?: string;
 };
 
 export type WorkspaceModelRequest = (request: WorkspaceModelRequestArgs) => Promise<WorkspaceModelResponse>;
@@ -694,6 +738,7 @@ function toWorkspaceUsage(usage: OpenRouterUsage | undefined): WorkspaceModelRes
  *   (`only` is the allowlist counterpart; a blocklist is what ADR-0002 wants —
  *   route *away* from the provider that just failed without pinning the pool.)
  *   Omitted entirely on attempt 1 and whenever the failed provider is unknown.
+ * - the retry's `correction` message — see `WorkspaceModelRequestArgs.correction`.
  */
 export function buildWorkspaceModelRequestBody(request: WorkspaceModelRequestArgs): Record<string, unknown> {
   return {
@@ -702,6 +747,9 @@ export function buildWorkspaceModelRequestBody(request: WorkspaceModelRequestArg
     messages: [
       { role: "system", content: request.systemPrompt },
       { role: "user", content: request.input },
+      // The retry's correction, when attempt 1 answered but broke the output
+      // contract. Absent on attempt 1 and on every delivery-failure retry.
+      ...(request.correction ? [{ role: "user", content: request.correction }] : []),
     ],
     response_format: { type: "json_schema", json_schema: { name: "workspace_review", strict: true, schema: request.schema } },
     // `omit` means the key never reaches the wire. Under `require_parameters:
@@ -1091,6 +1139,9 @@ export async function analyzeWorkspaceReview(
   let retryReason: string | undefined;
   let retrySkipped: WorkspaceAttemptMetadata["retrySkipped"];
   const ignoreProviders: string[] = [];
+  // Set only when attempt 1 answered and broke the output contract; a delivery
+  // failure leaves it undefined, because there is nothing to correct.
+  let correction: string | undefined;
   const attemptMetadata = (): WorkspaceAttemptMetadata => ({
     attempts: attemptProviders.length,
     ...(retryReason !== undefined ? { retryReason } : {}),
@@ -1143,6 +1194,8 @@ export async function analyzeWorkspaceReview(
             // Attempt 1 sends no blocklist at all; attempt 2 routes away from
             // the provider that failed, when attempt 1 named one.
             ...(ignoreProviders.length ? { ignoreProviders: [...ignoreProviders] } : {}),
+            // Set only when attempt 1 broke the output contract.
+            ...(correction !== undefined ? { correction } : {}),
           }),
           deadline,
           attemptDeadline,
@@ -1155,9 +1208,14 @@ export async function analyzeWorkspaceReview(
         } catch (error) {
           // Retry-eligible (see WorkspaceReviewOutputInvalidError): a
           // well-formed request that produced a malformed answer is a property
-          // of the generation, not of the payload.
+          // of the generation, not of the payload. A non-English answer is the
+          // same kind of failure with a different corrective message, so it
+          // gets its own subclass.
+          const detail = error instanceof Error ? error.message : String(error);
           throw attachWorkspaceProvider(
-            new WorkspaceReviewOutputInvalidError(error instanceof Error ? error.message : String(error), error),
+            error instanceof WorkspaceReviewNonEnglishError
+              ? new WorkspaceReviewLanguageError(detail, error)
+              : new WorkspaceReviewOutputInvalidError(detail, error),
             response.provider,
           );
         }
@@ -1221,6 +1279,7 @@ export async function analyzeWorkspaceReview(
           throw attachWorkspaceAttemptMetadata(failure, attemptMetadata());
         }
         retryReason = reason;
+        correction = WORKSPACE_RETRY_CORRECTIONS[reason];
 
         // A second attempt only starts if its FULL budget still fits before the
         // deadline (ADR-0002 fixed decision 6). Starting one that the deadline

@@ -54,7 +54,7 @@ function labelEchoAnalyzer(cases: LoadedWorkspaceEvalCase[]): WorkspaceEvalAnaly
 describe("workspace eval fixtures", () => {
   it("loads every fixture case with valid labels, kinds, and workspaces", async () => {
     const cases = await loadWorkspaceEvalCases(casesDir);
-    expect(cases.length).toBe(10);
+    expect(cases.length).toBe(12);
     for (const evalCase of cases) {
       expect(["changeset", "snapshot"]).toContain(evalCase.kind);
       expect(evalCase.changeSet.kind).toBe(evalCase.kind);
@@ -112,7 +112,7 @@ describe("runWorkspaceEvalSuite", () => {
     });
 
     expect(report.gateFailures).toEqual([]);
-    expect(report.suite.caseCount).toBe(10);
+    expect(report.suite.caseCount).toBe(12);
     expect(report.suite.precision).toBe(1);
     expect(report.suite.blockingRecall).toBe(1);
     expect(report.promptVersions.changeset).not.toBe(report.promptVersions.snapshot);
@@ -172,7 +172,7 @@ describe("runWorkspaceEvalSuite", () => {
     };
 
     const report = await runWorkspaceEvalSuite({ casesDir, thresholdsPath, gate: true, analyze: flaky });
-    expect(report.suite.caseCount).toBe(9);
+    expect(report.suite.caseCount).toBe(11);
     expect(report.cases.find((entry) => entry.id === "snapshot-architecture-risk")?.error).toMatch(/timed out/);
     expect(report.gateFailures.some((failure) => failure.includes("snapshot-architecture-risk"))).toBe(true);
   });
@@ -324,7 +324,7 @@ describe("workspace fixture parsing", () => {
 
   it("still loads every valid on-disk fixture through the strict validator", async () => {
     const cases = await loadWorkspaceEvalCases(casesDir);
-    expect(cases.length).toBe(10);
+    expect(cases.length).toBe(12);
   });
 
   it("aborts suite loading with a file-identifying error when a fixture is invalid", async () => {

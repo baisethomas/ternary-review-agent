@@ -17,6 +17,7 @@ import {
   WorkspaceModelMalformedFrameError,
   WorkspaceModelProviderError,
   WorkspaceModelTruncatedStreamError,
+  WorkspaceReviewLanguageError,
   WorkspaceReviewOutputInvalidError,
   buildWorkspaceModelRequestBody,
   requestOpenRouterWorkspaceModel,
@@ -1202,6 +1203,27 @@ describe("bounded retry (ADR-0002 option B, TER-44 step 2)", () => {
       .toEqual({ require_parameters: true, sort: "latency", ignore: ["DeepInfra"] });
   });
 
+  it("appends the retry's corrective message as a third message, and only when set", () => {
+    const base = {
+      model: "test/model",
+      systemPrompt: "s",
+      input: "i",
+      schema: {},
+      maxOutputTokens: 10,
+      signal: new AbortController().signal,
+      tuning: WORKSPACE_MODEL_TUNING_DEFAULTS,
+    };
+    expect(buildWorkspaceModelRequestBody(base).messages).toEqual([
+      { role: "system", content: "s" },
+      { role: "user", content: "i" },
+    ]);
+    expect(buildWorkspaceModelRequestBody({ ...base, correction: "Respond again in English." }).messages).toEqual([
+      { role: "system", content: "s" },
+      { role: "user", content: "i" },
+      { role: "user", content: "Respond again in English." },
+    ]);
+  });
+
   it("sends the same routing on the retry when no provider was identified", async () => {
     const requestModel = vi.fn<WorkspaceModelRequest>(async () => {
       if (vi.mocked(requestModel).mock.calls.length === 1) throw workspaceModelHttpError(503, "overloaded");
@@ -1284,6 +1306,43 @@ describe("bounded retry (ADR-0002 option B, TER-44 step 2)", () => {
     expect(failure).toBeInstanceOf(WorkspaceReviewOutputInvalidError);
     expect((failure as Error).message).toMatch(/not valid review JSON/);
     expect(workspaceAttemptMetadataFromError(failure)).toMatchObject({ attempts: 2, retryReason: "schema_invalid" });
+    expect(vi.mocked(requestModel).mock.calls[0][0].correction).toBeUndefined();
+    expect(vi.mocked(requestModel).mock.calls[1][0].correction)
+      .toBe("Your previous answer was not valid review JSON. Respond again with a single JSON object that matches the required schema exactly.");
+  });
+
+  // TER-45 output contract: an answer in the wrong language is unusable in the
+  // same way a malformed one is, and gets the same one retry — with a
+  // correction that names the failure instead of repeating the request.
+  it("retries a non-English answer once, carrying the language correction into attempt 2", async () => {
+    const chinese = JSON.stringify({
+      summary: "授权检查可以被绕过。",
+      findings: [],
+    });
+    const requestModel = vi.fn<WorkspaceModelRequest>(async (): Promise<WorkspaceModelResponse> => {
+      if (vi.mocked(requestModel).mock.calls.length === 1) return { text: chinese };
+      return { text: JSON.stringify(reviewPayload) };
+    });
+
+    const result = await analyzeWorkspaceReview(retryableDeadline(), { requestModel });
+
+    expect(requestModel).toHaveBeenCalledTimes(2);
+    expect(result.ai).toMatchObject({ attempts: 2, retryReason: "language_invalid" });
+    expect(vi.mocked(requestModel).mock.calls[0][0].correction).toBeUndefined();
+    expect(vi.mocked(requestModel).mock.calls[1][0].correction)
+      .toBe("Your previous answer contained non-English text. Respond again with every string field (summary, title, explanation, suggestedFix) written in English.");
+  });
+
+  it("fails deterministically when the second answer is also non-English", async () => {
+    const chinese = JSON.stringify({ summary: "授权检查可以被绕过。", findings: [] });
+    const requestModel = vi.fn<WorkspaceModelRequest>(async () => ({ text: chinese }));
+
+    const failure = await analyzeWorkspaceReview(retryableDeadline(), { requestModel }).catch((error: unknown) => error);
+
+    expect(requestModel).toHaveBeenCalledTimes(2);
+    expect(failure).toBeInstanceOf(WorkspaceReviewLanguageError);
+    expect((failure as Error).message).toMatch(/not written in English/);
+    expect(workspaceAttemptMetadataFromError(failure)).toMatchObject({ attempts: 2, retryReason: "language_invalid" });
   });
 
   it("caps a first attempt at its own budget so the retry still fits", async () => {
@@ -1338,6 +1397,9 @@ describe("bounded retry (ADR-0002 option B, TER-44 step 2)", () => {
     expect(workspaceRetryReason(new WorkspaceModelProviderError("boom"))).toBe("provider_error");
     expect(workspaceRetryReason(new WorkspaceModelAttemptTimeoutError(80_000))).toBe("attempt_timeout");
     expect(workspaceRetryReason(new WorkspaceReviewOutputInvalidError("bad json"))).toBe("schema_invalid");
+    // Checked before its parent class, or the language retry would lose its correction.
+    expect(workspaceRetryReason(new WorkspaceReviewLanguageError("review.summary has non-English text")))
+      .toBe("language_invalid");
     expect(workspaceRetryReason(workspaceModelHttpError(500, "x"))).toBe("http_500");
     expect(workspaceRetryReason(workspaceModelHttpError(429, "x"))).toBe("http_429");
 

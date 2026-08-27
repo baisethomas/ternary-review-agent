@@ -1,0 +1,23 @@
+{
+  "id": "seeded-auth-bypass-impersonation",
+  "title": "Impersonation short-circuits the ownership check on org deletion",
+  "tags": [
+    "security",
+    "authorization",
+    "changeset",
+    "seeded"
+  ],
+  "kind": "changeset",
+  "expectedFindings": [
+    {
+      "ruleId": "security-authorization",
+      "severity": "blocking",
+      "file": "src/admin.ts",
+      "line": 8,
+      "lineTolerance": 5,
+      "titleContains": "authorization",
+      "required": true
+    }
+  ],
+  "expectedNonFindings": []
+}
