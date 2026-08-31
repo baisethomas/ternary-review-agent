@@ -449,10 +449,11 @@ describe("workspace model request parameters (ADR-0002 option C)", () => {
   // §8.7 measured "low" as a silent no-op on the incumbent model and "none" as
   // the value that cleared the ADR-0002 delivery gate. Changed by decision, not
   // by accident — see WORKSPACE_MODEL_TUNING_DEFAULTS's doc comment.
-  it("defaults to a bounded reasoning budget (none, per §8.7), latency-sorted routing, and a 20s stall window", () => {
+  it("defaults to a bounded reasoning budget (none, per §8.7), latency-sorted routing, no provider pinning, and a 20s stall window", () => {
     expect(WORKSPACE_MODEL_TUNING_DEFAULTS).toEqual({
       reasoningEffort: "none",
       providerSort: "latency",
+      providerOrder: "omit",
       stream: true,
       stallTimeoutMs: 20_000,
     });
@@ -536,6 +537,60 @@ describe("workspace model request parameters (ADR-0002 option C)", () => {
     expect(body.provider).toEqual({ require_parameters: true });
     expect(body.reasoning).toEqual({ effort: "none" });
   });
+
+  it("sends provider.order + allow_fallbacks and drops sort when providerOrder is set (TER-46)", () => {
+    const body = buildWorkspaceModelRequestBody({
+      model: "test/model",
+      systemPrompt: "s",
+      input: "i",
+      schema: {},
+      maxOutputTokens: 16,
+      signal: new AbortController().signal,
+      tuning: { ...WORKSPACE_MODEL_TUNING_DEFAULTS, providerSort: "latency", providerOrder: ["reka", "makora"] },
+    });
+    expect(body.provider).toEqual({
+      require_parameters: true,
+      order: ["reka", "makora"],
+      allow_fallbacks: true,
+    });
+  });
+
+  it("carries provider.order alongside provider.ignore (retry attempt-2 shape, TER-46)", () => {
+    const body = buildWorkspaceModelRequestBody({
+      model: "test/model",
+      systemPrompt: "s",
+      input: "i",
+      schema: {},
+      maxOutputTokens: 16,
+      signal: new AbortController().signal,
+      tuning: { ...WORKSPACE_MODEL_TUNING_DEFAULTS, providerOrder: ["reka", "makora"] },
+      ignoreProviders: ["deepinfra"],
+    });
+    expect(body.provider).toEqual({
+      require_parameters: true,
+      order: ["reka", "makora"],
+      allow_fallbacks: true,
+      ignore: ["deepinfra"],
+    });
+  });
+
+  it("leaves the provider object byte-for-byte unchanged when providerOrder is `omit` (TER-46)", () => {
+    const request = {
+      model: "test/model",
+      systemPrompt: "s",
+      input: "i",
+      schema: {},
+      maxOutputTokens: 16,
+      signal: new AbortController().signal,
+    };
+    const withOrderOmitted = buildWorkspaceModelRequestBody({
+      ...request,
+      tuning: { ...WORKSPACE_MODEL_TUNING_DEFAULTS, providerOrder: "omit" },
+    });
+    const withoutOrderField = buildWorkspaceModelRequestBody({ ...request, tuning: WORKSPACE_MODEL_TUNING_DEFAULTS });
+    expect(withOrderOmitted.provider).toEqual({ require_parameters: true, sort: "latency" });
+    expect(withOrderOmitted.provider).toEqual(withoutOrderField.provider);
+  });
 });
 
 describe("env-tunable model knobs (TER-44 step 1b)", () => {
@@ -551,7 +606,33 @@ describe("env-tunable model knobs (TER-44 step 1b)", () => {
     expect(resolveWorkspaceModelTuningFromEnv({
       WORKSPACE_MODEL_REASONING_EFFORT: "",
       WORKSPACE_MODEL_PROVIDER_SORT: "  ",
+      WORKSPACE_MODEL_PROVIDER_ORDER: "  ",
     })).toEqual({});
+  });
+
+  it("parses WORKSPACE_MODEL_PROVIDER_ORDER (TER-46)", () => {
+    expect(resolveWorkspaceModelTuningFromEnv({ WORKSPACE_MODEL_PROVIDER_ORDER: "reka,makora" }))
+      .toEqual({ providerOrder: ["reka", "makora"] });
+    // Whitespace around slugs and separators is tolerated.
+    expect(resolveWorkspaceModelTuningFromEnv({ WORKSPACE_MODEL_PROVIDER_ORDER: " reka , makora " }))
+      .toEqual({ providerOrder: ["reka", "makora"] });
+    // Unset/empty means "not configured" — the key is absent, not `"omit"`.
+    expect(resolveWorkspaceModelTuningFromEnv({})).not.toHaveProperty("providerOrder");
+    expect(resolveWorkspaceModelTuningFromEnv({ WORKSPACE_MODEL_PROVIDER_ORDER: "" }))
+      .not.toHaveProperty("providerOrder");
+    // The literal `omit` disables provider pinning.
+    expect(resolveWorkspaceModelTuningFromEnv({ WORKSPACE_MODEL_PROVIDER_ORDER: "omit" }))
+      .toEqual({ providerOrder: "omit" });
+    // A slug with a variant suffix (vendor/variant shape) is accepted.
+    expect(resolveWorkspaceModelTuningFromEnv({ WORKSPACE_MODEL_PROVIDER_ORDER: "deepinfra/turbo" }))
+      .toEqual({ providerOrder: ["deepinfra/turbo"] });
+  });
+
+  it("rejects an uppercase provider slug rather than silently lowercasing it (TER-46)", () => {
+    expect(() => resolveWorkspaceModelTuningFromEnv({ WORKSPACE_MODEL_PROVIDER_ORDER: "Reka" }))
+      .toThrow(WorkspaceModelTuningConfigError);
+    expect(() => resolveWorkspaceModelTuningFromEnv({ WORKSPACE_MODEL_PROVIDER_ORDER: "Reka" }))
+      .toThrow(/WORKSPACE_MODEL_PROVIDER_ORDER="Reka"/);
   });
 
   it("accepts every documented OpenRouter effort plus `omit`", () => {
