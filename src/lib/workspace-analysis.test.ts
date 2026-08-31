@@ -465,6 +465,20 @@ describe("workspace model request parameters (ADR-0002 option C)", () => {
     });
   });
 
+  // The default constant never passes through the env parser, so a typo edited
+  // into it would ship silently. Round-tripping it through the real validator
+  // keeps the default held to the same slug rules as any env override
+  // (Ternary review of #52, finding 1).
+  it("keeps the default provider order valid under the env parser's slug rules", () => {
+    const order = WORKSPACE_MODEL_TUNING_DEFAULTS.providerOrder;
+    if (order === "omit") throw new Error("default is expected to be a pinned list");
+    expect(
+      resolveWorkspaceModelTuningFromEnv({
+        WORKSPACE_MODEL_PROVIDER_ORDER: order.join(","),
+      }).providerOrder,
+    ).toEqual(order);
+  });
+
   it("builds a body carrying reasoning.effort, provider.order + allow_fallbacks (no sort), require_parameters and stream", () => {
     const body = buildWorkspaceModelRequestBody({
       model: "test/model",
