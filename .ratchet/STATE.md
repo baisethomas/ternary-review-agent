@@ -33,15 +33,24 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **Nothing in flight in source.** Uncommitted working tree: `docs/experiments/workspace-review-dogfood.md` (new §8.9), `docs/experiments/ter45-runs.json` (new), this file. Docs only — no `src/`, no `src/app/api/**`, no schema change. A separate Git agent commits.
-- TER-45's Linear ticket can close once the §8.9 docs merge.
+- **TER-46 (`provider.order` pinning knob), implemented in an agent worktree,
+  pending PR.** `WorkspaceModelTuning.providerOrder` (default `"omit"`, no
+  behavior change on merge), env-tunable via `WORKSPACE_MODEL_PROVIDER_ORDER`;
+  when set, the request sends `provider.order` + `allow_fallbacks: true` and
+  drops `sort` (unspecified interaction per OpenRouter docs). Slugs validated
+  lowercase, fail-loud. Decision D-20260831-0100. **Not in this PR:** the
+  Vercel env var (owner hard stop) and any default promotion — both wait on
+  the §8.10 measurement (12 seeds × 2 gate windows under
+  `WORKSPACE_MODEL_PROVIDER_ORDER=<reka>,<makora>`, exact slugs read from the
+  live endpoint list first; gate = delivery ≥ 80%, p50 < 30 s, pinned provider
+  on ≥ 90% of log lines with cross-window dispersion collapsed).
+- TER-45 closed 2026-08-31 (measured half done; §8.9 merged as `372db9b`, #49).
 
 ## Next
 
-1. **`provider.order` pinning** — now on four grounds: §8.8.2's 10× latency
-   spread, §8.7.4's 6.6× price spread, §8.9.4's fourth-consecutive provider-mix
-   shuffle (DeepInfra went from dominant to absent), and the fact that the one
-   live failure was provider-connection-shaped. The obvious next ticket.
+1. **`provider.order` pinning is TER-46, in progress** (see "Working on"). What
+   remains after the PR merges: owner sets the env var, then the §8.10
+   measurement, then the promotion decision.
 2. **Severity-rubric residue (product question, not a bug):** S07/S11-class
    seeds flap because their *consequence* is arguable per run. If stability
    there matters, name those consequences in the rubric (offline credential
@@ -72,6 +81,14 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Verification status
 
+- **TER-46 (2026-08-31), RAN locally in the agent worktree:** `npm run lint`
+  clean; `npx vitest run --dir src src/lib/workspace-analysis.test.ts` 75 → 80
+  tests green; full `npx vitest run --dir src` 688 passed / 9 skipped (81
+  files); `npm run build` green (`.next/` moved out of the worktree, not
+  deleted). Reproduce-revert-restore RAN for both behaviors: reverting the
+  sort-drop rule fails the order-body test; removing the slug pattern fails the
+  uppercase-rejection test. **Not verified:** anything live — no request has
+  ever carried `provider.order`; the §8.10 series is the measurement.
 - **TER-45 measurement (2026-08-31), RAN live:** 28 submissions against
   production `dpl_BRcCmHMmCgBNH7cnTJUFwMRmQk4g` (main `03656fc`, prompt
   `workspace-changeset-v2`). 28/28 `ok`; 27 runs matched to server log lines by

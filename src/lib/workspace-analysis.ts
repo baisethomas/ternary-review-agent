@@ -351,6 +351,20 @@ export type WorkspaceModelTuning = {
    * routing determinism is wanted either way. `"omit"` drops `sort` entirely.
    */
   providerSort: WorkspaceProviderSortSetting;
+  /**
+   * Deterministic provider allowlist-with-priority: sent as `provider.order`
+   * plus `provider.allow_fallbacks: true`, or, for `"omit"`, not sent at all.
+   * Verified 2026-08-31 against
+   * https://openrouter.ai/docs/features/provider-routing: `order` is a list
+   * of lowercase provider slugs tried strictly in sequence — "the router will
+   * prioritize providers in this list, and in this order"; `allow_fallbacks`
+   * defaults to `true`, meaning a provider left off `order` remains available
+   * as a fallback rather than being excluded; `ignore` acts as a universal
+   * filter, applied on top of `order`. The docs do not specify how `sort` and
+   * `order` interact when both are sent, so this module drops `sort` entirely
+   * whenever `order` is set rather than guess at undocumented precedence.
+   */
+  providerOrder: readonly string[] | "omit";
   /** Ask for an SSE stream so a stalled generation is detectable. */
   stream: boolean;
   /**
@@ -381,6 +395,7 @@ export type WorkspaceModelTuning = {
 export const WORKSPACE_MODEL_TUNING_DEFAULTS: WorkspaceModelTuning = {
   reasoningEffort: "none",
   providerSort: "latency",
+  providerOrder: "omit",
   stream: true,
   stallTimeoutMs: 20_000,
 };
@@ -412,6 +427,34 @@ function parseTuningEnum<T extends string>(
   return value as T;
 }
 
+const PROVIDER_SLUG_PATTERN = /^[a-z0-9/._-]+$/;
+
+/**
+ * Parse `WORKSPACE_MODEL_PROVIDER_ORDER`: unset/empty means "not configured"
+ * (matches `parseTuningEnum`'s convention); the literal `omit` means "omit";
+ * otherwise a comma-separated list of provider slugs, each trimmed. A slug
+ * that fails the lowercase-slug shape fails loud rather than being silently
+ * normalized (e.g. lowercased) — the whole point of these knobs is that a
+ * measurement series can say which value produced which numbers.
+ */
+function parseProviderOrderEnv(raw: string | undefined): readonly string[] | "omit" | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (trimmed === "") return undefined;
+  if (trimmed === "omit") return "omit";
+  const slugs = trimmed.split(",").map((slug) => slug.trim());
+  for (const slug of slugs) {
+    if (slug === "" || !PROVIDER_SLUG_PATTERN.test(slug)) {
+      throw new WorkspaceModelTuningConfigError(
+        "WORKSPACE_MODEL_PROVIDER_ORDER",
+        raw,
+        ["a comma-separated list of lowercase provider slugs (a-z, 0-9, /._-)", "omit"],
+      );
+    }
+  }
+  return slugs;
+}
+
 /**
  * Resolve the env-tunable survivability knobs, once, in one place.
  *
@@ -433,9 +476,11 @@ export function resolveWorkspaceModelTuningFromEnv(
     env.WORKSPACE_MODEL_PROVIDER_SORT,
     [...WORKSPACE_PROVIDER_SORTS, "omit"],
   );
+  const providerOrder = parseProviderOrderEnv(env.WORKSPACE_MODEL_PROVIDER_ORDER);
   return {
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     ...(providerSort !== undefined ? { providerSort } : {}),
+    ...(providerOrder !== undefined ? { providerOrder } : {}),
   };
 }
 
@@ -738,9 +783,18 @@ function toWorkspaceUsage(usage: OpenRouterUsage | undefined): WorkspaceModelRes
  *   (`only` is the allowlist counterpart; a blocklist is what ADR-0002 wants —
  *   route *away* from the provider that just failed without pinning the pool.)
  *   Omitted entirely on attempt 1 and whenever the failed provider is unknown.
+ *   Merges unchanged with `provider.order` below — `ignore` is a universal
+ *   filter applied on top of whatever else `provider` carries.
+ * - `provider.order` / `provider.allow_fallbacks` — a prioritized provider
+ *   list (`WorkspaceModelTuning.providerOrder`; see its doc comment for the
+ *   provider-routing-docs citation). When set, `provider.sort` is DROPPED
+ *   entirely rather than sent alongside `order` — the docs do not specify
+ *   `sort`+`order` precedence, so this module picks one deterministic
+ *   behavior instead of sending an unspecified combination.
  * - the retry's `correction` message — see `WorkspaceModelRequestArgs.correction`.
  */
 export function buildWorkspaceModelRequestBody(request: WorkspaceModelRequestArgs): Record<string, unknown> {
+  const hasProviderOrder = request.tuning.providerOrder !== "omit" && request.tuning.providerOrder.length > 0;
   return {
     model: request.model,
     max_tokens: request.maxOutputTokens,
@@ -759,7 +813,9 @@ export function buildWorkspaceModelRequestBody(request: WorkspaceModelRequestArg
     ...(request.tuning.reasoningEffort === "omit" ? {} : { reasoning: { effort: request.tuning.reasoningEffort } }),
     provider: {
       require_parameters: true,
-      ...(request.tuning.providerSort === "omit" ? {} : { sort: request.tuning.providerSort }),
+      ...(hasProviderOrder
+        ? { order: [...(request.tuning.providerOrder as readonly string[])], allow_fallbacks: true }
+        : request.tuning.providerSort === "omit" ? {} : { sort: request.tuning.providerSort }),
       ...(request.ignoreProviders?.length ? { ignore: [...request.ignoreProviders] } : {}),
     },
     ...(request.tuning.stream ? { stream: true } : {}),
