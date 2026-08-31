@@ -1440,6 +1440,111 @@ log line** rather than inferred, closing §8.7.2's verification gap;
   without help. Two clean series in a row on the same tuning is the simpler
   explanation, and it does not require the retry to exist.
 
+## 8.9 TER-45 output contract — first series under prompt `-v2` (measured 2026-08-31)
+
+**28 live submissions** against production `POST /api/workspace-reviews`
+(deployment `dpl_BRcCmHMmCgBNH7cnTJUFwMRmQk4g`, main `03656fc`, prompt
+`workspace-changeset-v2`): the 12 seeds × **2 repetitions** over the TER-39
+fixtures, plus 4 make-up runs. Four hourly gate windows, concurrency 1, canary
+pre-flight before every transmit (28/28 CLEAN), fixture digest-verified after
+every revert. Raw per-run record: `docs/experiments/ter45-runs.json`.
+
+This is the first repetition data on the seeds anywhere in the project, and the
+first time any model saw the `-v2` prompt. Two protocol notes, stated up front:
+the driver initially ran S07/S11 against the `ordinary` fixture where the prior
+series used `python`; 4 make-up runs restored the like-for-like configuration
+and the 4 deviation runs are marked in the record and excluded from cross-series
+comparison. The driver was also killed twice during idle gate-window sleeps and
+resumed; no run was in flight at either kill.
+
+### 8.9.1 Delivery, and the retry finally fired
+
+**28/28 delivered per request; 28/29 per attempt.** Zero timeouts, zero
+`model_failure`. And for the first time since ADR-0002 option B merged, the
+bounded retry produced evidence about itself: **rep2-S11's attempt 1 to Phala
+failed as a `connection` error, and attempt 2 was routed away via
+`provider.ignore` to Together and delivered at 56.9 s** — inside the 180 s
+deadline, invisible to the caller except as latency. One firing is one firing,
+not a reliability figure; but the classification, the re-route and the budget
+arithmetic all behaved as built, on a failure class nobody injected.
+
+The corrective-message half of TER-45 (`language_invalid` / `schema_invalid`
+re-prompting) did **not** fire — a connection-shaped retry re-sends an identical
+body by design — so it remains proven by unit tests only.
+
+### 8.9.2 Language: 28/28 clean on the blocked-script scan, and the check never had to act
+
+Every transcript scanned **zero** for Han/Kana/Hangul/Cyrillic/Arabic/Hebrew/
+Thai/Devanagari characters, and `language_invalid` appeared in no log line. Be
+precise about what that scan establishes: it detects the blocked scripts — the
+failure mode Phase B actually observed (Chinese) — and would pass Latin-script
+non-English prose, the same accepted limit as the server-side check itself
+(D-20260827-0100). The transcripts spot-read during adjudication (roughly half
+the series, including every seed discussed in §8.9.3) were English prose, but
+no per-run language identification was recorded, so this report claims
+scan-clean, not proven-English. On that basis the observed streak since Phase
+B's single Chinese generation is **61 consecutive reviews without a
+blocked-script character**; the server-side rejection has still never met a
+non-English generation, so the honest claim is unchanged: non-English output is
+now *rejected and re-prompted if it occurs*, and it has not been observed to
+occur.
+
+### 8.9.3 Severity: the rubric stabilised the anchors, not the ambiguous seeds
+
+Per-seed severity of the seeded finding across the two repetitions
+(like-for-like configuration; S07/S11 from the python make-ups):
+
+| stable across reps | flapped across reps |
+| --- | --- |
+| S01 warning, S02 blocking, S03 blocking, S04 blocking, S05 warning, **S06 blocking**, **S08 warning**, S10 blocking | S07 warning→blocking, S11 warning→blocking, S09 missed→suggestion |
+
+```
+severity agreement (gradable in both reps)   = 8 / 10  = 80%
+severity agreement (counting S09's miss)     = 8 / 11  = 72.7%
+recall, like-for-like runs                   = 21 / 22 (rep1-S09 FN)
+S12 style-only control                       = PASS in both reps
+```
+
+The two seeds the rubric was written around held: **S06 (auth bypass) graded
+`blocking` in both reps** — the grade that moved between §8.7 and §8.8 on
+byte-identical bytes — and **S08 graded `warning` in both**. What still moves is
+exactly the consequence-ambiguous residue: S07's file-handle leak flapped when
+one rep read it as crash-adjacent, and S11's unsalted MD5 flapped
+warning/blocking — the same both-directions instability §8.8 recorded, now
+confined to seeds where the *consequence itself* is arguable. S09 (TOCTOU) is
+the series' worst result: missed outright in rep 1 and graded only `suggestion`
+in rep 2. A rubric graded by consequence cannot stabilise a finding whose
+consequence the model reads differently per run; if S07/S11-class stability
+matters, the lever is naming those consequences in the rubric (e.g. offline
+credential cracking, descriptor exhaustion), at the cost of prompt growth.
+
+`-v2` numbers are **not comparable** to §8.5–§8.8 quality figures (different
+prompt), which is why this section reports agreement across its own two reps
+rather than deltas against older series.
+
+### 8.9.4 Latency and cost: a new provider mix, again
+
+p50 server duration **11.8 s** (min 4.8 s, max 56.9 s — the retry run). Four
+providers served the series — Makora 13, Reka 10, Phala 4, Together 1 — and
+**DeepInfra, which dominated §8.8's slow window, served zero requests**. Fourth
+consecutive series in which `provider.sort: "latency"` produced a different mix;
+the §8.8.2 conclusion stands unchanged: `provider.order` pinning is the lever.
+
+Spend: **$0.0282 for 28 reviews** ($0.00101 mean, ~1.5× §8.8's fixture mean,
+driven by Phala/Reka price points). `reasoningTokens` 0 on all 28.
+
+### 8.9.5 What this series did not measure
+
+- **The corrective re-prompt** — no `language_invalid` or `schema_invalid`
+  occurred to trigger it.
+- **`tablet-notes-v3` (43 KB)** — still 0-for-4 from Phase B, still untested.
+- **§7.2 generic-agent baseline** — still unrun; agreement percentages above are
+  self-relative, not benchmarked.
+- **Precision** — the ~240 findings were not adjudicated one by one; only the
+  seeded defect and the S12 control were scored per run.
+- Whether one `connection` retry firing generalises. The other 28 attempts
+  succeeded first try.
+
 ## 9. Recommendation
 
 **REVISE.** Not continue, not stop.
