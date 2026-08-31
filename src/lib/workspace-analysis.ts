@@ -391,11 +391,28 @@ export type WorkspaceModelTuning = {
  * survivability gate for the first time. This promotes that env-only
  * measurement to the repository default; `WORKSPACE_MODEL_REASONING_EFFORT`
  * still overrides it per `resolveWorkspaceModelTuningFromEnv` below.
+ *
+ * Default providerOrder is ["reka/fp4", "makora"], not "omit" (changed
+ * 2026-08-31, D-20260831-0200-workspace-review-provider-order-default). Section
+ * 8.10 of docs/experiments/workspace-review-dogfood.md measured this pin
+ * against live production traffic and cleared all three gates with margin:
+ * 100% delivery (24/24), 100% pin adherence (Reka on all 24 log lines), and
+ * durationMs p50 of 4,965.5 ms -- against a prior series range of
+ * 11.8-32.4 s under sort: "latency", where the same byte-identical payloads
+ * landed on whichever provider the hourly lottery favored that hour. This
+ * promotes that env-only measurement to the repository default;
+ * WORKSPACE_MODEL_PROVIDER_ORDER still overrides it (set it to "omit" to
+ * restore load-balanced/sorted routing). The slugs are read from the served
+ * model's (deepseek-v4-flash-0731) endpoint pool and must track it if that
+ * pool changes -- the -latest alias's pool differs and lists neither slug.
+ * allow_fallbacks: true bounds pool churn to the old lottery, never an
+ * outage: a vanished pinned provider degrades to unpinned routing rather
+ * than failing closed.
  */
 export const WORKSPACE_MODEL_TUNING_DEFAULTS: WorkspaceModelTuning = {
   reasoningEffort: "none",
   providerSort: "latency",
-  providerOrder: "omit",
+  providerOrder: ["reka/fp4", "makora"],
   stream: true,
   stallTimeoutMs: 20_000,
 };

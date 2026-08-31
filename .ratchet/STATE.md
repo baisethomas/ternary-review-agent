@@ -43,10 +43,13 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **Nothing in flight in source.** Uncommitted working tree: dogfood report
-  §8.10, `docs/experiments/ter46-runs.json` (new), this file — docs only. A
-  separate Git agent commits. TER-46's remaining item is the promotion
-  decision (owner).
+- **TER-46 promotion, implemented in an agent worktree, pending PR.**
+  `WORKSPACE_MODEL_TUNING_DEFAULTS.providerOrder` is now `["reka/fp4",
+  "makora"]` (owner said "promote" 2026-08-31; decision D-20260831-0200).
+  Every fresh deploy now pins routing by default; `WORKSPACE_MODEL_PROVIDER_ORDER`
+  still overrides (value `omit` restores the old behavior), and the
+  production env var is now redundant-but-harmless. TER-46 closes when this
+  merges.
 - **TER-46 knob (merged #50, superseded detail):** `WorkspaceModelTuning.providerOrder` (default `"omit"`, no
   behavior change on merge), env-tunable via `WORKSPACE_MODEL_PROVIDER_ORDER`;
   when set, the request sends `provider.order` + `allow_fallbacks: true` and
@@ -61,12 +64,13 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Next
 
-1. **TER-46 promotion decision (owner):** promote `["reka/fp4","makora"]` to
-   `WORKSPACE_MODEL_TUNING_DEFAULTS.providerOrder` per §8.10's recommendation,
-   or stay env-only. Follow-ups either way: log the configured `providerOrder`
-   on the log line (small observability gap), and note the slugs must track
-   the **served** model's endpoint pool (`-latest` alias pool lists neither
-   pinned provider — churn risk, bounded by `allow_fallbacks`).
+1. **TER-46 residue after promotion:** log the configured `providerOrder` on
+   the log line (small observability gap); the slugs must track the **served**
+   model's endpoint pool (`-latest` alias pool lists neither pinned provider —
+   churn risk, bounded by `allow_fallbacks`); Makora and the fallback path
+   have zero live evidence. Owner housekeeping: the Vercel env vars
+   `WORKSPACE_MODEL_PROVIDER_ORDER` and `WORKSPACE_MODEL_REASONING_EFFORT`
+   are both redundant with the code defaults now.
 2. **Severity-rubric residue (product question, not a bug):** S07/S11-class
    seeds flap because their *consequence* is arguable per run. If stability
    there matters, name those consequences in the rubric (offline credential

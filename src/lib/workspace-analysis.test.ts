@@ -449,17 +449,37 @@ describe("workspace model request parameters (ADR-0002 option C)", () => {
   // §8.7 measured "low" as a silent no-op on the incumbent model and "none" as
   // the value that cleared the ADR-0002 delivery gate. Changed by decision, not
   // by accident — see WORKSPACE_MODEL_TUNING_DEFAULTS's doc comment.
-  it("defaults to a bounded reasoning budget (none, per §8.7), latency-sorted routing, no provider pinning, and a 20s stall window", () => {
+  //
+  // providerOrder defaults to ["reka/fp4", "makora"], not "omit"
+  // (D-20260831-0200-workspace-review-provider-order-default): §8.10 measured
+  // 100% delivery, 100% pin adherence, and durationMs p50 of 4,965.5 ms against
+  // live production traffic, clearing all three gates with margin. Changed by
+  // decision, not by accident — see WORKSPACE_MODEL_TUNING_DEFAULTS's doc comment.
+  it("defaults to a bounded reasoning budget (none, per §8.7), the reka/fp4+makora provider pin (per §8.10), and a 20s stall window", () => {
     expect(WORKSPACE_MODEL_TUNING_DEFAULTS).toEqual({
       reasoningEffort: "none",
       providerSort: "latency",
-      providerOrder: "omit",
+      providerOrder: ["reka/fp4", "makora"],
       stream: true,
       stallTimeoutMs: 20_000,
     });
   });
 
-  it("builds a body carrying reasoning.effort, provider.sort, require_parameters and stream", () => {
+  // The default constant never passes through the env parser, so a typo edited
+  // into it would ship silently. Round-tripping it through the real validator
+  // keeps the default held to the same slug rules as any env override
+  // (Ternary review of #52, finding 1).
+  it("keeps the default provider order valid under the env parser's slug rules", () => {
+    const order = WORKSPACE_MODEL_TUNING_DEFAULTS.providerOrder;
+    if (order === "omit") throw new Error("default is expected to be a pinned list");
+    expect(
+      resolveWorkspaceModelTuningFromEnv({
+        WORKSPACE_MODEL_PROVIDER_ORDER: order.join(","),
+      }).providerOrder,
+    ).toEqual(order);
+  });
+
+  it("builds a body carrying reasoning.effort, provider.order + allow_fallbacks (no sort), require_parameters and stream", () => {
     const body = buildWorkspaceModelRequestBody({
       model: "test/model",
       systemPrompt: "s",
@@ -472,10 +492,33 @@ describe("workspace model request parameters (ADR-0002 option C)", () => {
 
     expect(body.reasoning).toEqual({ effort: "none" });
     // require_parameters must survive: the request uses a strict json_schema.
-    expect(body.provider).toEqual({ require_parameters: true, sort: "latency" });
+    // The default providerOrder pin drops `sort` entirely (TER-46/§8.10).
+    expect(body.provider).toEqual({
+      require_parameters: true,
+      order: ["reka/fp4", "makora"],
+      allow_fallbacks: true,
+    });
     expect(body.stream).toBe(true);
     // `stream_options.include_usage` is a documented no-op (OpenRouter usage
     // accounting); sending it under require_parameters could only narrow routing.
+    expect(body).not.toHaveProperty("stream_options");
+    expect(body.max_tokens).toBe(WORKSPACE_MAX_OUTPUT_TOKENS);
+  });
+
+  it("builds a body carrying reasoning.effort, provider.sort, require_parameters and stream when providerOrder is `omit` (pins the pre-TER-46 shape)", () => {
+    const body = buildWorkspaceModelRequestBody({
+      model: "test/model",
+      systemPrompt: "s",
+      input: "i",
+      schema: workspaceReviewSchema,
+      maxOutputTokens: WORKSPACE_MAX_OUTPUT_TOKENS,
+      signal: new AbortController().signal,
+      tuning: { ...WORKSPACE_MODEL_TUNING_DEFAULTS, providerOrder: "omit" },
+    });
+
+    expect(body.reasoning).toEqual({ effort: "none" });
+    expect(body.provider).toEqual({ require_parameters: true, sort: "latency" });
+    expect(body.stream).toBe(true);
     expect(body).not.toHaveProperty("stream_options");
     expect(body.max_tokens).toBe(WORKSPACE_MAX_OUTPUT_TOKENS);
   });
@@ -488,7 +531,7 @@ describe("workspace model request parameters (ADR-0002 option C)", () => {
       schema: {},
       maxOutputTokens: 16,
       signal: new AbortController().signal,
-      tuning: { ...WORKSPACE_MODEL_TUNING_DEFAULTS, stream: false, reasoningEffort: "none", providerSort: "throughput" },
+      tuning: { ...WORKSPACE_MODEL_TUNING_DEFAULTS, stream: false, reasoningEffort: "none", providerSort: "throughput", providerOrder: "omit" },
     });
     expect(body).not.toHaveProperty("stream");
     expect(body.reasoning).toEqual({ effort: "none" });
@@ -499,11 +542,29 @@ describe("workspace model request parameters (ADR-0002 option C)", () => {
     vi.stubEnv("OPENROUTER_API_KEY", "test-key");
     const fetchMock = stubFetch(() => sseResponse(sseStream(reviewFrames())));
 
-    await analyzeWorkspaceReview(changesetInput(), { tuning: { reasoningEffort: "minimal", stallTimeoutMs: 5_000 } });
+    await analyzeWorkspaceReview(changesetInput(), {
+      tuning: { reasoningEffort: "minimal", stallTimeoutMs: 5_000, providerOrder: "omit" },
+    });
 
     const sent = sentBody(fetchMock);
     expect(sent.reasoning).toEqual({ effort: "minimal" });
     expect(sent.provider).toEqual({ require_parameters: true, sort: "latency" });
+    expect(sent.stream).toBe(true);
+  });
+
+  it("sends the default provider.order pin on the wire when tuning is not overridden (§8.10)", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    const fetchMock = stubFetch(() => sseResponse(sseStream(reviewFrames())));
+
+    await analyzeWorkspaceReview(changesetInput(), { tuning: { reasoningEffort: "minimal", stallTimeoutMs: 5_000 } });
+
+    const sent = sentBody(fetchMock);
+    expect(sent.reasoning).toEqual({ effort: "minimal" });
+    expect(sent.provider).toEqual({
+      require_parameters: true,
+      order: ["reka/fp4", "makora"],
+      allow_fallbacks: true,
+    });
     expect(sent.stream).toBe(true);
   });
 
@@ -515,7 +576,7 @@ describe("workspace model request parameters (ADR-0002 option C)", () => {
       schema: {},
       maxOutputTokens: 16,
       signal: new AbortController().signal,
-      tuning: { ...WORKSPACE_MODEL_TUNING_DEFAULTS, reasoningEffort: "omit" },
+      tuning: { ...WORKSPACE_MODEL_TUNING_DEFAULTS, reasoningEffort: "omit", providerOrder: "omit" },
     });
     // Not `reasoning: {}`, not `reasoning: { effort: "omit" }` — absent. Under
     // require_parameters a reasoning param excludes every provider of a
@@ -532,7 +593,7 @@ describe("workspace model request parameters (ADR-0002 option C)", () => {
       schema: {},
       maxOutputTokens: 16,
       signal: new AbortController().signal,
-      tuning: { ...WORKSPACE_MODEL_TUNING_DEFAULTS, providerSort: "omit" },
+      tuning: { ...WORKSPACE_MODEL_TUNING_DEFAULTS, providerSort: "omit", providerOrder: "omit" },
     });
     expect(body.provider).toEqual({ require_parameters: true });
     expect(body.reasoning).toEqual({ effort: "none" });
@@ -574,7 +635,12 @@ describe("workspace model request parameters (ADR-0002 option C)", () => {
     });
   });
 
-  it("leaves the provider object byte-for-byte unchanged when providerOrder is `omit` (TER-46)", () => {
+  // Before D-20260831-0200 the repository default WAS providerOrder: "omit",
+  // so an explicit `omit` override and the bare defaults produced the same
+  // provider object. That is no longer true — the default now pins
+  // ["reka/fp4", "makora"] — so this pins both exact shapes and asserts they
+  // now diverge, rather than asserting a stale equality.
+  it("provider.order `omit` produces the pre-TER-46 sort shape, distinct from the now-pinned default (TER-46/§8.10)", () => {
     const request = {
       model: "test/model",
       systemPrompt: "s",
@@ -587,9 +653,14 @@ describe("workspace model request parameters (ADR-0002 option C)", () => {
       ...request,
       tuning: { ...WORKSPACE_MODEL_TUNING_DEFAULTS, providerOrder: "omit" },
     });
-    const withoutOrderField = buildWorkspaceModelRequestBody({ ...request, tuning: WORKSPACE_MODEL_TUNING_DEFAULTS });
+    const withDefaultOrder = buildWorkspaceModelRequestBody({ ...request, tuning: WORKSPACE_MODEL_TUNING_DEFAULTS });
     expect(withOrderOmitted.provider).toEqual({ require_parameters: true, sort: "latency" });
-    expect(withOrderOmitted.provider).toEqual(withoutOrderField.provider);
+    expect(withDefaultOrder.provider).toEqual({
+      require_parameters: true,
+      order: ["reka/fp4", "makora"],
+      allow_fallbacks: true,
+    });
+    expect(withOrderOmitted.provider).not.toEqual(withDefaultOrder.provider);
   });
 });
 
@@ -669,6 +740,7 @@ describe("env-tunable model knobs (TER-44 step 1b)", () => {
     vi.stubEnv("OPENROUTER_API_KEY", "test-key");
     vi.stubEnv("WORKSPACE_MODEL_REASONING_EFFORT", "omit");
     vi.stubEnv("WORKSPACE_MODEL_PROVIDER_SORT", "omit");
+    vi.stubEnv("WORKSPACE_MODEL_PROVIDER_ORDER", "omit");
     const fetchMock = stubFetch(() => sseResponse(sseStream(reviewFrames())));
 
     await analyzeWorkspaceReview(changesetInput());
@@ -1185,10 +1257,28 @@ describe("deterministic routing applies to both paths (PR #42 re-review finding 
       choices: [{ message: { content: JSON.stringify(reviewPayload) }, finish_reason: "stop" }],
     }));
 
-    await analyzeWorkspaceReview(changesetInput(), { tuning: { stream: false } });
+    await analyzeWorkspaceReview(changesetInput(), { tuning: { stream: false, providerOrder: "omit" } });
 
     const sent = sentBody(fetchMock);
     expect(sent.provider).toEqual({ require_parameters: true, sort: "latency" });
+    expect(sent).not.toHaveProperty("stream");
+  });
+
+  it("sends the default provider.order pin on the non-streamed path too (§8.10)", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    const fetchMock = stubFetch(() => Response.json({
+      model: "deepseek/deepseek-v4-flash-0731",
+      choices: [{ message: { content: JSON.stringify(reviewPayload) }, finish_reason: "stop" }],
+    }));
+
+    await analyzeWorkspaceReview(changesetInput(), { tuning: { stream: false } });
+
+    const sent = sentBody(fetchMock);
+    expect(sent.provider).toEqual({
+      require_parameters: true,
+      order: ["reka/fp4", "makora"],
+      allow_fallbacks: true,
+    });
     expect(sent).not.toHaveProperty("stream");
   });
 });
@@ -1258,10 +1348,18 @@ describe("bounded retry (ADR-0002 option B, TER-44 step 2)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     // Verified 2026-08-26 against https://openrouter.ai/docs/features/provider-routing:
     // `ignore` is `string[]`, "List of provider slugs to skip for this request".
-    expect(sentBodyAt(fetchMock, 0).provider).toEqual({ require_parameters: true, sort: "latency" });
+    // `ignore` is a universal filter applied on top of whatever else `provider`
+    // carries, so it merges unchanged with the default provider.order pin
+    // (D-20260831-0200-workspace-review-provider-order-default, §8.10).
+    expect(sentBodyAt(fetchMock, 0).provider).toEqual({
+      require_parameters: true,
+      order: ["reka/fp4", "makora"],
+      allow_fallbacks: true,
+    });
     expect(sentBodyAt(fetchMock, 1).provider).toEqual({
       require_parameters: true,
-      sort: "latency",
+      order: ["reka/fp4", "makora"],
+      allow_fallbacks: true,
       ignore: ["DeepInfra"],
     });
   });
@@ -1277,11 +1375,16 @@ describe("bounded retry (ADR-0002 option B, TER-44 step 2)", () => {
       tuning: WORKSPACE_MODEL_TUNING_DEFAULTS,
     };
     expect(buildWorkspaceModelRequestBody(base).provider)
-      .toEqual({ require_parameters: true, sort: "latency" });
+      .toEqual({ require_parameters: true, order: ["reka/fp4", "makora"], allow_fallbacks: true });
     expect(buildWorkspaceModelRequestBody({ ...base, ignoreProviders: [] }).provider)
-      .toEqual({ require_parameters: true, sort: "latency" });
+      .toEqual({ require_parameters: true, order: ["reka/fp4", "makora"], allow_fallbacks: true });
     expect(buildWorkspaceModelRequestBody({ ...base, ignoreProviders: ["DeepInfra"] }).provider)
-      .toEqual({ require_parameters: true, sort: "latency", ignore: ["DeepInfra"] });
+      .toEqual({
+        require_parameters: true,
+        order: ["reka/fp4", "makora"],
+        allow_fallbacks: true,
+        ignore: ["DeepInfra"],
+      });
   });
 
   it("appends the retry's corrective message as a third message, and only when set", () => {
