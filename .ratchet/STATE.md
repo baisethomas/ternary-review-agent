@@ -8,8 +8,18 @@ Ship the Workspace Review (CLI) initiative — Linear project "Workspace Review 
 
 ## Current phase
 
-TER-45 (output contract) is **implemented, merged (main `03656fc`, #48) and
-measured live** (2026-08-31, dogfood §8.9). The measurement half is done: 28
+TER-46 (`provider.order` pinning) is **merged (main `36de129`, #50) and
+measured live** (2026-08-31, dogfood §8.10): 24/24 delivered, **Reka served
+all 24 runs (100% pin adherence)**, p50 **4,965 ms** — the fastest series ever
+measured, with per-window p50s of 5.4/4.8/5.8 s where previous series swung
+4–48 s by the hour. Recall 22/22 (first zero-FN series); severity still flaps
+on ~2 of 11 seeds per series **with a rotating cast** (S06 graded `warning`
+once here, against the rubric's own example) — now attributable to model
+sampling, not provider mix. §8.10 recommends **promoting
+`["reka/fp4","makora"]` to the repository default** — owner decision pending.
+
+Previously: TER-45 (output contract) merged (`03656fc`, #48) and measured
+(§8.9). The measurement half is done: 28
 submissions, 100% delivery, 28/28 clean on the blocked-script language scan
 (spot-read transcripts were English; no per-run language ID was recorded, so
 the claim is scan-clean, not proven-English — Ternary's review of #49 caught
@@ -33,8 +43,11 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **TER-46 (`provider.order` pinning knob), implemented in an agent worktree,
-  pending PR.** `WorkspaceModelTuning.providerOrder` (default `"omit"`, no
+- **Nothing in flight in source.** Uncommitted working tree: dogfood report
+  §8.10, `docs/experiments/ter46-runs.json` (new), this file — docs only. A
+  separate Git agent commits. TER-46's remaining item is the promotion
+  decision (owner).
+- **TER-46 knob (merged #50, superseded detail):** `WorkspaceModelTuning.providerOrder` (default `"omit"`, no
   behavior change on merge), env-tunable via `WORKSPACE_MODEL_PROVIDER_ORDER`;
   when set, the request sends `provider.order` + `allow_fallbacks: true` and
   drops `sort` (unspecified interaction per OpenRouter docs). Slugs validated
@@ -48,9 +61,12 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Next
 
-1. **`provider.order` pinning is TER-46, in progress** (see "Working on"). What
-   remains after the PR merges: owner sets the env var, then the §8.10
-   measurement, then the promotion decision.
+1. **TER-46 promotion decision (owner):** promote `["reka/fp4","makora"]` to
+   `WORKSPACE_MODEL_TUNING_DEFAULTS.providerOrder` per §8.10's recommendation,
+   or stay env-only. Follow-ups either way: log the configured `providerOrder`
+   on the log line (small observability gap), and note the slugs must track
+   the **served** model's endpoint pool (`-latest` alias pool lists neither
+   pinned provider — churn risk, bounded by `allow_fallbacks`).
 2. **Severity-rubric residue (product question, not a bug):** S07/S11-class
    seeds flap because their *consequence* is arguable per run. If stability
    there matters, name those consequences in the rubric (offline credential
@@ -81,7 +97,17 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Verification status
 
-- **TER-46 (2026-08-31), RAN locally in the agent worktree:** `npm run lint`
+- **TER-46 measurement (2026-08-31), RAN live:** 24 submissions against
+  production `dpl_6mrbMnTF2CPJLJuBpttH8EL7gJn3` (main `36de129`) under
+  `WORKSPACE_MODEL_PROVIDER_ORDER=reka/fp4,makora` (set by owner, name
+  confirmed via `vercel env ls`, value never read back). 24/24 `ok`, all 24
+  matched to server log lines by `requestBytes` + timestamp; `provider:
+  "Reka"` read off every line; `attempts: 1` on all 24. 24/24 canary
+  pre-flights CLEAN, `digestVerified` 24/24, fixtures digest-verified after
+  every revert. S01/S06 rep2 severity grades verified by hand against the raw
+  transcripts. **Not verified:** Makora/fallback routing (never exercised),
+  pool-churn response, per-finding precision.
+- **TER-46 code (2026-08-31), RAN locally in the agent worktree:** `npm run lint`
   clean; `npx vitest run --dir src src/lib/workspace-analysis.test.ts` 75 → 80
   tests green; full `npx vitest run --dir src` 688 passed / 9 skipped (81
   files); `npm run build` green (`.next/` moved out of the worktree, not

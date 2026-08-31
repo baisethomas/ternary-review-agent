@@ -1545,6 +1545,86 @@ driven by Phala/Reka price points). `reasoningTokens` 0 on all 28.
 - Whether one `connection` retry firing generalises. The other 28 attempts
   succeeded first try.
 
+## 8.10 TER-46 provider.order pinning — the lottery ends (measured 2026-08-31)
+
+**24 live submissions** against production `POST /api/workspace-reviews`
+(deployment `dpl_6mrbMnTF2CPJLJuBpttH8EL7gJn3`, main `36de129`, prompt `-v2`)
+under `WORKSPACE_MODEL_PROVIDER_ORDER=reka/fp4,makora` — env-only, repository
+default still `"omit"`, per the D-20260826-0500 promotion pattern. 12 seeds ×
+2 repetitions, correct per-seed fixtures throughout (S07/S11 → python), three
+hourly gate windows, 24/24 canary pre-flights CLEAN, fixtures digest-verified
+after every revert. Raw record: `docs/experiments/ter46-runs.json`.
+
+### 8.10.1 Pin adherence 100%, and the fastest series ever measured
+
+| gate | required | measured |
+| --- | --- | --- |
+| delivery, per request | ≥ 80% | **100% (24/24)** |
+| `durationMs` p50 | < 30,000 ms | **4,965.5 ms** |
+| pinned provider on log lines | ≥ 90% | **100% — Reka on all 24** |
+
+`attempts` is 1 on all 24 lines; min/max 2.7 s / 13.4 s. Per-window p50 was
+**5,415 / 4,840 / 5,817 ms** across 2.5 hours — the per-hour provider lottery
+that §8.5.1, §8.7.4, §8.8.2 and §8.9.4 each measured **did not occur**. For
+comparison on the same byte-identical payloads: §8.7 p50 28.4 s, §8.8 32.4 s
+(fixture denominator), §8.9 11.8 s. Makora (second in the order) and the
+fallback pool were never needed.
+
+One observability note: the log line's `providerSort` field records the
+*configured* sort (`"latency"`) even though the request body omits `sort`
+whenever `order` is set — adherence is evidenced by the `provider` field.
+Logging the configured `providerOrder` is a small follow-up.
+
+The slugs were read from the live `deepseek-v4-flash-0731` endpoint list
+before the series; the `-latest` alias's pool differs and lists **neither**
+pinned provider, so the order value must track the served model's pool — pool
+churn is the standing risk of any pin, and `allow_fallbacks: true` is what
+bounds it (a vanished provider degrades to the old lottery, not to an outage).
+
+### 8.10.2 Cost: the latency premium is real but small
+
+$0.0315 for 24 reviews — **$0.00131 mean**, ~30% above §8.9's $0.00101 and
+~2× §8.8's fixture mean, because Reka's measured rate ($0.32–0.49/Mtok) is
+2–3× Makora/DeepInfra's. That is the price of a 2.4× p50 improvement and zero
+dispersion, and it is still an eighth of a cent per review. `reasoningTokens`
+0 on all 24.
+
+### 8.10.3 Quality under the pin: recall perfect, severity still restless
+
+**Recall 22/22 — the first series in which every seeded defect was found in
+every repetition**, including S09 (missed outright in §8.9's rep 1). S12
+style-only control PASS in both reps; 24/24 transcripts clean on the
+blocked-script scan; `language_invalid` never occurred.
+
+Severity agreement across the two reps: **9/11 (81.8%)** — S02/S03/S10/S11
+stable `blocking`, S04/S05/S07/S08/S09 stable `warning`; **S01 flapped
+warning→blocking and S06 flapped blocking→warning**. rep2-S06 graded a
+bypassable authorization check `warning`, against the rubric's own worked
+example. Read this next to §8.9: the flapping cast **changed** (S06/S04 were
+§8.9's stable anchors; S07/S09/S11 were §8.9's problems and are stable here).
+Severity instability is a persistent ~2-in-11-seeds-per-series phenomenon with
+a rotating cast; neither the `-v2` rubric nor provider pinning eliminates it,
+and single-provider service (all 24 from Reka) rules out provider mix as its
+cause. It is a model-sampling property. Anything consuming severity as a gate
+should treat one review's `blocking`/`warning` boundary as ±1 step noisy, or
+gate on the finding class instead.
+
+### 8.10.4 What this series did not measure
+
+- **Makora and the fallback path** — Reka served everything, so the order's
+  second position and `allow_fallbacks` behavior have zero live evidence.
+- **Pool-churn response** — what happens when `reka/fp4` leaves the pool
+  (observed to be possible: the `-latest` alias pool already lacks it).
+- **`tablet-notes-v3` (43 KB)**, the §7.2 baseline, per-finding precision —
+  unchanged from §8.9.5.
+
+**Recommendation:** promote `["reka/fp4", "makora"]` to
+`WORKSPACE_MODEL_TUNING_DEFAULTS.providerOrder`. The gate passed on all three
+axes with margin; the cost premium is a rounding error at this volume; the
+churn risk is bounded by fallbacks and is an argument for keeping the env
+override, not for staying on the lottery. Owner decision — recorded when
+taken.
+
 ## 9. Recommendation
 
 **REVISE.** Not continue, not stop.
