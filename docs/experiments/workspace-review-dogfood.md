@@ -1472,14 +1472,22 @@ The corrective-message half of TER-45 (`language_invalid` / `schema_invalid`
 re-prompting) did **not** fire — a connection-shaped retry re-sends an identical
 body by design — so it remains proven by unit tests only.
 
-### 8.9.2 Language: 28/28 English, and the check never had to act
+### 8.9.2 Language: 28/28 clean on the blocked-script scan, and the check never had to act
 
-Every transcript scanned zero for Han/Kana/Hangul/Cyrillic/Arabic/Hebrew/Thai/
-Devanagari characters. `language_invalid` appeared in no log line. That makes
-**61 consecutive English reviews** since Phase B's single Chinese generation —
-but the server-side rejection has still never met a non-English generation, so
-the honest claim is unchanged: non-English output is now *rejected and
-re-prompted if it occurs*, and it has not occurred.
+Every transcript scanned **zero** for Han/Kana/Hangul/Cyrillic/Arabic/Hebrew/
+Thai/Devanagari characters, and `language_invalid` appeared in no log line. Be
+precise about what that scan establishes: it detects the blocked scripts — the
+failure mode Phase B actually observed (Chinese) — and would pass Latin-script
+non-English prose, the same accepted limit as the server-side check itself
+(D-20260827-0100). The transcripts spot-read during adjudication (roughly half
+the series, including every seed discussed in §8.9.3) were English prose, but
+no per-run language identification was recorded, so this report claims
+scan-clean, not proven-English. On that basis the observed streak since Phase
+B's single Chinese generation is **61 consecutive reviews without a
+blocked-script character**; the server-side rejection has still never met a
+non-English generation, so the honest claim is unchanged: non-English output is
+now *rejected and re-prompted if it occurs*, and it has not been observed to
+occur.
 
 ### 8.9.3 Severity: the rubric stabilised the anchors, not the ambiguous seeds
 

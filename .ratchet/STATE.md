@@ -10,7 +10,10 @@ Ship the Workspace Review (CLI) initiative — Linear project "Workspace Review 
 
 TER-45 (output contract) is **implemented, merged (main `03656fc`, #48) and
 measured live** (2026-08-31, dogfood §8.9). The measurement half is done: 28
-submissions, 100% delivery, 28/28 English, severity agreement 8/10 on seeds
+submissions, 100% delivery, 28/28 clean on the blocked-script language scan
+(spot-read transcripts were English; no per-run language ID was recorded, so
+the claim is scan-clean, not proven-English — Ternary's review of #49 caught
+this framing and §8.9.2 now states it), severity agreement 8/10 on seeds
 gradable in both reps. Headline surprises: the **ADR-0002 bounded retry fired
 live for the first time** (a `connection` failure on Phala re-routed to Together
 via `provider.ignore` and delivered inside the deadline), and the severity
@@ -116,4 +119,5 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
   80% severity agreement are two-repetition numbers on a 12-seed fixture set
   under a brand-new prompt. They are evidence the contract behaves as designed,
   not a benchmark; and the English *check* has still never rejected a real
-  generation — only the English *outcome* has been observed, 61 reviews running.
+  generation — only a scan-clean *outcome* has been observed (no blocked-script
+  characters, 61 reviews running; spot-reads English, no per-run language ID).
