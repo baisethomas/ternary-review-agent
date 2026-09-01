@@ -43,6 +43,25 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
+- **TER-47 fix round (PR #56, Ternary ⛔ → resolved, uncommitted):** the
+  `render.ts` `snapshotCoverage` formula was correct against the real
+  collector all along; the bug was a false invariant in
+  `render.test.ts`'s "sliced file" fixture, which set the sliced file's
+  manifest `size` to the post-slice (kept) length instead of the on-disk
+  (original) length deny.ts actually produces. Added a collector-backed
+  invariant test in `deny.test.ts` (calls `runExclusionPipeline` in snapshot
+  mode with a tiny `snapshotBytes` cap; asserts a sliced entry's `size` stays
+  the original on-disk length) — passes unmodified, pinning the assumption
+  the formula relies on. Corrected the `render.test.ts` fixture
+  (`included("big.ts", 100)`, expected coveredBytes 140/eligibleBytes
+  200/pct 70) and its comment. Re-ran reproduce-revert-restore on the
+  corrected fixture: reverting the `coveredBytes` subtraction term now fails
+  with the *right* wrong number (200, matching the reviewer's double-count
+  example), restored to green. Full `cli npm test` 260/260, root `npm run
+  lint` clean. Live dry-run against `tablet-notes-v3 --all` unchanged at
+  `coverage: content included for 63 of 379 eligible files (13% of eligible
+  bytes)` — expected: the repo has exactly one partially-sliced file (3.7 KB
+  lost of ~404 KB total), too small to move the rounded percentage.
 - **TER-47 implemented in this worktree, uncommitted (separate Git agent
   commits):** `cli/src/render.ts` gets `snapshotCoverage(payload)` (pure;
   eligible = included + truncated-to-zero, byte math per dogfood §8.12) and a

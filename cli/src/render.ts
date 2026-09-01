@@ -50,6 +50,12 @@ export function snapshotCoverage(payload: CanonicalPayload): SnapshotCoverage {
   const includedFiles = included.length;
   const eligibleFiles = includedFiles + truncatedToZero.length;
 
+  // A manifest entry's `size` is always the ORIGINAL on-disk byte length
+  // (deny.ts's collector never mutates it after slicing) — the bytes lost to
+  // slicing are visible only via the `truncated` record's
+  // originalBytes/keptBytes, subtracted below. Summing `size` here and NOT
+  // subtracting the partial-truncation loss would double count a sliced
+  // file's kept bytes.
   const includedBytes = included.reduce((sum, m) => sum + m.size, 0);
   const truncationLoss = (t: { originalBytes: number; keptBytes: number }) => t.originalBytes - t.keptBytes;
   const partialTruncationLoss = payload.redaction.truncated

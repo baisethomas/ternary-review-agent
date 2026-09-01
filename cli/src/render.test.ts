@@ -154,19 +154,21 @@ describe("snapshotCoverage (TER-47, dogfood §8.12)", () => {
   });
 
   it("a sliced file (kept > 0) reduces coveredBytes but not includedFiles/eligibleFiles", () => {
-    // included entry's `size` reflects the bytes actually kept (post-slice),
-    // and the truncated record's originalBytes/keptBytes describe the slice.
-    const payload = snapshotPayload([included("a.ts", 100), included("big.ts", 40)], {
+    // A manifest entry's `size` is always the ORIGINAL on-disk byte length —
+    // the collector never mutates it after slicing (pinned against the real
+    // pipeline in deny.test.ts's TER-47 invariant test). The slice itself is
+    // visible only via the truncated record's originalBytes/keptBytes.
+    const payload = snapshotPayload([included("a.ts", 100), included("big.ts", 100)], {
       truncated: [{ path: "big.ts", originalBytes: 100, keptBytes: 40 }],
     });
     const coverage = snapshotCoverage(payload);
     expect(coverage.includedFiles).toBe(2);
     expect(coverage.eligibleFiles).toBe(2);
-    // coveredBytes = (100 + 40) included-size sum - (100 - 40) slice loss = 80
-    expect(coverage.coveredBytes).toBe(80);
-    // eligibleBytes = coveredBytes + total truncation loss (60) = 140
-    expect(coverage.eligibleBytes).toBe(140);
-    expect(coverage.pct).toBe(Math.round((100 * 80) / 140));
+    // coveredBytes = (100 + 100) included-size sum - (100 - 40) slice loss = 140
+    expect(coverage.coveredBytes).toBe(140);
+    // eligibleBytes = coveredBytes + total truncation loss (60) = 200
+    expect(coverage.eligibleBytes).toBe(200);
+    expect(coverage.pct).toBe(Math.round((100 * 140) / 200));
   });
 
   it("a truncated-to-zero file adds to eligibleFiles/eligibleBytes only, not includedFiles", () => {

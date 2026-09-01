@@ -365,6 +365,28 @@ describe("exclusion pipeline", () => {
     expect(outcome.redaction.omittedManifestEntries).toBe(1);
   });
 
+  // TER-47 fix-round (PR #56, Ternary ⛔): the coverage math in render.ts's
+  // snapshotCoverage() assumes a sliced snapshot file's manifest `size` is
+  // the ORIGINAL on-disk byte length, and that the bytes actually lost to
+  // slicing are visible only via redaction.truncated (originalBytes -
+  // keptBytes). This pins that assumption against the real pipeline: if a
+  // future change ever set `size` to the post-slice length instead, this
+  // test — not just render.test.ts's fixture — would catch it.
+  it("a sliced snapshot file's manifest size stays the ORIGINAL on-disk length, not the kept length (TER-47)", () => {
+    const caps = { ...DEFAULT_CAPS, snapshotBytes: 5 };
+    const capture = fakeCapture([worktreeFile("big.ts", "unchanged")], "snapshot");
+    const outcome = runExclusionPipeline(
+      capture,
+      NO_POLICY,
+      caps,
+      fakeReaders({ "big.ts": "1234567890" }), // 10 bytes on disk, budget only fits 5
+    );
+    expect(outcome.redaction.truncated).toEqual([{ path: "big.ts", originalBytes: 10, keptBytes: 5 }]);
+    const entry = outcome.manifest.find((m) => m.path === "big.ts");
+    expect(entry?.contentIncluded).toBe(true);
+    expect(entry?.size).toBe(10); // NOT 5 — size is never mutated after slicing
+  });
+
   it("produces patches for modifications and full content for additions (spec 8.2)", () => {
     const baseSha = "d".repeat(40);
     const capture = fakeCapture([
