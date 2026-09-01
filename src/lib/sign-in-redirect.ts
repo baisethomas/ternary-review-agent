@@ -17,6 +17,14 @@
 const INTERNAL_DASHBOARD_PATHS = ["/", "/repositories", "/analytics", "/policies"];
 
 export function resolveSignInRedirect(target: string): string {
-  const path = target.split("?")[0];
-  return INTERNAL_DASHBOARD_PATHS.includes(path) ? target : "/";
+  const separator = target.indexOf("?");
+  const path = separator === -1 ? target : target.slice(0, separator);
+  const query = separator === -1 ? "" : target.slice(separator + 1);
+  // A protocol-relative "//host" path is already absent from the list below; the
+  // explicit check states the intent so a future edit to the list cannot quietly
+  // reintroduce one.
+  if (path.startsWith("//") || !INTERNAL_DASHBOARD_PATHS.includes(path)) return "/";
+  // Rebuilt from the validated path rather than returned verbatim, so the caller
+  // can never receive a string this function did not construct.
+  return query ? `${path}?${query}` : path;
 }
