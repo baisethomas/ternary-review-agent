@@ -121,8 +121,9 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
    scored **9/11** — it **missed the S06 auth bypass entirely** and misread
    S09's TOCTOU as a design nit — vs the product's 22/22; a strong generic
    agent (Sonnet) tied detection at 11/11 but returned free-form prose with no
-   schema, severity, language, latency, or failure-mode guarantees, served by
-   five providers in 12 calls. One rep per seed per arm; adjudicator-bias and
+   schema, severity, language, latency, or failure-mode guarantees. (The
+   five-providers-in-12-calls routing lottery was Arm A's, the unpinned
+   same-model arm — §8.13.2.) One rep per seed per arm; adjudicator-bias and
    fixture-leak limitations recorded in §8.13.3. The "un-baselined" caveat is
    retired.
 6. **Verdict-level instability observed** (§8.11): byte-identical 513 KB
