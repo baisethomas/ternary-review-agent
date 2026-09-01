@@ -29,6 +29,15 @@ import { clerkMiddleware } from "@clerk/nextjs/server";
  * therefore stays in every page, route handler, and Server Action via
  * `isDashboardAuthenticated()`; this file only supplies the session context.
  *
+ * A Server Action is a POST to the page path its form is bound to, and every such
+ * page path is in the matcher above. If one ever is not, the failure mode is
+ * FAIL-CLOSED, not an outage: `auth()` throws without Clerk context,
+ * `isDashboardAuthenticated()` catches it and returns false, and the action
+ * returns its ordinary "session expired" result without writing anything. That
+ * property is pinned by "refuses and does not write when Clerk context is
+ * missing entirely" in `src/app/actions.test.ts`. No machine route imports or
+ * invokes a Server Action, so nothing below the matcher depends on this path.
+ *
  * No `runtime` config: setting it in a Proxy file throws (Proxy is Node.js by default).
  */
 export default clerkMiddleware();

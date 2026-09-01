@@ -105,6 +105,27 @@ describe("currentDashboardActor", () => {
     expect(await currentDashboardActor()).toBe("dashboard-fallback");
   });
 
+  it("warns loudly, naming the recorded actor, when Clerk failed", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    currentUser.mockRejectedValue(new Error("clerkMiddleware did not run"));
+    process.env.POLICY_ACTOR = "dashboard-fallback";
+
+    await currentDashboardActor();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain("dashboard-fallback");
+  });
+
+  it("stays quiet when there is simply no session and no error", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    currentUser.mockResolvedValue(null);
+    process.env.POLICY_ACTOR = "dashboard-fallback";
+
+    await currentDashboardActor();
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it("falls back to the shared default when POLICY_ACTOR is unset", async () => {
     currentUser.mockResolvedValue(null);
     delete process.env.POLICY_ACTOR;

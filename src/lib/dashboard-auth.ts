@@ -44,8 +44,19 @@ export async function isDashboardAuthenticated() {
   }
 }
 
-/** Audit identity for dashboard writes: the signed-in user, else POLICY_ACTOR, else a shared default. */
+/**
+ * Audit identity for dashboard writes: the signed-in user, else POLICY_ACTOR, else a shared default.
+ *
+ * Every Server Action calls this only *after* `isDashboardAuthenticated()` has
+ * returned true, so an allowlisted session is guaranteed and the fallback should
+ * be unreachable from those call sites. A fallback caused by a Clerk *error* is
+ * therefore pathological — it means an audit row is about to be attributed to a
+ * shared literal instead of the human who caused it — so it is logged loudly and
+ * names the value being recorded. A fallback with no session and no error stays
+ * quiet: that is the legitimate path for any non-action caller.
+ */
 export async function currentDashboardActor() {
+  let clerkFailed = false;
   try {
     const email = await primaryEmail();
     if (email) return email;
@@ -53,7 +64,12 @@ export async function currentDashboardActor() {
     // Next's own control-flow signals (redirect, and the dynamic-rendering bailout
     // that `headers()` throws during static generation) must never be swallowed here.
     unstable_rethrow(error);
+    clerkFailed = true;
     console.error("Dashboard actor could not be resolved", error);
   }
-  return process.env.POLICY_ACTOR || DEFAULT_ACTOR;
+  const fallback = process.env.POLICY_ACTOR || DEFAULT_ACTOR;
+  if (clerkFailed) {
+    console.warn(`Dashboard write will be attributed to the fallback actor "${fallback}" because Clerk could not identify the signed-in user`);
+  }
+  return fallback;
 }
