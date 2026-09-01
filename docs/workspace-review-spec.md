@@ -166,6 +166,8 @@ Every number below is a **tunable default**, chosen from the measured budgets in
 | Model output tokens (server-owned) | 4,096 max_tokens | Tight budget per the Hobby decision; server sets it, client cannot raise it |
 | Manifest entries | 5,000 paths | Bounds pathological workspaces; paths beyond the cap are counted, not listed |
 
+The **snapshot source budget is spent in priority order**, not in path order: application source first, then configuration and manifests (lockfiles demoted to last), then documentation, then everything else; bytewise path order breaks ties inside a tier. The `snapshot` array is emitted in that same order, so a server re-applying the caps also sees source first. Selection order is not manifest order — the manifest still lists every path bytewise (section 7.2), and the digest depends on that ordering.
+
 ## 5. Retention
 
 **The Phase 4 synchronous endpoint persists nothing.** No Review Event, no ledger row, no queue job, no index snapshot, no payload bytes at rest. The response is the only artifact; when the connection ends, the review is gone.

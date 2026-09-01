@@ -632,6 +632,76 @@ describe("deny-class completeness (spec 4.2 items 1-10)", () => {
   });
 });
 
+// TER-43: the snapshot budget is spent source-first, not alphabetically.
+// Measured motivation in dogfood §8.11 — a 513 KB `--all` payload carried 47
+// content entries and zero source files because docs sorted early.
+describe("snapshot content priority (TER-43)", () => {
+  function snapshotOutcome(files: Record<string, string>, caps = DEFAULT_CAPS) {
+    const capture = fakeCapture(
+      Object.keys(files).map((p) => ({ ...worktreeFile(p), status: "unchanged" as const })),
+      "snapshot",
+    );
+    return runExclusionPipeline(capture, NO_POLICY, caps, fakeReaders(files));
+  }
+
+  it("spends the byte budget on source before docs, whatever the path order", () => {
+    const outcome = snapshotOutcome(
+      { "AAA.md": "docs!", "zzz.swift": "swift" },
+      { ...DEFAULT_CAPS, snapshotBytes: 5 },
+    );
+    expect(outcome.snapshot).toEqual([{ path: "zzz.swift", content: "swift" }]);
+    expect(outcome.redaction.truncated).toEqual([
+      { path: "AAA.md", originalBytes: 5, keptBytes: 0 },
+    ]);
+    const md = outcome.manifest.find((m) => m.path === "AAA.md");
+    expect(md?.contentIncluded).toBe(false);
+    expect(outcome.manifest.find((m) => m.path === "zzz.swift")?.contentIncluded).toBe(true);
+    expect(outcome.totalSourceBytes).toBe(5);
+  });
+
+  it("walks the tier ladder: source, then config, then docs, then the rest", () => {
+    const outcome = snapshotOutcome(
+      { "a.md": "docs", "b.csv": "rest", "c.json": "conf", "d.ts": "srce" },
+      { ...DEFAULT_CAPS, snapshotBytes: 8 },
+    );
+    expect(outcome.snapshot?.map((s) => s.path)).toEqual(["d.ts", "c.json"]);
+    expect(outcome.redaction.truncated).toEqual([
+      { path: "a.md", originalBytes: 4, keptBytes: 0 },
+      { path: "b.csv", originalBytes: 4, keptBytes: 0 },
+    ]);
+  });
+
+  it("demotes lockfiles below docs", () => {
+    const outcome = snapshotOutcome(
+      { "package-lock.json": "lock", "readme.md": "docs" },
+      { ...DEFAULT_CAPS, snapshotBytes: 4 },
+    );
+    expect(outcome.snapshot).toEqual([{ path: "readme.md", content: "docs" }]);
+    expect(outcome.redaction.truncated).toEqual([
+      { path: "package-lock.json", originalBytes: 4, keptBytes: 0 },
+    ]);
+  });
+
+  it("keeps the manifest bytewise while the snapshot array leads with source (spec 7.2)", () => {
+    const outcome = snapshotOutcome({ "AAA.md": "docs", "zzz.swift": "swift" });
+    expect(outcome.manifest.map((m) => m.path)).toEqual(["AAA.md", "zzz.swift"]);
+    expect(outcome.snapshot?.map((s) => s.path)).toEqual(["zzz.swift", "AAA.md"]);
+  });
+
+  it("applies the snapshot file cap in priority order", () => {
+    const outcome = snapshotOutcome(
+      { "AAA.md": "docs", "zzz.swift": "swift" },
+      { ...DEFAULT_CAPS, snapshotFiles: 1 },
+    );
+    expect(outcome.snapshot).toEqual([{ path: "zzz.swift", content: "swift" }]);
+    expect(outcome.redaction.withheldFiles).toEqual([
+      { path: "AAA.md", class: "snapshot_file_cap" },
+    ]);
+    // A file withheld by the count cap gets no manifest entry at all.
+    expect(outcome.manifest.map((m) => m.path)).toEqual(["zzz.swift"]);
+  });
+});
+
 function payloadFromOutcome(
   outcome: ReturnType<typeof runExclusionPipeline>,
 ): CanonicalPayload {

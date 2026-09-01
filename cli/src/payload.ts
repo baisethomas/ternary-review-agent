@@ -127,8 +127,13 @@ export function digestOf(bytes: Buffer): string {
 
 // --- Total payload cap (spec 4.4) ---
 // Enforced deterministically: while the canonical bytes exceed the cap, drop
-// content from the last content-bearing entry in path order, recording the
+// content from the last content-bearing entry in array order, recording the
 // truncation. Exclusion is the failure mode; the collector never fails open.
+//
+// For a changeset that is still path order. For a snapshot the array is
+// ordered by content priority (TER-43, snapshot-priority.ts), so the last
+// content-bearing entry is the LOWEST-priority one and the 2,000,000-byte cap
+// now evicts docs and generated files before application source.
 
 export interface FinalizedPayload {
   payload: CanonicalPayload;
