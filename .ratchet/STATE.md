@@ -43,13 +43,14 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **TER-46 promotion, implemented in an agent worktree, pending PR.**
-  `WORKSPACE_MODEL_TUNING_DEFAULTS.providerOrder` is now `["reka/fp4",
-  "makora"]` (owner said "promote" 2026-08-31; decision D-20260831-0200).
-  Every fresh deploy now pins routing by default; `WORKSPACE_MODEL_PROVIDER_ORDER`
-  still overrides (value `omit` restores the old behavior), and the
-  production env var is now redundant-but-harmless. TER-46 closes when this
-  merges.
+- **Uncommitted docs:** dogfood §8.11 + `docs/experiments/tabnotes-all-probe.json`
+  (new) + this file — the large-payload probe write-up. Docs only; a separate
+  Git agent commits.
+- **TER-46 closed 2026-08-31**: promotion merged as main `364ea75` (#52);
+  `WORKSPACE_MODEL_TUNING_DEFAULTS.providerOrder = ["reka/fp4","makora"]`
+  (D-20260831-0200), `WORKSPACE_MODEL_PROVIDER_ORDER` still overrides
+  (`omit` restores the old behavior); the production env var is
+  redundant-but-harmless.
 - **TER-46 knob (merged #50, superseded detail):** `WorkspaceModelTuning.providerOrder` (default `"omit"`, no
   behavior change on merge), env-tunable via `WORKSPACE_MODEL_PROVIDER_ORDER`;
   when set, the request sends `provider.order` + `allow_fallbacks: true` and
@@ -80,11 +81,21 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
    `language_invalid`/`schema_invalid` has ever occurred. The retry itself now
    has one live firing (connection class); one firing is not a reliability
    figure.
-4. **`tablet-notes-v3` (43 KB)** — still 0-for-4 from Phase B, the only
-   untested payload size.
+4. **TER-43 is now the top product defect** (§8.11, measured 2026-09-01): a
+   513 KB `tablet-notes-v3 --all` snapshot delivered 2/2 in 3.9/6.2 s — the
+   size ceiling is retired — but capture's bytewise-path-order fill of the
+   400,000-byte cap put **zero application source** in the payload (47/433
+   entries: `.claude/`, docs, config), and both reviews said so themselves.
+   Truncation ordering redirects the review at the wrong files on any repo
+   larger than the cap. Fix belongs in `cli/` capture ordering (e.g. source
+   files before docs/config, or proportional allocation).
 5. **§7.2 generic-agent baseline** — still unrun; all quality numbers remain
    self-relative.
-6. TER-43 (snapshot truncation; `droppedByServerCaps` was 0 again — 28/28), then TER-42, TER-33; TER-18/TER-13 later.
+6. **Verdict-level instability observed** (§8.11): byte-identical 513 KB
+   payloads returned `pass` and `findings` in consecutive runs. Consumers
+   should gate on finding class, not verdict or severity boundary (extends
+   §8.10.3).
+7. Then TER-42, TER-33; TER-18/TER-13 later.
 
 ## Blocked
 
@@ -101,6 +112,16 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Verification status
 
+- **Large-payload probe (2026-09-01), RAN live:** 2 submissions of
+  `tablet-notes-v3 --all` (513,338 bytes, 99,610 input tokens each) against
+  production `dpl_7D3NrsXaAJrrCLvZfXMqEdU4NCcP` (main `364ea75`). 2/2 `ok`,
+  attempts 1, Reka both, 3.9/6.2 s server-side, ~$0.022 each; both log lines
+  read via the Vercel runtime-logs API; `digestVerified` both;
+  `redactionApplied: 2`; 9 client-side redacted spans (JWT/bearer/high-entropy)
+  listed in the CLI transcripts; blocked-script scan clean on both. **Not
+  verified:** nothing new beyond the probe's own claims — the review *content*
+  at this size is docs-only by construction (TER-43), so no quality claim is
+  made.
 - **TER-46 measurement (2026-08-31), RAN live:** 24 submissions against
   production `dpl_6mrbMnTF2CPJLJuBpttH8EL7gJn3` (main `36de129`) under
   `WORKSPACE_MODEL_PROVIDER_ORDER=reka/fp4,makora` (set by owner, name
