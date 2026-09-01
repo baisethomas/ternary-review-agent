@@ -14,6 +14,10 @@
 #
 # Usage:  bash cli/scripts/release.sh
 #
+# The publish gate is: clean tree, unused tag, `npm ci && npm run build &&
+# npm test`, and a content assertion that the packed tarball actually carries
+# the entries an install needs (bin, dist/main.js, package.json).
+#
 # The version comes from cli/package.json; the tag is cli-v<version>. Bump
 # the version (and cli/src/types.ts TOOL_VERSION, which types.test.ts pins in
 # lockstep) in a normal reviewed commit BEFORE running this.
@@ -58,6 +62,26 @@ if [ ! -f "$CLI_DIR/$TARBALL" ]; then
   echo "release.sh: expected $TARBALL in $CLI_DIR after npm pack; it is not there." >&2
   exit 1
 fi
+
+# --- Content assertion: the tarball must actually be installable ---
+#
+# `files: ["bin", "dist"]` in package.json decides what ships. A typo there, a
+# stale/absent build, or a .npmignore would still produce a perfectly valid
+# tarball — one that installs and then fails at first run. Check the three
+# entries an install genuinely needs before anything is published.
+#
+# The listing is captured once and matched with a herestring rather than a
+# pipe: under `set -o pipefail`, `grep -q` exiting early can SIGPIPE the
+# writing side and make a *successful* match look like a failed pipeline.
+TARBALL_ENTRIES="$(tar -tzf "$CLI_DIR/$TARBALL")"
+for entry in package/bin/ternary.mjs package/dist/main.js package/package.json; do
+  if ! grep -qxF "$entry" <<<"$TARBALL_ENTRIES"; then
+    echo "release.sh: refusing to publish — $TARBALL is incomplete." >&2
+    echo "  missing entry: $entry" >&2
+    echo "  Check \"files\" in cli/package.json and that 'npm run build' produced cli/dist/." >&2
+    exit 1
+  fi
+done
 
 # --- Publish (the irreversible step) ---
 
