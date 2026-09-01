@@ -1694,6 +1694,74 @@ routing all did their jobs on their first real firing.
 Residue: coverage surfacing (TER-43 ticket option 1 — "content included for N
 of M files") is still unimplemented; the §8.11 verdict-flap caveat stands.
 
+## 8.13 The §7.2 baseline, finally run: the prompt earns its keep on its own model (measured 2026-09-01)
+
+The comparison every quality number in §8.5–§8.12 was missing. Both arms
+received the **byte-identical canonical payloads** of the 12 seeded fixtures
+(digests match the live series) with the §7.2-prescribed generic instruction —
+"Review this changeset for bugs." — and no Ternary system prompt, schema,
+severity contract, provider pinning, or tuning. Scored with the §7.1 formulas
+by the same adjudicator. Raw record: `docs/experiments/baseline-72-runs.json`.
+
+- **Arm A — same model, generic prompt** (deepseek-v4-flash, direct OpenRouter,
+  all defaults; owner-approved egress): the like-for-like prompt ablation.
+- **Arm B — strong generic agent** (12 fresh Claude Sonnet subagents, one per
+  seed, no product context): the "why not just paste it into a good chatbot"
+  question.
+
+### 8.13.1 Recall
+
+| | recall | S06 auth bypass | S09 TOCTOU | S12 control |
+| --- | --- | --- | --- | --- |
+| **Ternary** (§8.10, 2 reps) | **22/22** | found, both reps | found, both reps | PASS |
+| **Arm A** (same model, generic) | **9/11** | **MISSED — never mentioned** | missed (class) | PASS |
+| **Arm B** (Sonnet, generic) | **11/11** | found (headline) | found (named TOCTOU) | PASS |
+
+The generic prompt on the product's own model **missed the auth bypass** — the
+highest-consequence seed in the set, which the product has reported in every
+measured series and grades `blocking` — and read the TOCTOU cache write as a
+low-severity "design" nit. Same model, same bytes: the ~18% recall gap **is
+the prompt/pipeline**, isolated. (Credit where due: arm A's S04 finding named
+the missing `await` more cleanly than the product's own §8.8 weak-TP phrasing.)
+
+Arm B found everything. On raw detection, a strong generic agent ties the
+product.
+
+### 8.13.2 What the tie does not include
+
+Both arms returned free-form prose: no schema, no severity contract, no
+file/line-anchored finding objects, nothing a CI gate or dashboard can consume
+without another model call to parse it. Neither arm has an enforced language,
+a deterministic failure mode, a bounded latency (arm A was served by **five
+different providers** in 12 calls — the §8.8.2 lottery, instantly back the
+moment the pinning is absent), or the collector's secret handling — the
+fixtures' canaries were already redacted client-side before either arm saw a
+byte, which is a property of the product's capture, not of either baseline.
+Precision was clean in both arms (0 adjudicated FPs, with §7.1's `TP_extra`
+routing absorbing the fixture's dense genuine baseline defects — the same
+caveat as every prior series).
+
+### 8.13.3 Honest limitations
+
+One repetition per seed per arm, against §8.5.3/§8.11's measured run-to-run
+instability — signals, not benchmarks. Arm B's inputs leaked fixture-ness (the
+payload filename and the payload's own redaction metadata; several arm-B
+reviews said "synthetic fixture" out loud), and arm B is a stronger model, so
+it conflates model quality with prompt value by design — that is what it is
+for. The adjudicator knows the seed list; the §7.1 file+class rule bounds but
+does not remove that bias.
+
+### 8.13.4 What §9's REVISE verdict looks like now
+
+The un-baselined quality caveat that has trailed every series since §8.5 is
+resolved into a two-part answer: **the pipeline beats its own model without
+the prompt** (9/11 → 22/22), and **ties a stronger model on detection** while
+delivering everything detection alone does not — structured, severity-graded,
+machine-consumable findings; enforced English; deterministic failures; pinned
+~5 s latency; pre-egress secret redaction; a tenth of a cent per review. For a
+strong-model user, the product's value is the envelope, not the eyes; for the
+model it actually runs, it is both.
+
 ## 9. Recommendation
 
 **REVISE.** Not continue, not stop.

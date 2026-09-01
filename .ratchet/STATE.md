@@ -116,8 +116,15 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 5. **Coverage surfacing** (spun off from TER-43): print "content included for
    N of M files (X% of eligible bytes)" in the CLI confirm summary and
    rendered result.
-5. **§7.2 generic-agent baseline** — still unrun; all quality numbers remain
-   self-relative.
+5. **§7.2 baseline RUN 2026-09-01 (§8.13 + `baseline-72-runs.json`).** Same
+   bytes, generic prompt, two arms: the product's own model without the prompt
+   scored **9/11** — it **missed the S06 auth bypass entirely** and misread
+   S09's TOCTOU as a design nit — vs the product's 22/22; a strong generic
+   agent (Sonnet) tied detection at 11/11 but returned free-form prose with no
+   schema, severity, language, latency, or failure-mode guarantees, served by
+   five providers in 12 calls. One rep per seed per arm; adjudicator-bias and
+   fixture-leak limitations recorded in §8.13.3. The "un-baselined" caveat is
+   retired.
 6. **Verdict-level instability observed** (§8.11): byte-identical 513 KB
    payloads returned `pass` and `findings` in consecutive runs. Consumers
    should gate on finding class, not verdict or severity boundary (extends
@@ -196,8 +203,12 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 - **Severity stability is now scoped, not solved:** stable where consequence is
   unambiguous, flapping where it is arguable (S07, S11), and S09's TOCTOU is
   fragile in both recall and grade.
-- Quality numbers remain un-baselined (§7.2 never ran); precision was last
-  measured in Phase B at 90.9% with known caveats.
+- Quality numbers are now baselined (§8.13): the prompt is worth ~18% recall
+  on the product's own model, and a stronger generic model ties detection —
+  the product's differentiators there are the envelope (schema, severity,
+  language, latency, redaction, cost), not the eyes. Precision was last
+  measured in Phase B at 90.9% with known caveats; both baseline arms
+  adjudicated 0 FP under the same TP_extra routing.
 - Greptile comparison pricing still placeholder (§6.4). CLI still emits nested
   `CheckEvidence` (carried from TER-38).
 
