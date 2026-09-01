@@ -43,9 +43,17 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **Uncommitted docs:** dogfood §8.11 + `docs/experiments/tabnotes-all-probe.json`
-  (new) + this file — the large-payload probe write-up. Docs only; a separate
-  Git agent commits.
+- **TER-43 (snapshot source-first priority), implemented in an agent worktree,
+  pending PR.** New `cli/src/snapshot-priority.ts` (4 deterministic tiers,
+  lockfiles demoted) + `deny.ts` stage 5b: snapshot content is selected and
+  the `snapshot` array emitted in priority order; manifest keeps its bytewise
+  contract; changeset mode untouched. Offline proof on tablet-notes-v3:
+  content entries went md-29/source-0 → swift-46/ts-9/sql-4/tsx-1 with the
+  400,000-byte budget fully spent. Decision D-20260901-0100. CLI-only — no
+  `src/`, no schema change. Coverage surfacing (ticket option 1) deliberately
+  NOT included — follow-up.
+- After merge: live §8.12 re-probe (tablet-notes-v3 --all ×2 with the new CLI,
+  approved egress) to confirm a code-level review end-to-end.
 - **TER-46 closed 2026-08-31**: promotion merged as main `364ea75` (#52);
   `WORKSPACE_MODEL_TUNING_DEFAULTS.providerOrder = ["reka/fp4","makora"]`
   (D-20260831-0200), `WORKSPACE_MODEL_PROVIDER_ORDER` still overrides
@@ -81,14 +89,9 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
    `language_invalid`/`schema_invalid` has ever occurred. The retry itself now
    has one live firing (connection class); one firing is not a reliability
    figure.
-4. **TER-43 is now the top product defect** (§8.11, measured 2026-09-01): a
-   513 KB `tablet-notes-v3 --all` snapshot delivered 2/2 in 3.9/6.2 s — the
-   size ceiling is retired — but capture's bytewise-path-order fill of the
-   400,000-byte cap put **zero application source** in the payload (47/433
-   entries: `.claude/`, docs, config), and both reviews said so themselves.
-   Truncation ordering redirects the review at the wrong files on any repo
-   larger than the cap. Fix belongs in `cli/` capture ordering (e.g. source
-   files before docs/config, or proportional allocation).
+4. **TER-43 fix in flight** (see "Working on"); after it merges, the live
+   §8.12 re-probe, then close the ticket with coverage surfacing (option 1)
+   spun off as its own follow-up.
 5. **§7.2 generic-agent baseline** — still unrun; all quality numbers remain
    self-relative.
 6. **Verdict-level instability observed** (§8.11): byte-identical 513 KB

@@ -14,6 +14,7 @@ import { isIgnored } from "./ignore.js";
 import type { LoadedPolicy } from "./ignore.js";
 import { encodePathString } from "./pathbytes.js";
 import { isKeyMaterialContent, redactSecretSpans } from "./secrets.js";
+import { compareSnapshotPriority } from "./snapshot-priority.js";
 import {
   assertNoCaseCollisions,
   comparePathsBytewise,
@@ -239,6 +240,18 @@ export function runExclusionPipeline(
   let contentCharsUsed = 0;
   let snapshotBytesUsed = 0;
   let snapshotFilesUsed = 0;
+  // Snapshot mode only: candidates that survived every stage above, held back
+  // so the budget can be spent in priority order rather than path order
+  // (TER-43). Each carries the manifest entry already parked in bytewise
+  // position, so selection can flip `contentIncluded` without reordering the
+  // manifest (spec 7.2).
+  const pendingSnapshot: Array<{
+    path: string;
+    text: string;
+    size: number;
+    entry: ManifestEntry;
+  }> = [];
+  const fileCapDropped = new Set<ManifestEntry>();
 
   // Normalize, sort, and validate determinism up front (spec 7.2, 8.3).
   const normalized: Array<{ candidate: Candidate; path: string }> = [];
@@ -416,39 +429,57 @@ export function runExclusionPipeline(
         manifest.push({ ...baseEntry, ...(lfs ? { lfs: true } : {}) });
       }
     } else {
+      // Snapshot mode defers the budget decision: park the manifest entry in
+      // bytewise position now, choose content in priority order below.
+      const entry: ManifestEntry = { ...baseEntry, ...(lfs ? { lfs: true } : {}) };
+      manifest.push(entry);
+      pendingSnapshot.push({ path, text, size, entry });
+    }
+  }
+
+  // Stage 5b (snapshot only): spend the snapshot budget in priority order —
+  // application source first, docs and generated files last (TER-43). The
+  // semantics inside the walk are unchanged from the old bytewise walk: the
+  // first file that overflows `snapshotBytes` is sliced to the remaining
+  // budget, later files record a keptBytes-0 truncation, and files past
+  // `snapshotFiles` are withheld as `snapshot_file_cap` with no manifest entry
+  // at all — only the ORDER in which files meet those rules has changed.
+  if (!isChangeset) {
+    pendingSnapshot.sort((a, b) => compareSnapshotPriority(a.path, b.path));
+    for (const p of pendingSnapshot) {
       if (snapshotFilesUsed >= caps.snapshotFiles) {
-        withheldFiles.push({ path, class: "snapshot_file_cap" });
+        withheldFiles.push({ path: p.path, class: "snapshot_file_cap" });
+        fileCapDropped.add(p.entry);
         continue;
       }
-      let kept = text;
-      if (snapshotBytesUsed + size > caps.snapshotBytes) {
+      let kept = p.text;
+      if (snapshotBytesUsed + p.size > caps.snapshotBytes) {
         const remaining = Math.max(0, caps.snapshotBytes - snapshotBytesUsed);
-        kept = sliceUtf8(text, remaining);
+        kept = sliceUtf8(p.text, remaining);
         truncated.push({
-          path,
-          originalBytes: size,
+          path: p.path,
+          originalBytes: p.size,
           keptBytes: Buffer.byteLength(kept, "utf8"),
         });
-        if (kept === "") {
-          manifest.push({ ...baseEntry, ...(lfs ? { lfs: true } : {}) });
-          continue;
-        }
+        if (kept === "") continue;
       }
       const keptBytes = Buffer.byteLength(kept, "utf8");
       snapshotBytesUsed += keptBytes;
       snapshotFilesUsed += 1;
-      totalSourceBytes += size;
-      snapshot.push({ path, content: kept });
-      manifest.push({ ...baseEntry, contentIncluded: true, ...(lfs ? { lfs: true } : {}) });
+      totalSourceBytes += p.size;
+      snapshot.push({ path: p.path, content: kept });
+      p.entry.contentIncluded = true;
     }
   }
 
   // Stage 6: manifest cap — paths beyond the cap are counted, not listed.
+  const orderedManifest =
+    fileCapDropped.size === 0 ? manifest : manifest.filter((e) => !fileCapDropped.has(e));
   let omittedManifestEntries = 0;
-  let boundedManifest = manifest;
-  if (manifest.length > caps.manifestEntries) {
-    omittedManifestEntries = manifest.length - caps.manifestEntries;
-    boundedManifest = manifest.slice(0, caps.manifestEntries);
+  let boundedManifest = orderedManifest;
+  if (orderedManifest.length > caps.manifestEntries) {
+    omittedManifestEntries = orderedManifest.length - caps.manifestEntries;
+    boundedManifest = orderedManifest.slice(0, caps.manifestEntries);
   }
 
   withheldFiles.sort((a, b) => comparePathsBytewise(a.path, b.path));
