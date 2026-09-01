@@ -1,0 +1,44 @@
+{
+ "$comment": "TER-43 post-fix live probe raw record (dogfood section 8.12): tablet-notes-v3 --all x 2 under the source-first snapshot priority (CLI at main 3d08f0d). Metadata and adjudication only: no source content, no secrets. Server fields from WorkspaceReviewLogEntry lines via the Vercel runtime-logs API, both matched by requestBytes 515252.",
+ "schema": "tabnotes-priority-probe/1",
+ "experimentLabel": "source-first snapshot end-to-end: first code-level --all review of a real repo; first live schema_invalid corrective retry; first live Makora routing",
+ "generatedUtc": "2026-09-01T05:45:00Z",
+ "seriesStartUtc": "2026-09-01T05:32:18Z",
+ "seriesEndUtc": "2026-09-01T05:33:46Z",
+ "endpoint": "POST /api/workspace-reviews (production)",
+ "deploymentId": "dpl_9ZLy7k3Bpd8cdBuBJAMM9tSLZKWx",
+ "commit": "3d08f0d (server; CLI also built from 3d08f0d)",
+ "promptVersion": "workspace-snapshot-v2",
+ "target": "tablet-notes-v3 @ 6b5800d (real repo, approved egress 2026-08-25)",
+ "capture": {
+  "captureMode": "all",
+  "payloadBytes": 515252,
+  "manifestEntries": 433,
+  "snapshotEntriesWithContent": 60,
+  "contentComposition": "swift 46, ts 9, sql 4, tsx 1 (was md 29 / zero source pre-fix, section 8.11)",
+  "redactedSpans": 7,
+  "capturedContentBytes": 400000
+ },
+ "runs": [
+  {
+   "runId": "TABALL2-r1",
+   "httpStatus": 200, "outcome": "ok", "verdict": "findings", "findingCount": 10,
+   "cliExitCode": 1, "wallClockMs": 10954, "serverDurationMs": 9077,
+   "attempts": 1, "provider": "Reka", "attempt1Provider": "Reka",
+   "inputTokens": 88436, "outputTokens": 2644, "reasoningTokens": 0,
+   "estimatedCostUsd": 0.02120096, "digestVerified": true,
+   "languageScan": "no-blocked-script-chars",
+   "adjudicationNote": "First code-level --all review of a real repository in the project: 8 warnings + 2 suggestions, all against Swift application source (hardcoded Supabase anon key, deadlock candidate in AudioCaptureEngine.onEvent-under-lock, non-atomic hasPendingSyncWork, cloud-restore data-loss path, SwiftData @Model+Codable conflict). Spot-read: plausible, file/line-anchored, English."
+  },
+  {
+   "runId": "TABALL2-r2",
+   "httpStatus": 500, "outcome": "model_failure", "verdict": null, "findingCount": null,
+   "cliExitCode": 3, "wallClockMs": 58294, "serverDurationMs": 55779,
+   "attempts": 2, "retryReason": "schema_invalid",
+   "attempt1Provider": "Reka", "attempt2Provider": "Makora",
+   "digestVerified": true,
+   "adjudicationNote": "Three previously-unexercised paths fired at once, all behaving as designed: (1) first live schema_invalid retry — attempt 1's generation failed schema validation; (2) the corrective third user message (TER-45 machinery) was sent on the retry; (3) attempt 2 was routed to Makora — the first live use of the pin's second position, proving provider.ignore composes with provider.order. Attempt 2 also failed schema validation, producing the deterministic 500 model_failure with attempts: 2 — no malformed review was ever returned to the caller."
+  }
+ ],
+ "conclusion": "TER-43 verified end-to-end: the review now reads application source (10 code-level findings on attempt 1, 9.1 s, $0.021). Delivery at ~88K input tokens is the new watch item: 1 of 2 runs double-failed schema validation, suggesting large inputs strain strict structured output on some providers; n is far too small to size the rate. The failure cost the full two-attempt budget (55.8 s) and returned the contract's deterministic error — the machineries built in TER-44/45/46 (bounded retry, corrective re-prompt, order+ignore routing) all did their jobs on their first real firing."
+}
