@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { analyzeWorkspaceReview, WORKSPACE_MAX_OUTPUT_TOKENS, WorkspaceModelConnectionError, WorkspaceModelStallError } from "./workspace-analysis";
 import { WORKSPACE_MAX_FINDINGS } from "./workspace-review-prompts";
 import { computePayloadDigest, type PayloadCaps } from "./workspace-payload-validation";
+import { principalIdFor } from "./workspace-review-auth";
 import {
   WORKSPACE_REVIEW_DEADLINE_MS,
   WORKSPACE_SERVER_CAPS,
@@ -199,12 +200,19 @@ describe("abuse gate (contract §3)", () => {
     expect(released).toHaveLength(1);
   });
 
-  it("gates CURRENT and NEXT tokens under the same logical identity (single-Principal alpha)", async () => {
-    // The alpha has exactly one Principal; CURRENT and NEXT are two
-    // credentials for it during a rotation overlap, not two Principals. If
-    // the gate keyed off the presented token, each token would get its own
-    // rate-limit window and concurrency slot — double the allowance. Assert
-    // the two authentications enter the gate with the identical identity.
+  it("gates each token under its own principal (TER-49 per-token windows)", async () => {
+    // CONTRACT CHANGE (TER-49, .ratchet/DECISIONS.md
+    // D-20260901-0300-workspace-review-per-token-gate): this test previously
+    // pinned the opposite contract — CURRENT and NEXT gated under one fixed
+    // shared identity, so a rotation overlap could not double the single
+    // Principal's allowances. The merged endpoint doc
+    // (docs/workspace-review-endpoint.md §3) already promised "10
+    // requests/hour **per token identity**", and the owner resolved that
+    // doc-vs-code conflict in the doc's favor: each configured token is a
+    // machine and gets its own fixed window and its own concurrency slot.
+    // The brief rotation overlap that doubles allowances is accepted. So the
+    // assertion inverts: the two gate keys must DIFFER, and each must be the
+    // presented token's own `principalIdFor`.
     const enterGate = vi.fn(async (principalId: string) => {
       void principalId;
       return { status: "allowed" as const, release: async () => {} };
@@ -217,7 +225,9 @@ describe("abuse gate (contract §3)", () => {
     await createWorkspaceReviewHandler(deps)(buildRequest({ token: "next-token" }));
     expect(enterGate).toHaveBeenCalledTimes(2);
     const [[currentArg], [nextArg]] = enterGate.mock.calls;
-    expect(currentArg).toBe(nextArg);
+    expect(currentArg).not.toBe(nextArg);
+    expect(currentArg).toBe(principalIdFor(TOKEN));
+    expect(nextArg).toBe(principalIdFor("next-token"));
   });
 });
 

@@ -11,7 +11,7 @@ Scope: the synchronous internal Workspace Review endpoint, its authentication, l
 
 ## 2. Authentication (alpha-simple, per spec)
 
-- Bearer token compared against `TERNARY_CLI_TOKEN`, and — when set — `TERNARY_CLI_TOKEN_NEXT`, enabling a short rotation overlap (current + next accepted; rotation completes by moving NEXT to CURRENT and unsetting NEXT).
+- Bearer token compared against `TERNARY_CLI_TOKEN`, and — when set — `TERNARY_CLI_TOKEN_NEXT`. Both are accepted. Two uses: a short rotation overlap (rotation completes by moving NEXT to CURRENT and unsetting NEXT), and — since TER-49 — a second owner-held machine holding NEXT as its standing token. Each accepted token is its own Principal for gating purposes (§3).
 - Constant-time comparison (`crypto.timingSafeEqual` over equal-length buffers; length mismatch is an immediate 401 without comparison).
 - `INTERNAL_API_TOKEN` is **not** accepted and is never read by this route.
 - No device login, accounts, keychain, or credential admin in the alpha.
@@ -19,7 +19,7 @@ Scope: the synchronous internal Workspace Review endpoint, its authentication, l
 ## 3. Abuse limits (fail closed)
 
 - **Rate limit:** fixed-window counter in Redis (existing Upstash client), default **10 requests/hour** per token identity, tunable via env. If Redis is unreachable the request is **rejected 503** (fail closed, per spec) — never allowed through unlimited.
-- **Concurrency ceiling:** Redis counter with TTL slightly above the deadline (**210 s**, i.e. the 180 s deadline + 30 s), default **max 1 concurrent Workspace Review**. At ceiling → 429 with `Retry-After`. The TTL must stay above the deadline: below it, a still-running review's slot would be handed out twice.
+- **Concurrency ceiling:** Redis counter with TTL slightly above the deadline (**210 s**, i.e. the 180 s deadline + 30 s), default **max 1 concurrent Workspace Review** — keyed the same way as the rate limit, so the ceiling is per token identity too. At ceiling → 429 with `Retry-After`. The TTL must stay above the deadline: below it, a still-running review's slot would be handed out twice.
 - Both limits live in a new `src/lib/workspace-review-gate.ts` (sibling test), reusing the established Redis-store patterns.
 
 ## 4. Request handling order (normative, matches TER-38's ten steps)

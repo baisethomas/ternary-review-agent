@@ -6,7 +6,9 @@ import type { LoadedPolicy } from "./ignore.js";
 
 export const SCHEMA_VERSION = "workspace-review/1";
 export const TOOL_NAME = "ternary-cli";
-export const TOOL_VERSION = "0.1.0";
+// Kept in lockstep with cli/package.json's `version` (pinned by types.test.ts);
+// 0.2.0 is the first packaged/installable release (TER-49).
+export const TOOL_VERSION = "0.2.0";
 // Bumped by TER-36: broader path deny classes (browser/keychain exports,
 // .pgpass, .ssh/.gnupg, id_* at any depth), content heuristics beyond the
 // server's mirrored patterns, and HEAD-side patch redaction. The canonical

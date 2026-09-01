@@ -13,11 +13,12 @@
 //    This is the one path allowed to reach transmit.ts (spec fixed decision
 //    7 / docs/workspace-review-endpoint.md §6).
 
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { collectWorkspaceReview } from "./collect.js";
 import { neutralizeControlSequences, renderReport } from "./render.js";
 import type { SubmitIo } from "./submit.js";
-import { CollectorError, TransmitError } from "./types.js";
+import { CollectorError, SCHEMA_VERSION, TransmitError } from "./types.js";
 import type { CaptureMode } from "./types.js";
 
 // `runSubmit` is imported dynamically (below, only once argument parsing has
@@ -52,8 +53,32 @@ interface ParsedArgs {
   yes: boolean;
 }
 
+/**
+ * The installed package's own version, read at runtime from its package.json.
+ *
+ * `new URL("../package.json", import.meta.url)` resolves the same way from
+ * both layouts this module runs in — `cli/src/main.ts` under vitest and
+ * `cli/dist/main.js` in the built/installed package both sit exactly one
+ * directory below the package root. `readFileSync` accepts a WHATWG `URL`
+ * directly, so this needs no `node:url` / `node:module` import: the entry
+ * point's static module graph stays inside the zero-network allowlist
+ * (`node:child_process`, `node:crypto`, `node:fs`, `node:path`) that
+ * `zero-network.test.ts` enforces.
+ */
+function packageVersion(): string {
+  const raw = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+  const parsed = JSON.parse(raw) as { version?: unknown };
+  return typeof parsed.version === "string" ? parsed.version : "unknown";
+}
+
+/** `--version` output: the package version plus the payload contract it speaks. */
+export function versionLine(): string {
+  return `ternary-cli ${packageVersion()} (payload schema ${SCHEMA_VERSION})`;
+}
+
 const USAGE = [
   "usage: ternary review <path> [--staged | --all] [--dry-run | --manifest | --yes]",
+  "       ternary --version",
   "",
   "  (no flag)    capture, confirm, and submit the Workspace Review for analysis",
   "  --yes        skip the interactive confirmation (for scripted/CI use)",
@@ -61,6 +86,7 @@ const USAGE = [
   "  --manifest   report what would be captured; transmit nothing",
   "  --staged     changeset of the Git index only (HEAD vs index)",
   "  --all        bounded whole-workspace Snapshot Review",
+  "  --version    print the collector version and payload schema, then exit 0",
 ].join("\n");
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -129,6 +155,13 @@ function handleError(error: unknown, io: CliIo): number {
 //      not a failure)
 export function runCli(argv: string[], io: CliIo): number | Promise<number> {
   try {
+    // `--version` / `-v` is handled ahead of parseArgs because it is the sole
+    // argument, takes no <path>, and must not be mistaken for a flag on the
+    // `review` command (parseArgs would reject it as an unknown flag).
+    if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v")) {
+      io.stdout(versionLine());
+      return 0;
+    }
     const args = parseArgs(argv);
     const rootAbs = resolve(io.cwd, args.path);
 
