@@ -43,25 +43,27 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **TER-48 (Clerk dashboard auth), implemented in an agent worktree, pending
-  PR.** Hard cutover per ADR-0003 (indexed as D-20260901-0200): Clerk
-  sessions + fail-closed `DASHBOARD_ALLOWED_EMAILS` allowlist replace the
-  shared-password cookie gate behind the unchanged
-  `isDashboardAuthenticated()` seam; `src/proxy.ts` (Next 16 convention)
-  attaches Clerk context on pages + browser/dual API routes only — machine
-  routes (webhook HMAC, CLI bearer, cron/QStash, health) excluded and
-  byte-identical. Audit actors become the signed-in email via
-  `currentDashboardActor()`. `@clerk/nextjs@7.8.3` verified against the
-  installed package (proxy-compatible, builds with no keys set).
-  **Deploy is gated on owner actions:** Clerk Marketplace install (or keys in
-  Vercel env), `DASHBOARD_ALLOWED_EMAILS` set (unset ⇒ nobody can sign in —
-  intended), Clerk restricted sign-ups + self-invite, then a live sign-in
-  smoke test only the owner can perform.
+- **Nothing in flight in source.** Uncommitted: this file only (post-TER-48
+  reconciliation). A separate Git agent commits.
+- **TER-48 closed 2026-09-01, live and verified.** Merged as main `e9226df`
+  (#57; Ternary ⛔→💬→💬 — the real find, an open redirect, was fixed with a
+  canonicalized allowlist-validated sign-in redirect). Owner completed the
+  Clerk deploy sequence the same day: Marketplace resource
+  `clerk-erin-cushion` (keys on all environments), `DASHBOARD_ALLOWED_EMAILS`
+  + `NEXT_PUBLIC_CLERK_SIGN_IN_URL` set, restricted sign-ups + self-invite,
+  redeploy. Verified live: `/` → 307 `/sign-in`, `/sign-in` 200,
+  `/api/health` 200, owner browser sign-in succeeded, and a post-deploy CLI
+  fixture review delivered in 4.6 s (machine surfaces intact). ADR-0003;
+  indexed as D-20260901-0200. **Follow-ups recorded:** gate the header chrome
+  behind the seam (presentational); consider failing writes instead of
+  fallback-attributing on a post-gate Clerk error; QStash signature
+  verification (none exists anywhere — wakes auth by bearer; ticket-worthy).
+  Companion infra: root `vitest.config.ts` (#58, `2aa1925`) excludes
+  `.claude/worktrees/**` from the sweep — the stop-hook worktree flake is
+  structurally fixed.
 - **TER-47 closed 2026-09-01** (merged `450f781`, #56 after a ⛔→✅ fix round:
   the coverage formula was right, a test fixture encoded a false
   manifest-size invariant; a collector-backed test now pins the real one).
-- **Uncommitted docs:** dogfood §8.12 + `docs/experiments/tabnotes-priority-probe.json`
-  (new) + this file. Docs only; a separate Git agent commits.
 - **TER-43 merged (`3d08f0d`, #54, Ternary ✅) and verified end-to-end**
   (§8.12): the first code-level `--all` review of a real repo (10 Swift
   findings, attempt 1, 9.1 s). The probe's second run double-failed schema
