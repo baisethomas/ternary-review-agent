@@ -14,6 +14,7 @@
     "test:postgres": "RUN_POSTGRES_INTEGRATION_TESTS=1 vitest run src/lib/postgres-review-event-ledger.integration.test.ts src/lib/postgres-review-policy-store.integration.test.ts"
   },
   "dependencies": {
+    "@clerk/nextjs": "^7.8.3",
     "@neondatabase/serverless": "^1.1.0",
     "@upstash/qstash": "^2.11.3",
     "@upstash/redis": "^1.38.2",

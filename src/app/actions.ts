@@ -1,39 +1,15 @@
 "use server";
 
-import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
 import { after } from "next/server";
-import { DASHBOARD_COOKIE, dashboardSessionValue, isDashboardAuthenticated, isValidDashboardToken } from "@/lib/dashboard-auth";
+import { currentDashboardActor, isDashboardAuthenticated } from "@/lib/dashboard-auth";
 import { announceDashboardChange } from "@/lib/dashboard-change-service";
 import { getInstalledRepository, getRepositoryDashboardData } from "@/lib/dashboard-data";
 import { updateRepositoryWatch } from "@/lib/repository-watch-service";
 import { saveUsageBudget } from "@/lib/usage-budget-service";
 
-export type LoginState = { error: string | null };
 export type WatchState = { error: string | null };
 export type UsageBudgetState = { error: string | null; saved: boolean };
-
-export async function loginAction(_state: LoginState, formData: FormData): Promise<LoginState> {
-  const token = String(formData.get("token") ?? "");
-  const requestedRedirect = String(formData.get("redirectTo") ?? "/");
-  const redirectTo = requestedRedirect === "/repositories" || requestedRedirect === "/analytics" || requestedRedirect === "/policies" ? requestedRedirect : "/";
-  if (!isValidDashboardToken(token)) return { error: "That access token is not valid." };
-  (await cookies()).set(DASHBOARD_COOKIE, dashboardSessionValue(), {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    path: "/",
-    maxAge: 60 * 60 * 24 * 30,
-  });
-  redirect(redirectTo);
-}
-
-export async function logoutAction() {
-  if (!await isDashboardAuthenticated()) redirect("/");
-  (await cookies()).delete(DASHBOARD_COOKIE);
-  redirect("/");
-}
 
 export async function setRepositoryWatchAction(_state: WatchState, formData: FormData): Promise<WatchState> {
   if (!await isDashboardAuthenticated()) return { error: "Your session expired. Refresh and sign in again." };
@@ -48,7 +24,7 @@ export async function setRepositoryWatchAction(_state: WatchState, formData: For
       return { error: "That repository is not available to this GitHub App." };
     }
     await updateRepositoryWatch(repository, watched, installed, {
-      actor: process.env.POLICY_ACTOR ?? "dashboard-admin",
+      actor: await currentDashboardActor(),
     });
     after(() => announceDashboardChange());
     revalidatePath("/repositories");
@@ -81,7 +57,7 @@ export async function saveUsageBudgetAction(_state: UsageBudgetState, formData: 
       await saveUsageBudget({
         scope: { kind: "organization", installationId },
         monthlyCeilingUsd,
-        updatedBy: process.env.POLICY_ACTOR ?? "dashboard-admin",
+        updatedBy: await currentDashboardActor(),
       });
     } else if (kind === "repository") {
       const owner = String(formData.get("owner") ?? "");
@@ -93,7 +69,7 @@ export async function saveUsageBudgetAction(_state: UsageBudgetState, formData: 
       await saveUsageBudget({
         scope: { kind: "repository", installationId, owner, repo },
         monthlyCeilingUsd,
-        updatedBy: process.env.POLICY_ACTOR ?? "dashboard-admin",
+        updatedBy: await currentDashboardActor(),
       });
     } else {
       return { error: "Choose an organization or repository budget scope.", saved: false };

@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { after } from "next/server";
-import { isDashboardAuthenticated } from "@/lib/dashboard-auth";
+import { currentDashboardActor, isDashboardAuthenticated } from "@/lib/dashboard-auth";
 import { announceDashboardChange } from "@/lib/dashboard-change-service";
 import { getInstalledRepository, getRepositoryDashboardData } from "@/lib/dashboard-data";
 import { PolicyScopeUnavailableError, saveOrganizationPolicySettings, saveRepositoryPolicySettings } from "@/lib/policy-settings-service";
@@ -48,7 +48,7 @@ function dependencies() { return {
 export async function saveOrganizationPolicyAction(_state: PolicyActionState, formData: FormData): Promise<PolicyActionState> {
   if (!await isDashboardAuthenticated()) return { error: "Your session expired. Refresh and sign in again.", saved: false };
   try {
-    await saveOrganizationPolicySettings({ installationId: integer(formData, "installationId"), expectedVersion: integer(formData, "expectedVersion", true), policy: policy(formData), actor: process.env.POLICY_ACTOR ?? "dashboard-admin" }, dependencies());
+    await saveOrganizationPolicySettings({ installationId: integer(formData, "installationId"), expectedVersion: integer(formData, "expectedVersion", true), policy: policy(formData), actor: await currentDashboardActor() }, dependencies());
     after(() => announceDashboardChange());
     revalidatePath("/policies");
     return { error: null, saved: true };
@@ -62,7 +62,7 @@ export async function saveRepositoryPolicyAction(_state: PolicyActionState, form
   try {
     await saveRepositoryPolicySettings({
       installationId: integer(formData, "installationId"), expectedVersion: integer(formData, "expectedVersion", true),
-      owner: String(formData.get("owner") ?? ""), repo: String(formData.get("repo") ?? ""), policy: policy(formData), actor: process.env.POLICY_ACTOR ?? "dashboard-admin",
+      owner: String(formData.get("owner") ?? ""), repo: String(formData.get("repo") ?? ""), policy: policy(formData), actor: await currentDashboardActor(),
     }, dependencies());
     after(() => announceDashboardChange());
     revalidatePath("/policies");

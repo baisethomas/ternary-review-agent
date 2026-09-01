@@ -151,3 +151,11 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 - **Consequences:** Snapshot payload bytes and digests change for any tree bigger than the cap — prior snapshot digests are not comparable. `dropLastContent`'s 2 MB-cap victim is now the lowest-priority snapshot entry. `Dockerfile.dev`-style suffixed names are tier 3 (only bare `Dockerfile`/`Makefile` are tier 1) — revisit if observed to matter. Coverage surfacing (ticket option 1: print "content included for N of M files") remains unimplemented — follow-up, not part of this decision.
 - **Revisit when:** a live `--all` series shows the review still missing the important files, or tier membership disputes accumulate.
 - **Approved by:** Baise Thomas (owner), via plan approval 2026-09-01
+
+### D-20260901-0200-dashboard-authentication-clerk — Dashboard auth: Clerk sessions replace the shared-password gate (index entry for ADR-0003)
+
+- **Status:** accepted (high impact — full rationale in `docs/adr/0003-dashboard-authentication-clerk.md`)
+- **Impact:** high (indexed here per the ledger convention; ADR is the record)
+- **Date:** 2026-09-01
+- **Decision:** TER-48 — human dashboard access authenticates via Clerk sessions with invite-only sign-ups and a **fail-closed** `DASHBOARD_ALLOWED_EMAILS` allowlist (unset ⇒ nobody signs in), hard cutover: the `INTERNAL_API_TOKEN`-HMAC cookie gate, `loginAction`/`logoutAction`, and the paste-a-token AccessGate are deleted. `INTERNAL_API_TOKEN` remains machine-to-machine only. Machine surfaces (GitHub webhook HMAC, `workspace-reviews` CLI bearer, cron/QStash bearer, `health`) are untouched and excluded from the Clerk proxy matcher. Enforcement stays inside every page/route/Server Action per Next 16's proxy guidance; `src/proxy.ts` only attaches Clerk context. Audit actor fields now record the signed-in user's email (`currentDashboardActor()`, fallback `POLICY_ACTOR`, then "dashboard-admin").
+- **Approved by:** Baise Thomas (owner), via plan approval 2026-09-01 (access model and hard cutover chosen explicitly).

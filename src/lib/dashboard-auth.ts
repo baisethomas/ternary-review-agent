@@ -1,31 +1,59 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
-import { cookies } from "next/headers";
+import { unstable_rethrow } from "next/navigation";
+import { auth, currentUser } from "@clerk/nextjs/server";
 
-export const DASHBOARD_COOKIE = "ternary_dashboard_session";
+const DEFAULT_ACTOR = "dashboard-admin";
 
-function internalToken() {
-  return process.env.INTERNAL_API_TOKEN ?? "";
+function allowedEmails() {
+  return (process.env.DASHBOARD_ALLOWED_EMAILS ?? "")
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
 }
 
-function safeEqual(left: string, right: string) {
-  const leftBuffer = Buffer.from(left);
-  const rightBuffer = Buffer.from(right);
-  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+async function primaryEmail() {
+  const user = await currentUser();
+  return user?.primaryEmailAddress?.emailAddress?.trim().toLowerCase() ?? "";
 }
 
-export function isValidDashboardToken(candidate: string) {
-  const expected = internalToken();
-  return Boolean(expected) && safeEqual(candidate, expected);
-}
-
-export function dashboardSessionValue() {
-  const secret = internalToken();
-  if (!secret) return "";
-  return createHmac("sha256", secret).update("ternary-dashboard-session-v1").digest("hex");
-}
-
+/**
+ * True only for a signed-in Clerk user whose primary email is on the allowlist (ADR-0003).
+ *
+ * DASHBOARD_ALLOWED_EMAILS unset or empty returns false on purpose. Ternary's
+ * dashboard is an internal tool over customer repositories, so a missing
+ * allowlist is a misconfiguration, not an invitation: it must lock everyone out
+ * rather than admit every Clerk account that can reach the sign-in page.
+ *
+ * Clerk errors — most often `auth()` called on a route the proxy matcher does not
+ * cover — are swallowed into false so a seam failure never opens the dashboard and
+ * never throws at a page or route handler.
+ */
 export async function isDashboardAuthenticated() {
-  const candidate = (await cookies()).get(DASHBOARD_COOKIE)?.value ?? "";
-  const expected = dashboardSessionValue();
-  return Boolean(expected) && safeEqual(candidate, expected);
+  try {
+    const { userId } = await auth();
+    if (!userId) return false;
+    const allowed = allowedEmails();
+    if (allowed.length === 0) return false;
+    const email = await primaryEmail();
+    return Boolean(email) && allowed.includes(email);
+  } catch (error) {
+    // Next's own control-flow signals (redirect, and the dynamic-rendering bailout
+    // that `headers()` throws during static generation) must never be swallowed here.
+    unstable_rethrow(error);
+    console.error("Dashboard authentication could not be resolved", error);
+    return false;
+  }
+}
+
+/** Audit identity for dashboard writes: the signed-in user, else POLICY_ACTOR, else a shared default. */
+export async function currentDashboardActor() {
+  try {
+    const email = await primaryEmail();
+    if (email) return email;
+  } catch (error) {
+    // Next's own control-flow signals (redirect, and the dynamic-rendering bailout
+    // that `headers()` throws during static generation) must never be swallowed here.
+    unstable_rethrow(error);
+    console.error("Dashboard actor could not be resolved", error);
+  }
+  return process.env.POLICY_ACTOR || DEFAULT_ACTOR;
 }
