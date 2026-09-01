@@ -37,11 +37,7 @@ import {
   type PayloadCheckEvidence,
   type PayloadValidationResult,
 } from "./workspace-payload-validation";
-import {
-  WORKSPACE_REVIEW_GATE_PRINCIPAL_ID,
-  authenticateWorkspaceReview,
-  type WorkspaceAuthEnv,
-} from "./workspace-review-auth";
+import { authenticateWorkspaceReview, type WorkspaceAuthEnv } from "./workspace-review-auth";
 import type { WorkspaceGateDecision } from "./workspace-review-gate";
 import type {
   CheckEvidence,
@@ -391,10 +387,15 @@ export function createWorkspaceReviewHandler(deps: WorkspaceReviewRouteDeps) {
     // Abuse gate. Placed immediately after authentication — ahead of the body
     // read — so a hot-loop client is refused before we buffer 2 MiB or spend a
     // model call (spec §12 T9). Fail closed on store trouble.
-    // Gate keying is per-Principal, not per-token: see the doc comment on
-    // WORKSPACE_REVIEW_GATE_PRINCIPAL_ID (workspace-review-auth.ts).
-    // `auth.principalId` (per-token) remains what's logged below.
-    const gate = await deps.enterGate(WORKSPACE_REVIEW_GATE_PRINCIPAL_ID);
+    // Gate keying is per-token: `auth.principalId` is the non-reversible
+    // identity of whichever credential was presented, which is exactly the
+    // "10 requests/hour per token identity" contract in
+    // docs/workspace-review-endpoint.md §3. Each configured token therefore
+    // gets its own fixed rate-limit window AND its own concurrency slot. A
+    // rotation overlap briefly doubles both allowances — accepted, because
+    // the tokens are owner-held and one per machine (TER-49;
+    // .ratchet/DECISIONS.md D-20260901-0300-workspace-review-per-token-gate).
+    const gate = await deps.enterGate(auth.principalId);
     if (gate.status === "gate_unavailable") {
       return finish(503, "gate_unavailable", { error: "gate_unavailable" }, {
         principalId: auth.principalId,

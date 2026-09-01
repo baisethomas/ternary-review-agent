@@ -25,6 +25,14 @@ afterAll(() => {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
+/** The version in cli/package.json, read independently of the code under test. */
+function cliPackageVersion(): string {
+  const pkg = JSON.parse(
+    readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"),
+  ) as { version: string };
+  return pkg.version;
+}
+
 function makeDir(): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "ternary-main-")));
   roots.push(dir);
@@ -85,6 +93,25 @@ describe("argv wiring", () => {
     expect(r.code).toBe(2);
     expect(r.err.join("\n")).toMatch(/TTY/);
     expect(r.err.join("\n")).toContain("--yes");
+  });
+
+  it("--version prints the package version and payload schema, exit 0", () => {
+    for (const flag of ["--version", "-v"]) {
+      const r = run([flag], dir);
+      expect(r.code, flag).toBe(0);
+      expect(r.err, flag).toEqual([]);
+      expect(r.out, flag).toHaveLength(1);
+      // The version is read at runtime from the installed package.json, so
+      // this pins the shape (and that it resolved to a real semver), not a
+      // literal that would have to be bumped in lockstep with every release.
+      expect(r.out[0], flag).toMatch(/^ternary-cli \d+\.\d+\.\d+ /);
+      expect(r.out[0], flag).toBe(`ternary-cli ${cliPackageVersion()} (payload schema ${SCHEMA_VERSION})`);
+    }
+  });
+
+  it("--version is only the sole argument; it is not a flag on `review`", () => {
+    expect(run(["review", ".", "--version"], dir).code).toBe(2);
+    expect(run(["--version", "extra"], dir).code).toBe(2);
   });
 
   it("rejects unknown flags and commands", () => {

@@ -1,9 +1,22 @@
 {
   "name": "ternary-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
+  "license": "UNLICENSED",
   "description": "Offline Workspace Review collector for Ternary. Zero network, zero execution of repository code.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/baisethomas/ternary-review-agent.git",
+    "directory": "cli"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "bin",
+    "dist"
+  ],
   "bin": {
     "ternary": "./bin/ternary.mjs"
   },

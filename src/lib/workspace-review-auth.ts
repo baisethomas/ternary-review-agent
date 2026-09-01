@@ -68,26 +68,25 @@ export function bearerTokenFrom(header: string | null | undefined): string | nul
   return token.length ? token : null;
 }
 
-/** Non-reversible Principal identity derived from the presented token. */
+/**
+ * Non-reversible Principal identity derived from the presented token.
+ *
+ * Per-token by design — it is what the route logs, keyed off whichever
+ * credential was actually presented — and, since TER-49, also the abuse
+ * gate's key (docs/workspace-review-endpoint.md §3: "10 requests/hour **per
+ * token identity**"). Each configured token therefore gets its own fixed
+ * rate-limit window and its own concurrency slot.
+ *
+ * This supersedes the earlier shared-identity rationale (a single fixed gate
+ * key, so a rotation overlap could not double the one Principal's
+ * allowances). Overlap is brief and owner-only, and independent windows per
+ * machine token are now the point: `TERNARY_CLI_TOKEN_NEXT` is the second
+ * machine's standing token, not merely a rotation spare. See
+ * `.ratchet/DECISIONS.md` D-20260901-0300-workspace-review-per-token-gate.
+ */
 export function principalIdFor(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex").slice(0, 32);
 }
-
-/**
- * Fixed logical gate identity (docs/workspace-review-endpoint.md §2–§3).
- *
- * The alpha's contract has exactly one Principal: CURRENT and NEXT are two
- * credentials for that single Principal during a rotation overlap, not two
- * Principals. `principalIdFor` above is per-token by design (it is what the
- * route logs, keyed off whichever credential was actually presented), but
- * the abuse gate must NOT use it as the rate-limit/concurrency key — doing
- * so would give CURRENT and NEXT their own independent rate-limit window and
- * concurrency slot, doubling both allowances for the one Principal during
- * every rotation overlap. The gate is therefore keyed off this single fixed
- * identity instead, so both tokens always share one rate window and one
- * concurrency slot.
- */
-export const WORKSPACE_REVIEW_GATE_PRINCIPAL_ID = "workspace-review-principal";
 
 /**
  * Authenticate one Workspace Review request.

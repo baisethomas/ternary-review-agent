@@ -1,2 +1,5 @@
 node_modules/
 dist/
+# `npm pack` output (cli/scripts/release.sh); a stray tarball would otherwise
+# leave the tree dirty and make the next release run refuse.
+*.tgz

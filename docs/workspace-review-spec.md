@@ -385,7 +385,7 @@ _Avoid_: Repository Scope, session, namespace
 
 ## 12. Threat model
 
-Assumptions: single internal Principal, internal endpoint, Hobby-plan hosting, nothing persisted server-side.
+Assumptions: a small fixed set of owner-held token principals (one per machine), internal endpoint, Hobby-plan hosting, nothing persisted server-side.
 
 ### Assets
 
@@ -415,7 +415,7 @@ B5. Local evidence → review reasoning (`unverified_client` labeling).
 | T6 | Forged local evidence upgrading trust ("tests passed") | B5 | `trust: "unverified_client"` is structural and rendered; local evidence never worded as sandbox evidence (3.2) |
 | T7 | Terminal escape-sequence injection via filenames or model output | B4 | ANSI/control neutralization of all untrusted text (10) |
 | T8 | `TERNARY_CLI_TOKEN` leakage (logs, payloads, evidence) | B2/B3 | Token never enters the payload; server redaction patterns cover bearer tokens; env-sanitized command execution if ever added (4.2, 9) |
-| T9 | Cost/DoS: oversized payloads or hot-loop resubmission (no idempotency) | B3 | Hard payload caps (4.4), server-owned token budget, ≤120s deadline with model abort (6); single Principal limits blast radius; spend monitoring stays advisory |
+| T9 | Cost/DoS: oversized payloads or hot-loop resubmission (no idempotency) | B3 | Hard payload caps (4.4), server-owned token budget, ≤120s deadline with model abort (6); a small fixed set of owner-held token principals (one per machine) limits blast radius — each is gated independently, so the ceiling is the token count times the per-token allowance; spend monitoring stays advisory |
 | T10 | Server-side retention creating a new data store to breach | B3 | Nothing persisted (5); logs carry metadata only |
 | T11 | Replay of a captured payload by a network observer | B2 | Internal endpoint over TLS with bearer token; acceptable residual risk for a single-user alpha — revisit before any multi-user phase |
 | T12 | Filesystem race (TOCTOU): a classified-safe file is swapped for a symlink or secret-bearing content before it is read | B1 | Race-safe capture: no-follow directory-relative opens, post-open `fstat` identity verification, checks applied to the bytes actually read, exclusion as the only failure mode (7.3) |
