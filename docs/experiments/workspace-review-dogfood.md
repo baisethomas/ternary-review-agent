@@ -1657,6 +1657,43 @@ finding in run 2 is documentation-level and defensible — but a consumer gating
 on the verdict alone would have flipped. This strengthens §8.10.3's
 recommendation: gate on finding class, not on verdict or severity boundaries.
 
+## 8.12 Source-first snapshot, end-to-end — and three machineries fire at once (measured 2026-09-01)
+
+**2 submissions of `tablet-notes-v3 --all` with the TER-43 source-first CLI**
+(both sides at main `3d08f0d`; payload now 515,252 bytes carrying **swift 46,
+ts 9, sql 4, tsx 1** where §8.11's carried zero source). Raw record:
+`docs/experiments/tabnotes-priority-probe.json`.
+
+**Run 1 is the first code-level `--all` review of a real repository in this
+project**: 10 findings, all against Swift application source — a hardcoded
+Supabase anon key, a deadlock candidate (`onEvent` called under a lock in
+`AudioCaptureEngine`), a non-atomic `hasPendingSyncWork` check, a
+cloud-restore data-loss path, a SwiftData `@Model`+`Codable` conflict —
+file/line-anchored, English, delivered on attempt 1 from Reka in 9.1 s at
+$0.021. Set against §8.11's "no code was included to review", TER-43's fix is
+verified end-to-end.
+
+**Run 2 failed — and in doing so gave live evidence to three paths that had
+none.** Attempt 1's generation (Reka) failed schema validation →
+`retryReason: "schema_invalid"` fired for the first time live; the retry
+carried the **corrective third message** (TER-45's machinery, previously
+unit-tested only); and attempt 2 was routed to **Makora** — the first live use
+of the pin's second position, proving `provider.ignore` composes with
+`provider.order`. Attempt 2 also failed schema validation, and the request
+ended exactly as the contract specifies: deterministic 500 `model_failure`,
+`attempts: 2`, 55.8 s, nothing malformed returned to the caller.
+
+The honest reading of 1-of-2: **~88K-token inputs strain strict structured
+output** in a way 1–5K-token fixture inputs never did (schema_invalid had
+never occurred in 80+ fixture-scale submissions). Two runs cannot size the
+rate; a repetition series at this scale is the follow-up if `--all` on large
+repos becomes a real workflow. What is settled is that the failure mode is
+handled: the bounded retry, the corrective re-prompt, and the order+ignore
+routing all did their jobs on their first real firing.
+
+Residue: coverage surfacing (TER-43 ticket option 1 — "content included for N
+of M files") is still unimplemented; the §8.11 verdict-flap caveat stands.
+
 ## 9. Recommendation
 
 **REVISE.** Not continue, not stop.

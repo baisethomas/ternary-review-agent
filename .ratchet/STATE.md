@@ -43,17 +43,15 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **TER-43 (snapshot source-first priority), implemented in an agent worktree,
-  pending PR.** New `cli/src/snapshot-priority.ts` (4 deterministic tiers,
-  lockfiles demoted) + `deny.ts` stage 5b: snapshot content is selected and
-  the `snapshot` array emitted in priority order; manifest keeps its bytewise
-  contract; changeset mode untouched. Offline proof on tablet-notes-v3:
-  content entries went md-29/source-0 → swift-46/ts-9/sql-4/tsx-1 with the
-  400,000-byte budget fully spent. Decision D-20260901-0100. CLI-only — no
-  `src/`, no schema change. Coverage surfacing (ticket option 1) deliberately
-  NOT included — follow-up.
-- After merge: live §8.12 re-probe (tablet-notes-v3 --all ×2 with the new CLI,
-  approved egress) to confirm a code-level review end-to-end.
+- **Uncommitted docs:** dogfood §8.12 + `docs/experiments/tabnotes-priority-probe.json`
+  (new) + this file. Docs only; a separate Git agent commits.
+- **TER-43 merged (`3d08f0d`, #54, Ternary ✅) and verified end-to-end**
+  (§8.12): the first code-level `--all` review of a real repo (10 Swift
+  findings, attempt 1, 9.1 s). The probe's second run double-failed schema
+  validation at ~88K input tokens and exercised — for the first time live —
+  `schema_invalid` retry, the corrective third message, and Makora via
+  order+ignore; the contract returned its deterministic 500. Decision
+  D-20260901-0100. Coverage surfacing spun off as its own ticket.
 - **TER-46 closed 2026-08-31**: promotion merged as main `364ea75` (#52);
   `WORKSPACE_MODEL_TUNING_DEFAULTS.providerOrder = ["reka/fp4","makora"]`
   (D-20260831-0200), `WORKSPACE_MODEL_PROVIDER_ORDER` still overrides
@@ -85,13 +83,20 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
    there matters, name those consequences in the rubric (offline credential
    cracking, descriptor exhaustion) at the cost of prompt growth. S09 (TOCTOU)
    is the weakest seed: 1 miss + 1 `suggestion` grade across reps.
-3. **The corrective re-prompt is still unexercised** — no live
-   `language_invalid`/`schema_invalid` has ever occurred. The retry itself now
-   has one live firing (connection class); one firing is not a reliability
-   figure.
-4. **TER-43 fix in flight** (see "Working on"); after it merges, the live
-   §8.12 re-probe, then close the ticket with coverage surfacing (option 1)
-   spun off as its own follow-up.
+3. **Retry-path live evidence, current tally (per §8.9 and §8.12):** the
+   bounded retry has two live firings — one `connection` (§8.9, recovered via
+   Together) and one `schema_invalid` (§8.12, corrective third message sent,
+   attempt 2 to Makora, both attempts failed → deterministic 500). The
+   corrective re-prompt has therefore fired live exactly once and has never
+   yet *recovered* a request; `language_invalid` has still never occurred.
+   n=1 per class is not a reliability figure.
+4. **New watch item from §8.12:** `schema_invalid` at ~88K-token inputs —
+   1-of-2 runs double-failed strict structured output at a scale where 80+
+   fixture-size submissions never did. A repetition series at this input size
+   is the follow-up if large-repo `--all` becomes a real workflow.
+5. **Coverage surfacing** (spun off from TER-43): print "content included for
+   N of M files (X% of eligible bytes)" in the CLI confirm summary and
+   rendered result.
 5. **§7.2 generic-agent baseline** — still unrun; all quality numbers remain
    self-relative.
 6. **Verdict-level instability observed** (§8.11): byte-identical 513 KB
