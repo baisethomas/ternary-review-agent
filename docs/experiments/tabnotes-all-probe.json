@@ -1,0 +1,51 @@
+{
+ "$comment": "Large-payload probe raw record (dogfood section 8.11): tablet-notes-v3 --all x 2 repetitions. Metadata and adjudication only: no source content, no secrets. Server fields read from WorkspaceReviewLogEntry lines via the Vercel runtime-logs API; both runs matched by requestBytes 513338. The 400,000-byte snapshot content cap binds CLIENT-side in capture (bytewise path order), which is why droppedByServerCaps is 0 while zero Swift source reached the payload.",
+ "schema": "tabnotes-all-probe/1",
+ "experimentLabel": "size-ceiling retirement probe: 513 KB real-repo snapshot under the reka/fp4,makora default pin",
+ "generatedUtc": "2026-09-01T05:00:00Z",
+ "seriesStartUtc": "2026-09-01T04:43:58Z",
+ "seriesEndUtc": "2026-09-01T04:44:22Z",
+ "endpoint": "POST /api/workspace-reviews (production)",
+ "deploymentId": "dpl_7D3NrsXaAJrrCLvZfXMqEdU4NCcP",
+ "commit": "364ea75",
+ "promptVersion": "workspace-snapshot-v2",
+ "modelServed": "deepseek/deepseek-v4-flash-0731",
+ "target": "tablet-notes-v3 @ 6b5800d (real repo, approved egress 2026-08-25)",
+ "capture": {
+  "captureMode": "all",
+  "payloadBytes": 513338,
+  "manifestEntries": 433,
+  "snapshotEntriesWithContent": 47,
+  "capturedContentBytes": 400000,
+  "truncatedFiles": 333,
+  "truncatedBytesDropped": 2731965,
+  "excludedFiles": 3,
+  "redactedSpans": 9,
+  "contentCompositionNote": "The client-side 400,000-byte cap filled in bytewise path order with .claude/, App Store materials, docs and config; no Swift or JavaScript application source reached the payload. Both reviews independently state this."
+ },
+ "runs": [
+  {
+   "runId": "TABALL-r1",
+   "httpStatus": 200, "outcome": "ok", "verdict": "pass", "findingCount": 0,
+   "cliExitCode": 0, "wallClockMs": 6094, "serverDurationMs": 3941,
+   "attempts": 1, "provider": "Reka", "attempt1Provider": "Reka",
+   "inputTokens": 99610, "outputTokens": 135, "reasoningTokens": 0,
+   "estimatedCostUsd": 0.0220033, "redactionApplied": 2,
+   "droppedByServerCaps": 0, "digestVerified": true,
+   "languageScan": "no-blocked-script-chars"
+  },
+  {
+   "runId": "TABALL-r2",
+   "httpStatus": 200, "outcome": "ok", "verdict": "findings", "findingCount": 4,
+   "cliExitCode": 1, "wallClockMs": 7754, "serverDurationMs": 6262,
+   "attempts": 1, "provider": "Reka", "attempt1Provider": "Reka",
+   "inputTokens": 99610, "outputTokens": 968, "reasoningTokens": 0,
+   "estimatedCostUsd": 0.02255308, "redactionApplied": 2,
+   "droppedByServerCaps": 0, "digestVerified": true,
+   "languageScan": "no-blocked-script-chars",
+   "findingsNote": "All four findings are documentation-level (committed key flagged by the repo's own docs, App Store description overclaiming encryption, two stale docs); none touch application code, because none was in the payload."
+  }
+ ],
+ "verdictFlap": "Byte-identical payloads returned verdict pass (0 findings) and verdict findings (4) — the section 8.5.3 instability observed at the VERDICT level on a real repository. A consumer gating on verdict alone would flip between runs.",
+ "conclusion": "Delivery is size-independent well past the old ceiling: 513 KB / 99,610 input tokens completed in 3.9 s and 6.2 s on attempt 1 under the pinned provider. Phase B's 0-for-4 at 43 KB is now fully attributed to the pre-tuning provider/reasoning regime, not payload size. The binding problem at this size is TER-43: capture's bytewise-path-order fill produced a review of documentation instead of source."
+}

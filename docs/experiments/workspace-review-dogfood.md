@@ -1623,7 +1623,39 @@ gate on the finding class instead.
 axes with margin; the cost premium is a rounding error at this volume; the
 churn risk is bounded by fallbacks and is an argument for keeping the env
 override, not for staying on the lottery. Owner decision — recorded when
-taken.
+taken. *(Taken: promoted 2026-08-31, D-20260831-0200, main `364ea75`.)*
+
+## 8.11 The size ceiling is dead; TER-43 is what it was hiding (measured 2026-09-01)
+
+**2 submissions of `tablet-notes-v3 --all`** — a **513,338-byte** real-repo
+snapshot, 12× Phase B's failing 43 KB changeset and 17× the 30 KB `todo-app`
+snapshot — against production under the promoted pin (deployment
+`dpl_7D3NrsXaAJrrCLvZfXMqEdU4NCcP`, main `364ea75`). Raw record:
+`docs/experiments/tabnotes-all-probe.json`.
+
+**Both delivered on attempt 1, from Reka, in 3.9 s and 6.2 s**, at 99,610
+input tokens and ~$0.022 each. Phase B's 0-for-4 on this repository — the last
+surviving evidence for a payload-size ceiling — is now fully attributed to the
+pre-tuning provider/reasoning regime. Delivery is size-independent to at least
+half a megabyte and six-figure token counts. Client-side redaction carried 9
+spans (JWT, bearer tokens, a high-entropy assignment); server-side redaction
+touched 2 fields; the canonical digest verified on both.
+
+What the size question was hiding is **TER-43**. The client-side 400,000-byte
+snapshot content cap filled in bytewise path order with `.claude/`, App Store
+materials, docs and config — **47 of 433 manifest entries carried content and
+not one was Swift or JavaScript application source**. Both reviews
+independently state they were given no code to review (`droppedByServerCaps`
+is 0 — the server never sees what capture already dropped). On a real
+repository the truncation ordering does not degrade the review; it **redirects
+it at the wrong files**. TER-43 graduates from "cap that never binds" to the
+binding defect for `--all` on any repository larger than the cap.
+
+One more §8.5.3 data point, now at the verdict level: byte-identical payloads
+returned **`pass` (0 findings) and `findings` (4)** in consecutive runs. Every
+finding in run 2 is documentation-level and defensible — but a consumer gating
+on the verdict alone would have flipped. This strengthens §8.10.3's
+recommendation: gate on finding class, not on verdict or severity boundaries.
 
 ## 9. Recommendation
 
