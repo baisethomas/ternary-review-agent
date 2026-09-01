@@ -83,10 +83,13 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
    there matters, name those consequences in the rubric (offline credential
    cracking, descriptor exhaustion) at the cost of prompt growth. S09 (TOCTOU)
    is the weakest seed: 1 miss + 1 `suggestion` grade across reps.
-3. **The corrective re-prompt is still unexercised** — no live
-   `language_invalid`/`schema_invalid` has ever occurred. The retry itself now
-   has one live firing (connection class); one firing is not a reliability
-   figure.
+3. **Retry-path live evidence, current tally (per §8.9 and §8.12):** the
+   bounded retry has two live firings — one `connection` (§8.9, recovered via
+   Together) and one `schema_invalid` (§8.12, corrective third message sent,
+   attempt 2 to Makora, both attempts failed → deterministic 500). The
+   corrective re-prompt has therefore fired live exactly once and has never
+   yet *recovered* a request; `language_invalid` has still never occurred.
+   n=1 per class is not a reliability figure.
 4. **New watch item from §8.12:** `schema_invalid` at ~88K-token inputs —
    1-of-2 runs double-failed strict structured output at a scale where 80+
    fixture-size submissions never did. A repetition series at this input size
