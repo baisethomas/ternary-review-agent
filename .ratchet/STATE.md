@@ -43,41 +43,23 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **TER-47 fix round (PR #56, Ternary ⛔ → resolved, uncommitted):** the
-  `render.ts` `snapshotCoverage` formula was correct against the real
-  collector all along; the bug was a false invariant in
-  `render.test.ts`'s "sliced file" fixture, which set the sliced file's
-  manifest `size` to the post-slice (kept) length instead of the on-disk
-  (original) length deny.ts actually produces. Added a collector-backed
-  invariant test in `deny.test.ts` (calls `runExclusionPipeline` in snapshot
-  mode with a tiny `snapshotBytes` cap; asserts a sliced entry's `size` stays
-  the original on-disk length) — passes unmodified, pinning the assumption
-  the formula relies on. Corrected the `render.test.ts` fixture
-  (`included("big.ts", 100)`, expected coveredBytes 140/eligibleBytes
-  200/pct 70) and its comment. Re-ran reproduce-revert-restore on the
-  corrected fixture: reverting the `coveredBytes` subtraction term now fails
-  with the *right* wrong number (200, matching the reviewer's double-count
-  example), restored to green. Full `cli npm test` 260/260, root `npm run
-  lint` clean. Live dry-run against `tablet-notes-v3 --all` unchanged at
-  `coverage: content included for 63 of 379 eligible files (13% of eligible
-  bytes)` — expected: the repo has exactly one partially-sliced file (3.7 KB
-  lost of ~404 KB total), too small to move the rounded percentage.
-- **TER-47 implemented in this worktree, uncommitted (separate Git agent
-  commits):** `cli/src/render.ts` gets `snapshotCoverage(payload)` (pure;
-  eligible = included + truncated-to-zero, byte math per dogfood §8.12) and a
-  `coverage: content included for N of M eligible files (X% of eligible
-  bytes)` line in `renderReport` for `kind: "snapshot"` only. `cli/src/submit.ts`
-  exports `renderResult` (was file-private) with an optional `coverage`
-  param computed in `runSubmit` from the collected payload, plus
-  `COVERAGE_CAUTION_PCT = 80` — below it, a caution note prints alongside the
-  line; verdict/exit code untouched either way. Tests added in
-  `render.test.ts`/`submit.test.ts`; both new assertions verified to fail on
-  revert (eligibleFiles truncated-to-zero term; caution threshold check) and
-  pass restored. `docs/workspace-review-spec.md` §4.4 gets one sentence
-  documenting the behavior. Live dry-run against `tablet-notes-v3 --all`:
-  `coverage: content included for 63 of 379 eligible files (13% of eligible
-  bytes)`. `src/` (server) untouched — `npx vitest run --dir src` green
-  (692 passed / 9 skipped), same as before this work.
+- **TER-48 (Clerk dashboard auth), implemented in an agent worktree, pending
+  PR.** Hard cutover per ADR-0003 (indexed as D-20260901-0200): Clerk
+  sessions + fail-closed `DASHBOARD_ALLOWED_EMAILS` allowlist replace the
+  shared-password cookie gate behind the unchanged
+  `isDashboardAuthenticated()` seam; `src/proxy.ts` (Next 16 convention)
+  attaches Clerk context on pages + browser/dual API routes only — machine
+  routes (webhook HMAC, CLI bearer, cron/QStash, health) excluded and
+  byte-identical. Audit actors become the signed-in email via
+  `currentDashboardActor()`. `@clerk/nextjs@7.8.3` verified against the
+  installed package (proxy-compatible, builds with no keys set).
+  **Deploy is gated on owner actions:** Clerk Marketplace install (or keys in
+  Vercel env), `DASHBOARD_ALLOWED_EMAILS` set (unset ⇒ nobody can sign in —
+  intended), Clerk restricted sign-ups + self-invite, then a live sign-in
+  smoke test only the owner can perform.
+- **TER-47 closed 2026-09-01** (merged `450f781`, #56 after a ⛔→✅ fix round:
+  the coverage formula was right, a test fixture encoded a false
+  manifest-size invariant; a collector-backed test now pins the real one).
 - **Uncommitted docs:** dogfood §8.12 + `docs/experiments/tabnotes-priority-probe.json`
   (new) + this file. Docs only; a separate Git agent commits.
 - **TER-43 merged (`3d08f0d`, #54, Ternary ✅) and verified end-to-end**

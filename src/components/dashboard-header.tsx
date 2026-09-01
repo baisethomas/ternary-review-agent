@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { logoutAction } from "@/app/actions";
+import { SignOutButton } from "@clerk/nextjs";
 import { CommandPalette } from "@/components/command-palette";
 import { DashboardLiveRefresh } from "@/components/dashboard-live-refresh";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -105,9 +105,9 @@ export function DashboardHeader({
         </button>
         <ThemeToggle />
         <button type="button" onClick={() => router.refresh()} className="rounded-[10px] border border-[var(--line)] bg-[var(--panel)] px-3 py-2 text-xs font-semibold">↻ Refresh</button>
-        <form action={logoutAction}>
-          <button className="rounded-[10px] border border-[var(--line)] bg-[var(--panel)] px-3 py-2 text-xs font-semibold">Log out</button>
-        </form>
+        <SignOutButton redirectUrl="/sign-in">
+          <button type="button" className="rounded-[10px] border border-[var(--line)] bg-[var(--panel)] px-3 py-2 text-xs font-semibold">Log out</button>
+        </SignOutButton>
       </div>
       <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} commands={commands} />
     </header>
