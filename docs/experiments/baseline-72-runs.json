@@ -1,0 +1,58 @@
+{
+ "$comment": "Section 7.2 generic-agent baseline raw record (dogfood section 8.13). Metadata and adjudication only: no source content, no secrets. Both arms received the byte-identical canonical payloads of the 12 seeded fixtures (digests match the live series), with the deliberately generic instruction 'Review this changeset for bugs.' and NO Ternary system prompt, severity contract, finding schema, provider pinning, or reasoning tuning. Scored by the same adjudicator with the section 7.1 formulas (file match + defect class named; S12 findings are style noise by construction; the ordinary fixture's dense baseline defects route to TP_extra, not FP).",
+ "schema": "baseline-72-runs/1",
+ "experimentLabel": "section 7.2 baseline: generic agent, same input, no product context — two arms",
+ "generatedUtc": "2026-09-01T19:30:00Z",
+ "payloads": "12 canonical payloads rebuilt offline from the seeded fixtures; per-seed digests and byte counts identical to ter45-runs.json (S01 4878 B ... S12 4742 B); 12/12 canary pre-flights CLEAN; fixtures digest-verified after every revert",
+ "arms": {
+  "A": {
+   "description": "Same model family as production, direct OpenRouter chat completion, all defaults (no provider order/sort, no reasoning param, no schema). Owner-approved egress path and API-key use 2026-09-01.",
+   "model": "deepseek/deepseek-v4-flash",
+   "delivered": "12/12",
+   "providersServed": {"DeepInfra": 6, "Baidu": 3, "Novita": 1, "NextBit": 1, "Parasail": 1},
+   "promptTokens": 16057,
+   "completionTokens": 19854,
+   "recall": "9/11 (81.8%)",
+   "perSeed": {
+    "S01": "TP (pagination slice off-by-one)", "S02": "TP (displayName optional crash)",
+    "S03": "TP (searchOrders SQL injection)", "S04": "TP (missing await in audit.ts — clean TP, stronger than the product's own weak-TP phrasing in 8.8)",
+    "S05": "TP (syncAll silent swallowing)", "S06": "FN — src/admin.ts / the impersonation auth bypass is never mentioned anywhere in the review",
+    "S07": "TP (reports.py handle never closed)", "S08": "TP weak (names missing backoff on the http.ts retry, not non-idempotency — same standard as 8.8's weak TP)",
+    "S09": "FN by class — cache.ts mentioned only as 'returns path instead of content (design, Low)'; no race/TOCTOU",
+    "S10": "TP (readUpload path traversal)", "S11": "TP (unsalted MD5)",
+    "S12": "CONTROL PASS (all findings are genuine baseline defects; the control.ts reformat is not flagged)"
+   },
+   "falsePositives": "0 adjudicated FP; non-seed findings target genuine fixture-baseline defects (TP_extra) or are payload-metadata observations (redaction canaries, the escaping symlink) — noted, not counted as findings",
+   "output": "free-form markdown; no severity contract; no structured findings; not machine-consumable"
+  },
+  "B": {
+   "description": "Strong generic agent: 12 fresh Claude (Sonnet) subagents, one per seed, no product context, no knowledge of the seed list, same generic instruction. No new egress (in-session).",
+   "model": "claude sonnet (fresh subagent per seed)",
+   "delivered": "12/12",
+   "recall": "11/11 (100%)",
+   "perSeed": {
+    "S01": "TP", "S02": "TP", "S03": "TP", "S04": "TP", "S05": "TP",
+    "S06": "TP (auth bypass named as the critical headline; also independently flagged the actor.id===orgId ownership check as suspect)",
+    "S07": "TP", "S08": "TP weak (backoff + non-selective retry named; idempotency named in some but not all phrasing)",
+    "S09": "TP (TOCTOU named explicitly)", "S10": "TP", "S11": "TP",
+    "S12": "CONTROL PASS (control.ts reformat explicitly called a non-bug)"
+   },
+   "falsePositives": "0 adjudicated FP; same TP_extra caveat as arm A",
+   "output": "free-form markdown; several reviews explicitly recognized the payload as a synthetic fixture (see limitations)"
+  }
+ },
+ "ternaryReference": {
+  "note": "The product's own most recent like-for-like numbers, for the comparison table (different series dates; -v2 prompt; pinned providers).",
+  "recall": "22/22 across 2 reps (section 8.10), 21/22 (8.9)",
+  "s12Control": "PASS in every measured series",
+  "p50Ms": 4965.5, "meanCostUsd": 0.001312,
+  "output": "schema-validated JSON findings with file/line anchors and a consequence-graded severity, English-enforced, deterministic failure modes"
+ },
+ "limitations": [
+  "Single repetition per seed per arm; sections 8.5.3/8.11 measured verdict- and severity-level run-to-run instability on byte-identical inputs, so one rep bounds nothing.",
+  "Arm B's payload filenames (S01.payload.json) and the canonical payload's own redaction metadata leak that the input is a synthetic fixture; several arm-B reviews said so explicitly. Arm A saw the same payload bytes but not the filename. Ternary's model sees the same metadata, so parity is imperfect but not one-sided.",
+  "Arm B is a different, stronger model — it measures 'a competent generic agent', not the product's prompt value; arm A is the like-for-like prompt ablation.",
+  "The adjudicator (same as all prior series) knows the seed list; §7.1's file+class rule bounds but does not eliminate adjudicator bias."
+ ],
+ "conclusion": "On the same model and the same bytes, Ternary's prompt/pipeline is worth measurable recall: the generic prompt missed the auth bypass (S06) — the highest-consequence seed, which the product has found in every series — and the TOCTOU (S09), scoring 9/11 vs the product's 22/22. A strong generic agent (arm B) matches the product's recall at 11/11, which relocates the product's value for strong-model users from detection to what surrounds it: schema-validated, severity-graded, machine-consumable output; enforced language; deterministic failure modes; pinned ~5 s latency; secret redaction before anything leaves the machine; and a tenth-of-a-cent unit cost. The honest headline: the pipeline beats its own model without the prompt, and ties a stronger model on detection while delivering everything detection alone does not."
+}
