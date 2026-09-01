@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { neutralizeControlSequences, renderReport } from "./render.js";
+import { neutralizeControlSequences, renderReport, snapshotCoverage } from "./render.js";
 import { DEFAULT_CAPS, REDACTION_RULES_VERSION, SCHEMA_VERSION } from "./types.js";
-import type { CanonicalPayload } from "./types.js";
+import type { CanonicalPayload, ManifestEntry, RedactionMetadata } from "./types.js";
 
 describe("neutralizeControlSequences", () => {
   it("neutralizes ESC, CSI (C1), and bare CR (spec section 10)", () => {
@@ -101,5 +101,119 @@ describe("renderReport", () => {
 
   it("labels dry run as transmitting nothing", () => {
     expect(lines[0]).toContain("dry run (nothing transmitted)");
+  });
+
+  it("does not print a coverage line for changeset payloads", () => {
+    expect(text).not.toContain("coverage:");
+  });
+});
+
+function snapshotPayload(manifest: ManifestEntry[], redaction: Partial<RedactionMetadata> = {}): CanonicalPayload {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    kind: "snapshot",
+    captureMode: "all",
+    tool: { name: "ternary-cli", version: "0.1.0" },
+    workspace: { label: "w", vcs: "git", baseState: "unborn" },
+    manifest,
+    snapshot: [],
+    context: [],
+    localPolicy: {
+      captureMode: "all",
+      include: ["**"],
+      exclude: [],
+      denyRulesVersion: "ternary-deny/1",
+      caps: DEFAULT_CAPS,
+    },
+    redaction: {
+      rulesVersion: REDACTION_RULES_VERSION,
+      withheldFiles: [],
+      redactedSpans: [],
+      truncated: [],
+      omittedManifestEntries: 0,
+      ...redaction,
+    },
+  };
+}
+
+function included(path: string, size: number): ManifestEntry {
+  return { path, status: "added", size, mode: "regular", contentIncluded: true };
+}
+
+describe("snapshotCoverage (TER-47, dogfood §8.12)", () => {
+  it("reports 100% and equal file counts when nothing was truncated", () => {
+    const payload = snapshotPayload([included("a.ts", 100), included("b.ts", 50)]);
+    const coverage = snapshotCoverage(payload);
+    expect(coverage).toEqual({
+      includedFiles: 2,
+      eligibleFiles: 2,
+      coveredBytes: 150,
+      eligibleBytes: 150,
+      pct: 100,
+    });
+  });
+
+  it("a sliced file (kept > 0) reduces coveredBytes but not includedFiles/eligibleFiles", () => {
+    // A manifest entry's `size` is always the ORIGINAL on-disk byte length —
+    // the collector never mutates it after slicing (pinned against the real
+    // pipeline in deny.test.ts's TER-47 invariant test). The slice itself is
+    // visible only via the truncated record's originalBytes/keptBytes.
+    const payload = snapshotPayload([included("a.ts", 100), included("big.ts", 100)], {
+      truncated: [{ path: "big.ts", originalBytes: 100, keptBytes: 40 }],
+    });
+    const coverage = snapshotCoverage(payload);
+    expect(coverage.includedFiles).toBe(2);
+    expect(coverage.eligibleFiles).toBe(2);
+    // coveredBytes = (100 + 100) included-size sum - (100 - 40) slice loss = 140
+    expect(coverage.coveredBytes).toBe(140);
+    // eligibleBytes = coveredBytes + total truncation loss (60) = 200
+    expect(coverage.eligibleBytes).toBe(200);
+    expect(coverage.pct).toBe(Math.round((100 * 140) / 200));
+  });
+
+  it("a truncated-to-zero file adds to eligibleFiles/eligibleBytes only, not includedFiles", () => {
+    const payload = snapshotPayload([included("a.ts", 100)], {
+      truncated: [{ path: "skipped.ts", originalBytes: 500, keptBytes: 0 }],
+    });
+    const coverage = snapshotCoverage(payload);
+    expect(coverage.includedFiles).toBe(1);
+    expect(coverage.eligibleFiles).toBe(2);
+    expect(coverage.coveredBytes).toBe(100);
+    expect(coverage.eligibleBytes).toBe(600);
+    expect(coverage.pct).toBe(Math.round((100 * 100) / 600));
+  });
+
+  it("ignores binary and withheld entries entirely (never counted as eligible)", () => {
+    const payload = snapshotPayload(
+      [
+        included("a.ts", 100),
+        { path: "photo.png", status: "added", size: 5000, mode: "regular", contentIncluded: false, binary: true },
+      ],
+      { withheldFiles: [{ path: ".env", class: "env_file" }] },
+    );
+    const coverage = snapshotCoverage(payload);
+    expect(coverage.includedFiles).toBe(1);
+    expect(coverage.eligibleFiles).toBe(1);
+    expect(coverage.pct).toBe(100);
+  });
+});
+
+describe("renderReport: snapshot coverage line", () => {
+  it("is present for snapshot payloads", () => {
+    const payload = snapshotPayload([included("a.ts", 100)], {
+      truncated: [{ path: "skipped.ts", originalBytes: 500, keptBytes: 0 }],
+    });
+    const lines = renderReport({
+      kind: "snapshot",
+      captureMode: "all",
+      dryRun: true,
+      workspaceRoot: "/tmp/w",
+      payload,
+      totalSourceBytes: 600,
+      totalPayloadBytes: 100,
+      digest: "sha256:" + "0".repeat(64),
+    });
+    const text = lines.join("\n");
+    expect(text).toContain("coverage: content included for 1 of 2 eligible files (17% of eligible bytes)");
   });
 });

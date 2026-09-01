@@ -6,8 +6,10 @@
 import { getEventListeners } from "node:events";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { confirmOrThrow, CONFIRM_TIMEOUT_MS } from "./submit.js";
+import { confirmOrThrow, CONFIRM_TIMEOUT_MS, COVERAGE_CAUTION_PCT, renderResult } from "./submit.js";
+import type { SnapshotCoverage } from "./render.js";
 import { TransmitError } from "./transmit.js";
+import type { WorkspaceReviewResult } from "./transmit.js";
 import { CollectorError } from "./types.js";
 import type { SubmitIo } from "./submit.js";
 
@@ -111,5 +113,53 @@ describe("confirmOrThrow", () => {
     await expect(confirmOrThrow(makeIo(stdin, controller.signal), CONFIRM_TIMEOUT_MS)).rejects.toMatchObject(
       { code: "aborted" },
     );
+  });
+});
+
+function baseResult(verdict: "pass" | "findings" = "pass"): WorkspaceReviewResult {
+  return {
+    verdict,
+    summary: "looks fine",
+    findings: [],
+    evidence: [],
+    redactionApplied: 0,
+    droppedFindings: { unknownPath: 0 },
+  };
+}
+
+function coverageAt(pct: number): SnapshotCoverage {
+  return { includedFiles: 1, eligibleFiles: 10, coveredBytes: pct, eligibleBytes: 100, pct };
+}
+
+function collectOutput(fn: (io: SubmitIo) => void): string[] {
+  const lines: string[] = [];
+  fn({ stdout: (l) => lines.push(l), stderr: () => {}, env: {}, stdin: new PassThrough() });
+  return lines;
+}
+
+describe("renderResult: snapshot coverage (TER-47)", () => {
+  it("prints the coverage line but no caution note when pct >= COVERAGE_CAUTION_PCT", () => {
+    const coverage = coverageAt(COVERAGE_CAUTION_PCT);
+    const lines = collectOutput((io) => renderResult(baseResult(), io, coverage));
+    const text = lines.join("\n");
+    expect(text).toContain(`coverage: content included for 1 of 10 eligible files (${COVERAGE_CAUTION_PCT}% of eligible bytes)`);
+    expect(text).not.toContain("note: this verdict covers");
+  });
+
+  it("prints the caution note when pct < COVERAGE_CAUTION_PCT, without changing verdict/exit code", () => {
+    const coverage = coverageAt(COVERAGE_CAUTION_PCT - 1);
+    const result = baseResult("pass");
+    const lines = collectOutput((io) => renderResult(result, io, coverage));
+    const text = lines.join("\n");
+    expect(text).toContain(`note: this verdict covers ${COVERAGE_CAUTION_PCT - 1}% of eligible source bytes; files beyond the snapshot budget were not reviewed.`);
+    // verdict text is unaffected by coverage — caution is a display-only note
+    expect(text).toContain("verdict: pass");
+  });
+
+  it("omits the coverage line entirely for non-snapshot results (no coverage argument passed)", () => {
+    const lines = collectOutput((io) => renderResult(baseResult(), io));
+    const text = lines.join("\n");
+    expect(text).not.toContain("coverage:");
+    expect(text).not.toContain("note: this verdict covers");
   });
 });
