@@ -8,7 +8,8 @@
 
 import { createInterface } from "node:readline/promises";
 import { collectWorkspaceReview } from "./collect.js";
-import { neutralizeControlSequences, renderReport } from "./render.js";
+import { neutralizeControlSequences, renderReport, snapshotCoverage } from "./render.js";
+import type { SnapshotCoverage } from "./render.js";
 import {
   DEFAULT_TIMEOUT_MS,
   resolveTransmitConfig,
@@ -68,9 +69,18 @@ export async function runSubmit(
     config,
     io.signal,
   );
-  renderResult(result, io);
+  const coverage =
+    collected.finalized.payload.kind === "snapshot" ? snapshotCoverage(collected.finalized.payload) : undefined;
+  renderResult(result, io, coverage);
   return result.verdict === "pass" ? 0 : 1;
 }
+
+// Display threshold only — never alters the verdict or exit code returned by
+// runSubmit above (both are decided solely by transmitCanonicalPayload's
+// result). Below this, the caution note is printed alongside the coverage
+// line so a passing verdict on partial coverage isn't read as "the whole
+// workspace was reviewed" (TER-47, dogfood §8.12).
+export const COVERAGE_CAUTION_PCT = 80;
 
 // The confirmation prompt must never hang: (1) a stdin that ends/closes
 // without ever emitting a line must resolve as an abort, not wait forever on
@@ -149,7 +159,11 @@ export async function confirmOrThrow(io: SubmitIo, timeoutMs: number = CONFIRM_T
   }
 }
 
-function renderResult(result: WorkspaceReviewResult, io: SubmitIo): void {
+export function renderResult(
+  result: WorkspaceReviewResult,
+  io: SubmitIo,
+  coverage?: SnapshotCoverage,
+): void {
   const n = neutralizeControlSequences;
   io.stdout("");
   io.stdout(`verdict: ${result.verdict}`);
@@ -173,5 +187,15 @@ function renderResult(result: WorkspaceReviewResult, io: SubmitIo): void {
   }
   if (result.ai !== undefined) {
     io.stdout(`model: ${n(result.ai.model)} (${result.ai.latencyMs} ms)`);
+  }
+  if (coverage !== undefined) {
+    io.stdout(
+      `coverage: content included for ${coverage.includedFiles} of ${coverage.eligibleFiles} eligible files (${coverage.pct}% of eligible bytes)`,
+    );
+    if (coverage.pct < COVERAGE_CAUTION_PCT) {
+      io.stdout(
+        `note: this verdict covers ${coverage.pct}% of eligible source bytes; files beyond the snapshot budget were not reviewed.`,
+      );
+    }
   }
 }

@@ -24,6 +24,46 @@ export function neutralizeControlSequences(text: string): string {
   return out;
 }
 
+export interface SnapshotCoverage {
+  includedFiles: number;
+  eligibleFiles: number;
+  coveredBytes: number;
+  eligibleBytes: number;
+  pct: number;
+}
+
+// TER-47 (dogfood §8.12): a `--all` snapshot silently drops files once the
+// snapshot budget/caps are hit, so "0 findings" can mean "clean" or "most of
+// the workspace was never looked at" — indistinguishable without this. This
+// reports what fraction of the *eligible* source was actually included.
+//
+// "Eligible" deliberately excludes binary, oversize, withheld (deny-listed),
+// deleted, and symlink manifest entries: none of those could ever carry
+// reviewable content (there is no byte budget that would have included them),
+// so counting them as part of the denominator would overstate the coverage
+// gap with files that were never candidates for inclusion in the first
+// place. Only content that was included, or that was cut for budget/size
+// reasons (truncated entries), counts toward eligibility.
+export function snapshotCoverage(payload: CanonicalPayload): SnapshotCoverage {
+  const included = payload.manifest.filter((m) => m.contentIncluded);
+  const truncatedToZero = payload.redaction.truncated.filter((t) => t.keptBytes === 0);
+  const includedFiles = included.length;
+  const eligibleFiles = includedFiles + truncatedToZero.length;
+
+  const includedBytes = included.reduce((sum, m) => sum + m.size, 0);
+  const truncationLoss = (t: { originalBytes: number; keptBytes: number }) => t.originalBytes - t.keptBytes;
+  const partialTruncationLoss = payload.redaction.truncated
+    .filter((t) => t.keptBytes > 0)
+    .reduce((sum, t) => sum + truncationLoss(t), 0);
+  const totalTruncationLoss = payload.redaction.truncated.reduce((sum, t) => sum + truncationLoss(t), 0);
+
+  const coveredBytes = includedBytes - partialTruncationLoss;
+  const eligibleBytes = coveredBytes + totalTruncationLoss;
+  const pct = eligibleBytes === 0 ? 100 : Math.round((100 * coveredBytes) / eligibleBytes);
+
+  return { includedFiles, eligibleFiles, coveredBytes, eligibleBytes, pct };
+}
+
 export interface ReviewReport {
   kind: ReviewKind;
   captureMode: CaptureMode;
@@ -105,5 +145,11 @@ export function renderReport(report: ReviewReport): string[] {
   }
   lines.push(`total source bytes:  ${report.totalSourceBytes}`);
   lines.push(`total payload bytes: ${report.totalPayloadBytes}`);
+  if (p.kind === "snapshot") {
+    const coverage = snapshotCoverage(p);
+    lines.push(
+      `coverage: content included for ${coverage.includedFiles} of ${coverage.eligibleFiles} eligible files (${coverage.pct}% of eligible bytes)`,
+    );
+  }
   return lines;
 }

@@ -43,6 +43,22 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
+- **TER-47 implemented in this worktree, uncommitted (separate Git agent
+  commits):** `cli/src/render.ts` gets `snapshotCoverage(payload)` (pure;
+  eligible = included + truncated-to-zero, byte math per dogfood §8.12) and a
+  `coverage: content included for N of M eligible files (X% of eligible
+  bytes)` line in `renderReport` for `kind: "snapshot"` only. `cli/src/submit.ts`
+  exports `renderResult` (was file-private) with an optional `coverage`
+  param computed in `runSubmit` from the collected payload, plus
+  `COVERAGE_CAUTION_PCT = 80` — below it, a caution note prints alongside the
+  line; verdict/exit code untouched either way. Tests added in
+  `render.test.ts`/`submit.test.ts`; both new assertions verified to fail on
+  revert (eligibleFiles truncated-to-zero term; caution threshold check) and
+  pass restored. `docs/workspace-review-spec.md` §4.4 gets one sentence
+  documenting the behavior. Live dry-run against `tablet-notes-v3 --all`:
+  `coverage: content included for 63 of 379 eligible files (13% of eligible
+  bytes)`. `src/` (server) untouched — `npx vitest run --dir src` green
+  (692 passed / 9 skipped), same as before this work.
 - **Uncommitted docs:** dogfood §8.12 + `docs/experiments/tabnotes-priority-probe.json`
   (new) + this file. Docs only; a separate Git agent commits.
 - **TER-43 merged (`3d08f0d`, #54, Ternary ✅) and verified end-to-end**
