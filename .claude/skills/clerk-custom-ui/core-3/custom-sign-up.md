@@ -167,7 +167,10 @@ export default function SignUpPage() {
     const phoneNumber = formData.get('phoneNumber') as string
 
     // For email OTP: change create({ phoneNumber }) to create({ emailAddress })
-    const error = await signUp.create({ phoneNumber })
+    // (patched from upstream: create() resolves to { error } — the upstream
+    // example assigned the whole always-truthy result to `error`, so the
+    // verification code was never sent)
+    const { error } = await signUp.create({ phoneNumber })
 
     // For email OTP: change sendPhoneCode() to sendEmailCode()
     if (!error) await signUp.verifications.sendPhoneCode()

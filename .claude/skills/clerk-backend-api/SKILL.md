@@ -14,9 +14,11 @@ User Prompt: $ARGUMENTS
 
 Before ANY POST / PATCH / PUT / DELETE, you MUST do ALL of the following in your response:
 
-1. **Check CLERK_SECRET_KEY** — verify it is set:
+1. **Check CLERK_SECRET_KEY** — verify it is set WITHOUT emitting any part of
+   its value (patched from upstream, which echoed the first 10 characters —
+   never print secret material into tool output or logs):
    ```bash
-   echo $CLERK_SECRET_KEY | head -c 10
+   if [ -z "${CLERK_SECRET_KEY:-}" ]; then echo "CLERK_SECRET_KEY is not set"; exit 1; fi
    ```
    If empty, stop and ask the user. Do not proceed without a valid key.
 
@@ -34,7 +36,7 @@ Before ANY POST / PATCH / PUT / DELETE, you MUST do ALL of the following in your
 
 ## FAST PATH: Common operations (use directly, no spec fetching needed)
 
-For the operations below, skip spec fetching and execute immediately using these exact templates. Substitute `$CLERK_SECRET_KEY`, `$USER_ID`, `$ORG_ID`, `$EMAIL` as needed from the user's context.
+For the operations below, skip spec fetching and use these exact templates. The fast path skips SPEC DISCOVERY ONLY (patched from upstream, which said "execute immediately"): the mandatory checks above and the explicit user confirmation for EVERY write (each mutation in a multi-step flow separately) still apply. Substitute `$CLERK_SECRET_KEY`, `$USER_ID`, `$ORG_ID`, `$EMAIL` as needed from the user's context.
 
 ### Create organization + invite member (two-step)
 

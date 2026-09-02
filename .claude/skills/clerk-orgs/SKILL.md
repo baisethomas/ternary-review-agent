@@ -389,17 +389,21 @@ Send from a server action or route handler:
 ```typescript
 import { clerkClient, auth } from '@clerk/nextjs/server'
 
-export async function inviteMember(organizationId: string, emailAddress: string, role: string) {
-  const { userId, has } = await auth()
+export async function inviteMember(emailAddress: string, role: string) {
+  // SECURITY (patched from upstream): derive the target org from the session.
+  // `has()` authorizes against the caller's ACTIVE org, so accepting a
+  // caller-supplied organizationId let a member of org A invite into org B.
+  const { userId, orgId, has } = await auth()
 
   if (!userId) throw new Error('Not signed in')
+  if (!orgId) throw new Error('No active organization')
   if (!has({ permission: 'org:sys_memberships:manage' })) {
     throw new Error('Not authorized to invite members')
   }
 
   const clerk = await clerkClient()
   return clerk.organizations.createOrganizationInvitation({
-    organizationId,
+    organizationId: orgId,
     inviterUserId: userId,       // required per Backend API
     emailAddress,
     role,                        // e.g. 'org:admin' or 'org:member'
