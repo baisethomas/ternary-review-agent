@@ -1,6 +1,6 @@
 {
- "$comment": "Large-payload probe raw record (dogfood section 8.11): tablet-notes-v3 --all x 2 repetitions. Metadata and adjudication only: no source content, no secrets. Server fields read from WorkspaceReviewLogEntry lines via the Vercel runtime-logs API; both runs matched by requestBytes 513338. The 400,000-byte snapshot content cap binds CLIENT-side in capture (bytewise path order), which is why droppedByServerCaps is 0 while zero Swift source reached the payload.",
- "schema": "tabnotes-all-probe/1",
+ "$comment": "Large-payload probe raw record (dogfood section 8.11): swift-app --all x 2 repetitions. Metadata and adjudication only: no source content, no secrets. Server fields read from WorkspaceReviewLogEntry lines via the Vercel runtime-logs API; both runs matched by requestBytes 513338. The 400,000-byte snapshot content cap binds CLIENT-side in capture (bytewise path order), which is why droppedByServerCaps is 0 while zero Swift source reached the payload.",
+ "schema": "swift-app-all-probe/1",
  "experimentLabel": "size-ceiling retirement probe: 513 KB real-repo snapshot under the reka/fp4,makora default pin",
  "generatedUtc": "2026-09-01T05:00:00Z",
  "seriesStartUtc": "2026-09-01T04:43:58Z",
@@ -10,7 +10,7 @@
  "commit": "364ea75",
  "promptVersion": "workspace-snapshot-v2",
  "modelServed": "deepseek/deepseek-v4-flash-0731",
- "target": "tablet-notes-v3 @ 6b5800d (real repo, approved egress 2026-08-25)",
+ "target": "swift-app @ 6b5800d (real repo, approved egress 2026-08-25)",
  "capture": {
   "captureMode": "all",
   "payloadBytes": 513338,

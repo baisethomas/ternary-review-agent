@@ -173,7 +173,7 @@
       "findingCount": 0, "findings": [], "seedOutcome": "BURNED"
     },
     {
-      "runId": "25-tablet-r1", "seed": null, "target": "tablet-notes-v3", "captureMode": "default",
+      "runId": "25-swift-r1", "seed": null, "target": "swift-app", "captureMode": "default",
       "digest": "sha256:84458a2a150ca53df8c81c0617c1fe85e7639feab233b7b1385b9e44f9470aec",
       "payloadBytes": 43080, "capturedContentBytes": 40249, "canaryVerdict": "CLEAN",
       "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120794, "serverDurationMs": 120002,
@@ -234,7 +234,7 @@
       "note": "Did not mention the seeded non-constant-time compare in verify(); the weak-hash class was named, so scored TP."
     },
     {
-      "runId": "25b-tablet-r1", "seed": null, "target": "tablet-notes-v3", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120794, "canaryVerdict": "CLEAN", "payloadBytes": 43080, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+      "runId": "25b-swift-r1", "seed": null, "target": "swift-app", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120794, "canaryVerdict": "CLEAN", "payloadBytes": 43080, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
     {
       "runId": "27b-todo-r1", "seed": null, "repetition": 1, "target": "todo-app", "captureMode": "default", "kind": "changeset",
       "digest": "sha256:752e6d050648ec40596b276c333ed3a0bc5e49b73a744500957296dced4ca214",
@@ -336,7 +336,7 @@
     {
       "runId": "28b-todoall-r1", "seed": null, "target": "todo-app", "captureMode": "all", "httpStatus": 500, "outcome": "model_failure", "cliExitCode": 3, "wallClockMs": 46931, "canaryVerdict": "CLEAN", "payloadBytes": 30455, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
     {
-      "runId": "25c-tablet-r1", "seed": null, "target": "tablet-notes-v3", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120720, "canaryVerdict": "CLEAN", "payloadBytes": 43080, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
+      "runId": "25c-swift-r1", "seed": null, "target": "swift-app", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120720, "canaryVerdict": "CLEAN", "payloadBytes": 43080, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
     {
       "runId": "13-S12-r2", "seed": "S12", "target": "ordinary", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120561, "canaryVerdict": "CLEAN", "payloadBytes": 4742, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
     {
@@ -392,6 +392,6 @@
     {
       "runId": "24-S11-r2", "seed": "S11", "target": "python", "httpStatus": 500, "outcome": "model_failure", "cliExitCode": 3, "wallClockMs": 23975, "canaryVerdict": "CLEAN", "payloadBytes": 2030, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" },
     {
-      "runId": "25d-tablet-r1", "seed": null, "target": "tablet-notes-v3", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120726, "canaryVerdict": "CLEAN", "payloadBytes": 43080, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" }
+      "runId": "25d-swift-r1", "seed": null, "target": "swift-app", "httpStatus": 504, "outcome": "workspace_review_timeout", "cliExitCode": 3, "wallClockMs": 120726, "canaryVerdict": "CLEAN", "payloadBytes": 43080, "findingCount": 0, "findings": [], "seedOutcome": "BURNED" }
   ]
 }

@@ -113,7 +113,7 @@
       0.00245146,
       0.00270556
     ],
-    "note": "First large-payload delivery in the whole dogfood series. Phase B went 0-for-2 on this exact snapshot size and 0-for-4 on the 43 KB tablet-notes-v3. Both runs completed on attempt 1, neither came near the deadline, and droppedByServerCaps was 0 - the 400,000-byte snapshot cap was never approached. The two reviews of the byte-identical payload disagree on which issue leads, which is section 8.5.3 instability on a real repository rather than a delivery problem."
+    "note": "First large-payload delivery in the whole dogfood series. Phase B went 0-for-2 on this exact snapshot size and 0-for-4 on the 43 KB swift-app. Both runs completed on attempt 1, neither came near the deadline, and droppedByServerCaps was 0 - the 400,000-byte snapshot cap was never approached. The two reviews of the byte-identical payload disagree on which issue leads, which is section 8.5.3 instability on a real repository rather than a delivery problem."
   },
   "providerCost": {
     "AkashML": {
@@ -164,7 +164,7 @@
   },
   "seriesNotes": [
     "Zero retries fired. Every delivery number here is a single-attempt number, and the bounded-retry mechanism this series was run to measure produced no data about itself.",
-    "Egress was the synthetic fixtures plus todo-app @ d31c0c2 from a detached scratch worktree, removed after the series. tablet-notes-v3 (43 KB) was deliberately not submitted, so the largest payload ever measured in this project remains untested.",
+    "Egress was the synthetic fixtures plus todo-app @ d31c0c2 from a detached scratch worktree, removed after the series. swift-app (43 KB) was deliberately not submitted, so the largest payload ever measured in this project remains untested.",
     "The 14 submissions span two hourly gate windows: runs 01-09 at 09:24-09:32 UTC, runs 10-14 at 10:25-10:27 UTC after the driver's 3,194 s window sleep. Section 8.5.1 showed availability moving by the hour, and the provider mix did move between windows: window 1 was DeepInfra-dominated (7 of 9) at a 17-48 s p50, window 2 was entirely Reka at 2-33 s.",
     "Caller wall-clock was server durationMs + 0.7-2.8 s on all 14 runs; the client-side anomaly of section 8.6.8 did not recur.",
     "The CLI was rebuilt from source before the series so cli/dist carried DEFAULT_TIMEOUT_MS = 190_000; verified by reading dist/transmit.js. It never bound - the slowest round trip was 50.8 s.",

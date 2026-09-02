@@ -1,6 +1,6 @@
 {
- "$comment": "TER-43 post-fix live probe raw record (dogfood section 8.12): tablet-notes-v3 --all x 2 under the source-first snapshot priority (CLI at main 3d08f0d). Metadata and adjudication only: no source content, no secrets. Server fields from WorkspaceReviewLogEntry lines via the Vercel runtime-logs API, both matched by requestBytes 515252.",
- "schema": "tabnotes-priority-probe/1",
+ "$comment": "TER-43 post-fix live probe raw record (dogfood section 8.12): swift-app --all x 2 under the source-first snapshot priority (CLI at main 3d08f0d). Metadata and adjudication only: no source content, no secrets. Server fields from WorkspaceReviewLogEntry lines via the Vercel runtime-logs API, both matched by requestBytes 515252.",
+ "schema": "swift-app-priority-probe/1",
  "experimentLabel": "source-first snapshot end-to-end: first code-level --all review of a real repo; first live schema_invalid corrective retry; first live Makora routing",
  "generatedUtc": "2026-09-01T05:45:00Z",
  "seriesStartUtc": "2026-09-01T05:32:18Z",
@@ -9,7 +9,7 @@
  "deploymentId": "dpl_9ZLy7k3Bpd8cdBuBJAMM9tSLZKWx",
  "commit": "3d08f0d (server; CLI also built from 3d08f0d)",
  "promptVersion": "workspace-snapshot-v2",
- "target": "tablet-notes-v3 @ 6b5800d (real repo, approved egress 2026-08-25)",
+ "target": "swift-app @ 6b5800d (real repo, approved egress 2026-08-25)",
  "capture": {
   "captureMode": "all",
   "payloadBytes": 515252,
