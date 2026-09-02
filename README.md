@@ -26,7 +26,7 @@ This repository is also Ternary's own dogfood target: every PR here is reviewed 
 
 ## Reliability under serverless limits
 
-Ternary is tuned to complete reviews inside conservative serverless time budgets:
+Ternary is tuned to complete reviews inside conservative, self-imposed serverless time budgets (300s functions as the worker's hard ceiling, regardless of what the host allows):
 
 - Sandbox evidence is best-effort: when sandbox creation fails or the time budget runs thin, the review proceeds AI-only and the PR comment notes that sandbox checks did not run.
 - Every GitHub API call is bounded (15s; 30s for diff downloads), and the worker only claims a job when enough invocation time remains to finish it.
