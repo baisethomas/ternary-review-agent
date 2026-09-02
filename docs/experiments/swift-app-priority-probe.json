@@ -6,7 +6,7 @@
  "seriesStartUtc": "2026-09-01T05:32:18Z",
  "seriesEndUtc": "2026-09-01T05:33:46Z",
  "endpoint": "POST /api/workspace-reviews (production)",
- "deploymentId": "dpl_9ZLy7k3Bpd8cdBuBJAMM9tSLZKWx",
+ "deploymentId": "dpl_9ZLy7k…",
  "commit": "3d08f0d (server; CLI also built from 3d08f0d)",
  "promptVersion": "workspace-snapshot-v2",
  "target": "swift-app @ 6b5800d (real repo, approved egress 2026-08-25)",

@@ -6,7 +6,7 @@
  "seriesStartUtc": "2026-08-31T00:41:50Z",
  "seriesEndUtc": "2026-08-31T06:57:31Z",
  "endpoint": "POST /api/workspace-reviews (production)",
- "deploymentId": "dpl_BRcCmHMmCgBNH7cnTJUFwMRmQk4g",
+ "deploymentId": "dpl_BRcCmH…",
  "commit": "03656fc",
  "promptVersion": "workspace-changeset-v2",
  "modelRequested": "~deepseek/deepseek-v4-flash-latest",

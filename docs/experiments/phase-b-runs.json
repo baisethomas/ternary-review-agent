@@ -3,7 +3,7 @@
   "schema": "ter39-phase-b-runs/1",
   "generatedUtc": "2026-08-25T11:45:00Z",
   "endpoint": "POST /api/workspace-reviews (production)",
-  "deploymentId": "dpl_EbnBZZ4d4Q4ufBJEy7EvmUZt6Pdc",
+  "deploymentId": "dpl_EbnBZZ…",
   "modelRequested": "~deepseek/deepseek-v4-flash-latest",
   "modelServed": "deepseek/deepseek-v4-flash-0731",
   "gates": { "rateLimitPerHour": 10, "maxConcurrent": 1, "deadlineMs": 120000 },
