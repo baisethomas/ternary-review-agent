@@ -1665,12 +1665,11 @@ ts 9, sql 4, tsx 1** where §8.11's carried zero source). Raw record:
 `docs/experiments/tabnotes-priority-probe.json`.
 
 **Run 1 is the first code-level `--all` review of a real repository in this
-project**: 10 findings, all against Swift application source — a hardcoded
-Supabase anon key, a deadlock candidate (`onEvent` called under a lock in
-`AudioCaptureEngine`), a non-atomic `hasPendingSyncWork` check, a
-cloud-restore data-loss path, a SwiftData `@Model`+`Codable` conflict —
-file/line-anchored, English, delivered on attempt 1 from Reka in 9.1 s at
-$0.021. Set against §8.11's "no code was included to review", TER-43's fix is
+project**: 10 findings, all against Swift application source — spanning
+credential hygiene, a concurrency hazard, data-consistency paths, and a
+model-conformance conflict (specific files and symbols are redacted from this
+public record; the target is a private repository) — file/line-anchored,
+English, delivered on attempt 1 from Reka in 9.1 s at $0.021. Set against §8.11's "no code was included to review", TER-43's fix is
 verified end-to-end.
 
 **Run 2 failed — and in doing so gave live evidence to three paths that had

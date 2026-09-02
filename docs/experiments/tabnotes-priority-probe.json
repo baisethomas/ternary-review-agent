@@ -28,7 +28,7 @@
    "inputTokens": 88436, "outputTokens": 2644, "reasoningTokens": 0,
    "estimatedCostUsd": 0.02120096, "digestVerified": true,
    "languageScan": "no-blocked-script-chars",
-   "adjudicationNote": "First code-level --all review of a real repository in the project: 8 warnings + 2 suggestions, all against Swift application source (hardcoded Supabase anon key, deadlock candidate in AudioCaptureEngine.onEvent-under-lock, non-atomic hasPendingSyncWork, cloud-restore data-loss path, SwiftData @Model+Codable conflict). Spot-read: plausible, file/line-anchored, English."
+   "adjudicationNote": "First code-level --all review of a real repository in the project: 8 warnings + 2 suggestions, all against Swift application source, spanning credential-hygiene, a concurrency hazard, two data-consistency paths, and a model-conformance conflict. (Specific files/symbols redacted from this public record; the target is a private repository.) Spot-read: plausible, file/line-anchored, English."
   },
   {
    "runId": "TABALL2-r2",
