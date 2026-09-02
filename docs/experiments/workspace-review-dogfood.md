@@ -90,12 +90,12 @@ network.
 | `unborn` | Git repo with no commits | Fixture. |
 | `nogit` | Plain directory, no VCS | Fixture. |
 | `python` | Python project, committed base + staged + unstaged | Fixture; another language. |
-| `tablet-notes-v3` | Real local repo — **Swift** (263 `.swift`, plus a Node API and Supabase dirs), 443 MB on disk | Read-only survey. Phase-B candidate. |
+| `swift-app` | Real local repo — **Swift** (263 `.swift`, plus a Node API and Supabase dirs), 443 MB on disk. *Anonymized handle: this target is a private production repository; its name and finding specifics were removed from this public record after the testing phase (2026-09-01).* | Read-only survey. Phase-B candidate. |
 | `todo-app` | Real local repo — **TypeScript / Next.js**, 5 first-party `.ts`/`.tsx` files, 531 MB on disk (almost entirely `node_modules` + `.next`) | Read-only survey. Phase-B candidate. |
 
 Neither real repo was modified; both were read through the dry-run path only.
 Both are suitable for Phase B: `todo-app` is small enough that `--all` fits
-comfortably inside every budget (30 KB payload), and `tablet-notes-v3` is a
+comfortably inside every budget (30 KB payload), and `swift-app` is a
 useful *non-TypeScript, budget-saturating* counterpart.
 
 ## 4. Per-target raw tables
@@ -148,14 +148,14 @@ always the failure mode), but it is a recall cost, not a free win.
 
 | target | mode | kind | payload bytes | included files | manifest entries | captured content bytes | truncated files | bytes dropped | trunc. rate | excluded | redacted spans | capture ms |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| tablet-notes-v3 | default | changeset | 15543 | 1 | 1 | 13499 | 0 | 0 | 0% | 0 | 2 | 211 |
-| tablet-notes-v3 | staged | changeset | 837 | 0 | 0 | 0 | 0 | 0 | 0% | 0 | 0 | 149 |
-| tablet-notes-v3 | all | snapshot | 503398 | 42 | 389 | 400000 | 321 | 2476306 | 99.90% | 3 (`env_file`) | 9 | 370 |
+| swift-app | default | changeset | 15543 | 1 | 1 | 13499 | 0 | 0 | 0% | 0 | 2 | 211 |
+| swift-app | staged | changeset | 837 | 0 | 0 | 0 | 0 | 0 | 0% | 0 | 0 | 149 |
+| swift-app | all | snapshot | 503398 | 42 | 389 | 400000 | 321 | 2476306 | 99.90% | 3 (`env_file`) | 9 | 370 |
 | todo-app | default | changeset | 820 | 0 | 0 | 0 | 0 | 0 | 0% | 0 | 0 | 189 |
 | todo-app | staged | changeset | 818 | 0 | 0 | 0 | 0 | 0 | 0% | 0 | 0 | 126 |
 | todo-app | all | snapshot | 30497 | 24 | 26 | 24956 | 0 | 0 | 0% | 0 | 0 | 153 |
 
-`tablet-notes-v3 --dry-run` (default) redacted a real
+`swift-app --dry-run` (default) redacted a real
 `token.authorization-bearer` span and a real `token.jwt` span out of an
 uncommitted file — the redaction rules fire on production code, not just on
 planted needles.
@@ -176,7 +176,7 @@ prioritisation. On this repo:
 - `cli/package-lock.json` alone consumed 52,830 bytes (13%) of the budget, and
   `.claude/hooks/test-hooks.sh` another 24,215.
 
-On `tablet-notes-v3` the same shape is worse: 42 of 389 entries with content,
+On `swift-app` the same shape is worse: 42 of 389 entries with content,
 2,476,306 bytes dropped, 99.90% truncation.
 
 A Snapshot Review of any repository larger than 400 KB of eligible source is
@@ -295,7 +295,7 @@ Two things this measurement settles, and one it does not.
 
 **Settled — the marginal cost of a review is negligible.** Under a cent per
 review at the observed load, and the §6.2 ceiling was never approached: the
-largest real changeset submitted (43 KB, `tablet-notes-v3`) never completed, and
+largest real changeset submitted (43 KB, `swift-app`) never completed, and
 the largest that did (`todo-app`, 9,845 payload bytes) used 2,686 input tokens —
 6% of the changeset-mode ceiling. Cost is not the constraint on this product.
 
@@ -558,7 +558,7 @@ A p50 of ~51 s against a 120 s deadline means the deadline is not a safety
 margin, it is a coin toss under load. The single slowest success finished
 3.7 s inside the cutoff.
 
-Payload size correlates with failure. The largest target, `tablet-notes-v3`
+Payload size correlates with failure. The largest target, `swift-app`
 (43,080 payload bytes, 3 Swift files, 40,249 captured content bytes), was
 submitted **four times and completed zero times** — all four 504 at the
 deadline. `todo-app --all` (30,455 bytes, snapshot) failed both attempts. Every
@@ -683,7 +683,7 @@ diff under review, that no seeded fixture prompted and that a human reviewer
 could easily miss. The third finding (`remaining` silently became filter-scoped)
 is also factually correct. This is the shape of value the product is aiming at.
 
-It is also a sample of **one**. The Swift counterpart, `tablet-notes-v3`, failed
+It is also a sample of **one**. The Swift counterpart, `swift-app`, failed
 all four attempts on the deadline, so Phase B produced **no evidence at all**
 about non-TypeScript real-world review quality.
 
@@ -698,7 +698,7 @@ about non-TypeScript real-world review quality.
 - **S05** — no completed run.
 - **Snapshot (`--all`) review quality** — both attempts failed; the §4.3
   coverage defect (TER-43) is still unmeasured against a live model.
-- **Non-TypeScript real-world quality** — `tablet-notes-v3` never completed.
+- **Non-TypeScript real-world quality** — `swift-app` never completed.
 - **Repetition 2 for most seeds** — the delivery rate consumed the slots. Only
   S08 and S12 have two completed runs, and §8.5.3 shows how much two runs of the
   same input can differ.
@@ -927,7 +927,7 @@ the incumbent, and it should be run before any model switch. Nor was
 - **S01, S02, S05, S06** — no completed run, as in Phase B (S05 is now 0-for-5
   across both series).
 - **Repetitions** — 1 per seed. Every §8.6.6 number rests on a single run.
-- **`tablet-notes-v3`, `--all`, real repositories** — not submitted; egress for
+- **`swift-app`, `--all`, real repositories** — not submitted; egress for
   this series was fixtures only.
 - **§7.2 generic-agent baseline** — still unrun. Every quality figure here
   remains un-baselined.
@@ -1181,7 +1181,7 @@ to guarantee rather than observe.
 - **Repetitions** — 1 per seed, as before. Every §8.7.6 number rests on a single
   run, and §8.5.3 has already shown byte-identical payloads returning different
   reviews.
-- **`tablet-notes-v3`, `--all`, real repositories** — not submitted; egress for
+- **`swift-app`, `--all`, real repositories** — not submitted; egress for
   this series was fixtures only. The payload-size ceiling that killed every run
   above 10 KB in Phase B is **untested under this configuration**; every payload
   here was 2.0–4.9 KB.
@@ -1245,7 +1245,7 @@ detached scratch worktree of `d31c0c2`. Concurrency 1, two hourly gate windows,
 teed to disk as they arrived. Raw per-run record:
 `docs/experiments/ter44-step2-runs.json`.
 
-This is ADR-0002 sequence item 3, partially: `tablet-notes-v3` was deliberately
+This is ADR-0002 sequence item 3, partially: `swift-app` was deliberately
 not submitted and the §7.2 baseline is still unrun.
 
 What changed since §8.7 is the shape the ADR asked for: at most **two** attempts
@@ -1342,7 +1342,7 @@ pre-flight CLEAN on both.
 `inputTokens` of 8,653 is 7–8× the fixture runs' 582–1,219 and still an order of
 magnitude below §6.2's derived 20–60k estimate. **§8.7.7's "biggest untested
 risk" is now tested at 30 KB and it passed.** It is not tested at 43 KB:
-`tablet-notes-v3` remains 0-for-4 and unretested, and it is now the only
+`swift-app` remains 0-for-4 and unretested, and it is now the only
 surviving evidence for a payload-size ceiling.
 
 The two reviews of the byte-identical snapshot do not agree on what matters most.
@@ -1427,7 +1427,7 @@ log line** rather than inferred, closing §8.7.2's verification gap;
 
 - **The retry itself.** Zero second attempts. Everything ADR-0002 option B adds
   is unmeasured under live conditions.
-- **`tablet-notes-v3` (43 KB)** — not submitted. The only surviving evidence for
+- **`swift-app` (43 KB)** — not submitted. The only surviving evidence for
   a payload-size ceiling is Phase B's 0-for-4 on it.
 - **Repetitions on the seeds** — still 1 each. Only `--all` was repeated, and its
   two runs disagreed on which issue leads.
@@ -1537,7 +1537,7 @@ driven by Phala/Reka price points). `reasoningTokens` 0 on all 28.
 
 - **The corrective re-prompt** — no `language_invalid` or `schema_invalid`
   occurred to trigger it.
-- **`tablet-notes-v3` (43 KB)** — still 0-for-4 from Phase B, still untested.
+- **`swift-app` (43 KB)** — still 0-for-4 from Phase B, still untested.
 - **§7.2 generic-agent baseline** — still unrun; agreement percentages above are
   self-relative, not benchmarked.
 - **Precision** — the ~240 findings were not adjudicated one by one; only the
@@ -1615,7 +1615,7 @@ gate on the finding class instead.
   second position and `allow_fallbacks` behavior have zero live evidence.
 - **Pool-churn response** — what happens when `reka/fp4` leaves the pool
   (observed to be possible: the `-latest` alias pool already lacks it).
-- **`tablet-notes-v3` (43 KB)**, the §7.2 baseline, per-finding precision —
+- **`swift-app` (43 KB)**, the §7.2 baseline, per-finding precision —
   unchanged from §8.9.5.
 
 **Recommendation:** promote `["reka/fp4", "makora"]` to
@@ -1627,11 +1627,11 @@ taken. *(Taken: promoted 2026-08-31, D-20260831-0200, main `364ea75`.)*
 
 ## 8.11 The size ceiling is dead; TER-43 is what it was hiding (measured 2026-09-01)
 
-**2 submissions of `tablet-notes-v3 --all`** — a **513,338-byte** real-repo
+**2 submissions of `swift-app --all`** — a **513,338-byte** real-repo
 snapshot, 12× Phase B's failing 43 KB changeset and 17× the 30 KB `todo-app`
 snapshot — against production under the promoted pin (deployment
 `dpl_7D3NrsXaAJrrCLvZfXMqEdU4NCcP`, main `364ea75`). Raw record:
-`docs/experiments/tabnotes-all-probe.json`.
+`docs/experiments/swift-app-all-probe.json`.
 
 **Both delivered on attempt 1, from Reka, in 3.9 s and 6.2 s**, at 99,610
 input tokens and ~$0.022 each. Phase B's 0-for-4 on this repository — the last
@@ -1659,10 +1659,10 @@ recommendation: gate on finding class, not on verdict or severity boundaries.
 
 ## 8.12 Source-first snapshot, end-to-end — and three machineries fire at once (measured 2026-09-01)
 
-**2 submissions of `tablet-notes-v3 --all` with the TER-43 source-first CLI**
+**2 submissions of `swift-app --all` with the TER-43 source-first CLI**
 (both sides at main `3d08f0d`; payload now 515,252 bytes carrying **swift 46,
 ts 9, sql 4, tsx 1** where §8.11's carried zero source). Raw record:
-`docs/experiments/tabnotes-priority-probe.json`.
+`docs/experiments/swift-app-priority-probe.json`.
 
 **Run 1 is the first code-level `--all` review of a real repository in this
 project**: 10 findings, all against Swift application source — spanning
@@ -1796,7 +1796,7 @@ answers fewer than one time in three is not a tool, and the gates make each
 failure expensive: one model attempt, no cascade, a burned hourly slot, nothing
 persisted. Beneath that, three things are not ready. Latency has no headroom —
 p50 ≈ 51 s against a 120 s deadline, and every target above 10 KB of payload
-failed every time, including all four `tablet-notes-v3` attempts. Output is not
+failed every time, including all four `swift-app` attempts. Output is not
 repeatable — a byte-identical payload returned 5 English findings once and 3
 **Chinese** findings the next time (§8.5.3). Severity is not usable — the seeded
 auth bypass came back `warning`, the seeded retry defect `suggestion`, and the
@@ -1817,7 +1817,7 @@ that Ternary beats a generic agent reading the same bytes.
    validation, and until they are fixed no consumer can gate on a verdict.
 4. **Then, and only then, run §7.2.** The generic-agent baseline is the missing
    number. Re-run the seeded suite once delivery is reliable enough that 24 runs
-   fit in 3 hours as designed — including S05, `tablet-notes-v3`, and `--all`,
+   fit in 3 hours as designed — including S05, `swift-app`, and `--all`,
    none of which Phase B measured.
 
 TER-43 (`--all` truncation) drops in priority: snapshot mode never completed a

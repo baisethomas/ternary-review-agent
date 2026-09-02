@@ -4,7 +4,7 @@
 // spent in bytewise path order, which is alphabetical order wearing a costume:
 // a workspace whose docs and config sort early exhausts the budget before the
 // walk ever reaches source. Measured live in dogfood §8.11 — a 513 KB
-// tablet-notes-v3 `--all` payload carried 47 content entries and *zero* Swift
+// swift-app `--all` payload carried 47 content entries and *zero* Swift
 // or JavaScript files, so the review had nothing but prose to reason about.
 //
 // This module ranks paths into four tiers — application source, then

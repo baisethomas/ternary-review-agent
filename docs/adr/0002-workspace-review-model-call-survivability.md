@@ -9,7 +9,7 @@ Spec fixed decision 6 shaped `POST /api/workspace-reviews` for Vercel Hobby: one
 TER-39 Phase B (`docs/experiments/workspace-review-dogfood.md` §8.5, raw data in `docs/experiments/phase-b-runs.json`) measured the shape under live conditions: 45 submissions, **14 completed (31%)**, 24 `workspace_review_timeout`, 7 `model_failure`. Every failure was upstream of Ternary — payload digests verified on all 45, no server caps hit, canaries clean. The facts that constrain the fix:
 
 - **Variance is per attempt, not per payload.** Byte-identical ~4.8 KB payloads completed in 16 s on one attempt and hit the 120 s deadline on another. Completed-run server duration: min 8 s, p50 ≈ 51 s, max 116 s.
-- **Size still matters at the top.** Every completed run was under 10 KB of payload; `tablet-notes-v3` (43 KB, 3 Swift files) went 0/4, `todo-app --all` (30 KB) 0/2.
+- **Size still matters at the top.** Every completed run was under 10 KB of payload; `swift-app` (43 KB, 3 Swift files) went 0/4, `todo-app --all` (30 KB) 0/2.
 - **Availability moved by the hour** (window 2: 0/9; windows 1 and 3: 5/9) — consistent with OpenRouter routing `~deepseek/deepseek-v4-flash-latest` (served as `deepseek-v4-flash-0731`) across providers of varying speed, and with a reasoning model whose think-time is unbounded by `max_tokens`.
 - **Reported cost per output token varied 5× across runs** for the same payload — unreported reasoning tokens, which is also where the latency goes.
 - The request (`src/lib/workspace-analysis.ts`) is non-streaming, `provider: { require_parameters: true }` with a strict `json_schema` response format, and no provider ordering, latency sort, or reasoning-effort setting.
@@ -38,7 +38,7 @@ Sequence:
 
 1. **Spike (measured, not assumed):** implement C behind the existing request builder, re-run the 12-seed series once (12 runs, one hourly window at the current gate). Adopt if delivery ≥ 80% and p50 < 30 s; otherwise switch model within the same price class and re-measure. *(Implemented on branch `baise/ter-44-survivability-spike`, PR #42 — under review, not merged, not measured at the time of writing.)*
 2. **Bounded retry (B)** on top, with the second attempt routed away from the provider that failed; the 180 s deadline lands with it (`review-invocation-limits.ts`, route tests updated from 120 s). This is a `src/app/api/workspace-reviews` behaviour change — public API surface — and goes through review as one.
-3. Re-run the seeded suite including S05, `tablet-notes-v3`, `--all`, then the §7.2 baseline (the revision list in the dogfood report §9, items 1–2 and 4).
+3. Re-run the seeded suite including S05, `swift-app`, `--all`, then the §7.2 baseline (the revision list in the dogfood report §9, items 1–2 and 4).
 
 Option A is rejected as a primary fix (no data, worst UX) but the deadline moves to 180 s to make room for two attempts. Option D is deferred until B+C have been measured; if delivery is still below 80% after both, D becomes the proposal.
 

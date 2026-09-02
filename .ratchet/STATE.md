@@ -154,12 +154,12 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 - `--all` snapshot mode fills the 400,000-byte cap in bytewise path order (TER-43). Changeset mode unaffected.
 - The endpoint has no persistence/idempotency; every run costs a model call. Gates fail closed on Redis.
 - Seed-fixture mapping matters: S07 and S11 target the **python** fixture, the other ten target **ordinary** (`docs/experiments/seeds/*.patch` `+++` headers are the source of truth). The §8.9 driver got this wrong initially; the runs record marks the 4 deviation runs.
-- Egress approval (2026-08-25): synthetic fixtures, `~/Dev/tablet-notes-v3`, `~/Dev/labs/todo-app` only. The Ternary repo itself is NOT approved.
+- Egress approval (2026-08-25): synthetic fixtures, `~/Dev/swift-app`, `~/Dev/labs/todo-app` only. The Ternary repo itself is NOT approved.
 
 ## Verification status
 
 - **Large-payload probe (2026-09-01), RAN live:** 2 submissions of
-  `tablet-notes-v3 --all` (513,338 bytes, 99,610 input tokens each) against
+  `swift-app --all` (513,338 bytes, 99,610 input tokens each) against
   production `dpl_7D3NrsXaAJrrCLvZfXMqEdU4NCcP` (main `364ea75`). 2/2 `ok`,
   attempts 1, Reka both, 3.9/6.2 s server-side, ~$0.022 each; both log lines
   read via the Vercel runtime-logs API; `digestVerified` both;
