@@ -43,24 +43,19 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **TER-49 (CLI packaging + per-token gate), implemented in an agent
-  worktree, pending PR.** (1) The abuse gate is keyed on `auth.principalId` —
-  each configured token now has its own 10/hr window AND its own concurrency
-  slot; this resolves a surfaced doc-vs-code conflict in the endpoint doc's
-  favor (its §3 already promised per-token), decision **D-20260901-0300**
-  (owner plan-approval 2026-09-01). `TERNARY_CLI_TOKEN_NEXT` is repurposed as
-  the second machine's standing token. (2) `ternary-cli` 0.2.0 is an
-  installable tarball: `files` allowlist, `--version` flag (fs-only version
-  read; zero-network allowlist unwidened), `cli/scripts/release.sh` (written,
-  NEVER run — release creation is an external publish, owner-gated),
-  `cli/README.md` with install one-liner + data-path disclosure.
-  `TOOL_VERSION` bumped in lockstep (payloads now report tool 0.2.0).
-  **After merge:** owner mints the second token into `TERNARY_CLI_TOKEN_NEXT`
-  (Vercel, hard stop), owner-gated `release.sh` run cuts `cli-v0.2.0`, then a
-  live two-window proof (2 submissions per token in one hour, two distinct
-  principalIds, no 429) closes the ticket. Owner context: daily use for
-  screening agent-written code on work repos before peer review; data-path
-  disclosure accepted by owner 2026-09-01.
+- **TER-49 merged (`29d0278`, #61, Ternary 💬) and the gate half PROVEN LIVE
+  (§8.14, 2026-09-02):** per-token windows verified — 2 submissions per token
+  in one hour, 4/4 delivered, two distinct principals on the log lines
+  (slots `current`/`next`), zero 429. Owner minted the work-machine token
+  into `TERNARY_CLI_TOKEN_NEXT` (mode-600 local file, never displayed) and
+  redeployed. Decision **D-20260901-0300**. Remaining to close the ticket:
+  owner-gated `release.sh` run cuts `cli-v0.2.0` (its first attempt correctly
+  refused on a dirty tree — the gate works), then the work-machine install
+  via `cli/README.md`'s one-liner. `cli/bin/ternary.mjs` gained its
+  executable bit (npm link chmod — correct for a bin, committed) and the
+  Clerk agent skills under `.claude/skills/` are now repo-canonical (owner
+  choice 2026-09-02). Owner context: daily use screening agent-written code
+  on work repos before peer review; data-path disclosure accepted 2026-09-01.
 - **TER-48 closed 2026-09-01, live and verified.** Merged as main `e9226df`
   (#57; Ternary ⛔→💬→💬 — the real find, an open redirect, was fixed with a
   canonicalized allowlist-validated sign-in redirect). Owner completed the

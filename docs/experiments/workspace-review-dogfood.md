@@ -1762,6 +1762,19 @@ machine-consumable findings; enforced English; deterministic failures; pinned
 strong-model user, the product's value is the envelope, not the eyes; for the
 model it actually runs, it is both.
 
+## 8.14 Per-token gate windows, proven live (measured 2026-09-02)
+
+TER-49 note. Against deployment `dpl_J3KnfxmDnRg35GXdf4Vtd4dxbXYf` (main
+`29d0278` with `TERNARY_CLI_TOKEN` and `TERNARY_CLI_TOKEN_NEXT` both set): 2
+fixture submissions per token inside one hour — **4/4 delivered, zero 429**,
+and the log lines carry **two distinct principals** (`0093767f…`/slot
+`current`, `aa3da6d1…`/slot `next`), each consuming its own fixed window. All
+four served by Reka in 5.5–7.9 s. This closes the endpoint-doc-vs-code
+conflict resolved by D-20260901-0300: the "10 requests/hour per token
+identity" contract §3 always promised is now what the server does. Capacity is
+deliberately N configured tokens × (10/hr + 1 concurrent); the aggregate
+ceiling question is deferred to the decision's revisit clause.
+
 ## 9. Recommendation
 
 **REVISE.** Not continue, not stop.
