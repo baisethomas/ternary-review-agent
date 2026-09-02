@@ -43,7 +43,7 @@
    "estimatedCostUsd": 0.02255308, "redactionApplied": 2,
    "droppedByServerCaps": 0, "digestVerified": true,
    "languageScan": "no-blocked-script-chars",
-   "findingsNote": "All four findings are documentation-level (committed key flagged by the repo's own docs, App Store description overclaiming encryption, two stale docs); none touch application code, because none was in the payload."
+   "findingsNote": "All four findings are documentation-level (a credential-hygiene item the target repo's own docs already track, a docs-vs-implementation claims mismatch, two stale documents); none touch application code, because none was in the payload. (Specifics redacted from this public record; the target is a private repository.)"
   }
  ],
  "verdictFlap": "Byte-identical payloads returned verdict pass (0 findings) and verdict findings (4) — the section 8.5.3 instability observed at the VERDICT level on a real repository. A consumer gating on verdict alone would flip between runs.",

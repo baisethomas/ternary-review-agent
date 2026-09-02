@@ -1,8 +1,11 @@
 # Ternary
 
-An internal pull-request review agent: GitHub sends a signed webhook, Ternary checks out and tests the change in an isolated runner, asks an AI model to review the diff plus test evidence, and posts a GitHub Check and PR comment.
+An AI code-review agent with two surfaces:
 
-This repository is Ternary's initial dogfood target for end-to-end review verification.
+- **Pull-request reviews (GitHub App):** GitHub sends a signed webhook, Ternary checks out and tests the change in an isolated Firecracker microVM, asks an AI model to review the diff plus test evidence, and posts a GitHub Check and PR comment.
+- **Workspace reviews (CLI):** `ternary review .` reviews the uncommitted work in any local repository — or the whole workspace with `--all` — before anything is pushed. The collector is offline-by-construction (a module-graph test proves nothing but the single submit call can reach the network), excludes `.env`/key files, redacts token-shaped strings client-side, and shows a full dry-run manifest of exactly what would be transmitted.
+
+This repository is also Ternary's own dogfood target: every PR here is reviewed by the deployed agent before merge, and the product's delivery, latency, cost, and review-quality claims are backed by a live measurement program (`docs/experiments/workspace-review-dogfood.md`) — 150+ instrumented production submissions across seeded-defect fixtures and real repositories, including a generic-agent baseline that quantifies what the pipeline adds over the bare model (~18 points of recall on the same payload bytes).
 
 ## What is included
 
@@ -17,10 +20,13 @@ This repository is Ternary's initial dogfood target for end-to-end review verifi
 - A Redis-backed durable review queue with leases, bounded per-installation and per-repository concurrency, retries, and crash recovery
 - A Postgres-backed immutable Review Event Ledger for lifecycle history, structured findings, sandbox evidence, merge outcomes, exports, retention, and deletion
 - Versioned organization and repository review policies with deterministic inheritance and an audit trail
+- The `ternary` CLI (`cli/`, zero runtime dependencies): offline changeset/snapshot collection with secret exclusion and redaction, dry-run previews, source-first snapshot prioritization with an honest coverage line, and a single bearer-authenticated submit — distributed as a versioned tarball on GitHub Releases
+- Clerk-backed dashboard authentication: invite-only sign-ups plus a fail-closed server-side email allowlist; machine surfaces (webhook HMAC, CLI bearer, cron) are independent of browser auth
+- Deterministic model-call survivability: bounded reasoning, pinned provider routing (`provider.order`), a two-attempt retry inside a hard deadline with corrective re-prompts for schema/language failures, and an enforced English/severity output contract
 
-## Reliability on Vercel Hobby
+## Reliability under serverless limits
 
-Ternary is tuned to complete reviews inside Vercel Hobby's limits (300s functions, daily-only crons, a monthly Sandbox CPU quota):
+Ternary was originally tuned to complete reviews inside Vercel Hobby's limits (300s functions, daily-only crons, a monthly Sandbox CPU quota) and now runs on Vercel Pro with the same conservative budgets:
 
 - Sandbox evidence is best-effort: when sandbox creation fails (for example, the monthly quota is exhausted) or the time budget runs thin, the review proceeds AI-only and the PR comment notes that sandbox checks did not run.
 - Every GitHub API call is bounded (15s; 30s for diff downloads), and the worker only claims a job when enough invocation time remains to finish it.
@@ -35,7 +41,7 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) and sign in with `INTERNAL_API_TOKEN`. The dashboard reads live data from repositories installed for the GitHub App. `GET /api/health` shows which production integrations are configured.
+Open [http://localhost:3000](http://localhost:3000) and sign in through Clerk (`/sign-in`). Dashboard access requires a Clerk session **and** an email on the fail-closed `DASHBOARD_ALLOWED_EMAILS` allowlist — with the allowlist unset, nobody gets in, by design. The dashboard reads live data from repositories installed for the GitHub App. `GET /api/health` shows which production integrations are configured. `INTERNAL_API_TOKEN` remains machine-to-machine only (worker wakes, internal endpoints); it no longer grants any browser access.
 
 ## GitHub App setup
 
@@ -56,11 +62,31 @@ Each review creates a fresh Vercel Sandbox microVM using `@vercel/sandbox`. The 
 
 On Vercel, authentication is automatic through `VERCEL_OIDC_TOKEN`. For local Sandbox calls, link the project and run `vercel env pull` to obtain a temporary development OIDC token.
 
+## The Workspace Review CLI
+
+`cli/` is a standalone, zero-runtime-dependency collector and client. Install from a GitHub Release on any machine with `gh` authenticated:
+
+```bash
+gh release download cli-v0.2.0 -R baisethomas/ternary-review-agent -p '*.tgz' && npm i -g ./ternary-cli-0.2.0.tgz
+export TERNARY_ENDPOINT="https://YOUR_DOMAIN/api/workspace-reviews"
+export TERNARY_CLI_TOKEN="$(cat ~/.ternary-cli-token)"   # per-machine token, mode 600
+```
+
+Then, in any repository:
+
+```bash
+ternary review . --dry-run   # offline: shows exactly what would be sent — manifest, exclusions, redactions
+ternary review .             # review the uncommitted changeset (~5–10 s)
+ternary review . --all       # bounded whole-workspace snapshot, source files prioritized, with a coverage line
+```
+
+Safety properties, each pinned by tests: the module graph provably cannot reach the network outside the one submit call; `.env*`, key material, and token stores are excluded as classes; token-shaped strings are redacted before bytes leave the machine; symlinks are never followed out of the workspace; and a canonical digest makes every payload byte-reproducible. Server-side, each token gets its own fixed rate window and concurrency slot, requests carry a hard 180 s deadline with at most two model attempts, and non-English or schema-invalid model output is re-prompted once and then failed deterministically rather than returned. Full details in `cli/README.md` and `docs/workspace-review-spec.md`.
+
 ## Deploy to Vercel
 
-1. Push this folder to a private GitHub repository.
+1. Push this folder to a GitHub repository.
 2. Import it in Vercel as a Next.js project.
-3. Add the GitHub and OpenRouter variables from `.env.example` to the Vercel project. Connect Neon Postgres through Vercel Marketplace, then run `npm run db:migrate` with its `DATABASE_URL`. Sandbox authentication is automatic.
+3. Add the GitHub and OpenRouter variables from `.env.example` to the Vercel project. Connect Neon Postgres and Clerk through Vercel Marketplace (Clerk auto-provisions its keys; set `DASHBOARD_ALLOWED_EMAILS` and `NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in`, and restrict Clerk sign-ups to invite-only), then run `npm run db:migrate` with the Neon `DATABASE_URL`. Sandbox authentication is automatic.
 4. Deploy, update the GitHub App webhook URL, and install the app on a test repository.
 5. Open a PR and confirm the `Ternary review` check appears.
 
