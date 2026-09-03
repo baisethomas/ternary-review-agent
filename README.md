@@ -84,7 +84,7 @@ Safety properties, each pinned by tests: the module graph provably cannot reach 
 
 1. Push this folder to a GitHub repository.
 2. Import it into your serverless host as a Next.js project (built and dogfooded on Vercel).
-3. Add the GitHub and OpenRouter variables from `.env.example`, connect Postgres and Clerk (set `DASHBOARD_ALLOWED_EMAILS` and `NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in`, and restrict Clerk sign-ups to invite-only), then run `npm run db:migrate`.
+3. Add every variable in `.env.example` (the GitHub App and OpenRouter values, plus the queue token, the deployment's public base URL, the internal API token the worker authenticates with, and the cron secret; the worker refuses to dispatch without them), connect Postgres and Clerk (set `DASHBOARD_ALLOWED_EMAILS` and `NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in`, and restrict Clerk sign-ups to invite-only), then run `npm run db:migrate`.
 4. Deploy, update the GitHub App webhook URL, and install the app on a test repository.
 5. Open a PR and confirm the `Ternary review` check appears.
 
