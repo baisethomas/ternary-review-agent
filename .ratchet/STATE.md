@@ -43,19 +43,27 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **TER-49 merged (`29d0278`, #61, Ternary 💬) and the gate half PROVEN LIVE
-  (§8.14, 2026-09-02):** per-token windows verified — 2 submissions per token
-  in one hour, 4/4 delivered, two distinct principals on the log lines
-  (slots `current`/`next`), zero 429. Owner minted the work-machine token
-  into `TERNARY_CLI_TOKEN_NEXT` (mode-600 local file, never displayed) and
-  redeployed. Decision **D-20260901-0300**. Remaining to close the ticket:
-  owner-gated `release.sh` run cuts `cli-v0.2.0` (its first attempt correctly
-  refused on a dirty tree — the gate works), then the work-machine install
-  via `cli/README.md`'s one-liner. `cli/bin/ternary.mjs` gained its
-  executable bit (npm link chmod — correct for a bin, committed) and the
-  Clerk agent skills under `.claude/skills/` are now repo-canonical (owner
-  choice 2026-09-02). Owner context: daily use screening agent-written code
-  on work repos before peer review; data-path disclosure accepted 2026-09-01.
+- **TER-49 CLOSED 2026-09-02** (merged `29d0278`, #61, Ternary 💬; gate half
+  proven live §8.14: 2 submissions per token in one hour, 4/4 delivered, two
+  distinct principals on the log lines, zero 429; D-20260901-0300).
+  `cli-v0.2.0` is published on GitHub Releases (owner ran `release.sh`; its
+  first attempt correctly refused a dirty tree). Remaining owner action only:
+  work-machine install via `cli/README.md`'s one-liner + private token copy.
+  Owner context: daily use screening agent-written code on work repos before
+  peer review; data-path disclosure accepted 2026-09-01.
+- **Public-repo hardening complete (2026-09-02…04, three PRs, all merged):**
+  #63 portfolio README rewrite + third-party finding specifics redacted;
+  #64 the private Swift review target de-identified to `swift-app` across the
+  public record (files renamed, run ids re-keyed; git history retains the
+  originals — accepted); #65 infra scrub (Vercel mentions in README reduced to
+  one, QStash/Upstash/OIDC/quota specifics removed, `dpl_` IDs truncated to
+  6-char prefixes). #65 converged ⛔→⛔→💬: round 1 was the stop-hook-caught
+  README-pins-constants test (fixed `4810bee`); round 2 blocked on removed
+  required env vars in the deploy step (restored generically, `abcc85b`);
+  round 3's two warnings are the scrub itself (host-agnostic framing,
+  truncated IDs) — deliberate owner choices, merged on 💬 per policy.
+  **Owner action still open: rotate the API.Bible key in the Swift app** —
+  that rotation, not the redaction, retires the historical disclosure.
 - **TER-48 closed 2026-09-01, live and verified.** Merged as main `e9226df`
   (#57; Ternary ⛔→💬→💬 — the real find, an open redirect, was fixed with a
   canonicalized allowlist-validated sign-in redirect). Owner completed the
@@ -230,9 +238,9 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Last handoff
 
-- Updated: 2026-08-31 (TER-45 measurement complete; §8.9 + ter45-runs.json written, uncommitted)
+- Updated: 2026-09-04 (PR #65 infra scrub merged; public-repo hardening pass complete; TER-49 fully closed)
 - By: agent (Claude Code, orchestrator)
-- Branch: main `03656fc` + uncommitted docs (`docs/experiments/workspace-review-dogfood.md` §8.9, `docs/experiments/ter45-runs.json`, this file).
+- Branch: main `645a867` + this file (uncommitted).
 - **The one thing a fresh agent should not misread:** §8.9's 100% delivery and
   80% severity agreement are two-repetition numbers on a 12-seed fixture set
   under a brand-new prompt. They are evidence the contract behaves as designed,
