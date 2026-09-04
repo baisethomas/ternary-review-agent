@@ -5,7 +5,7 @@
   "experimentLabel": "reasoning effort \"none\" on the incumbent model",
   "generatedUtc": "2026-08-26T05:40:00Z",
   "endpoint": "POST /api/workspace-reviews (production)",
-  "deploymentId": "dpl_5GiJiTpJYF1phGMevA8aYHdt9goy",
+  "deploymentId": "dpl_5GiJiT…",
   "commit": "dc6cf4d87c307baf0079340f371d03ed4d22f19b",
   "modelRequested": "~deepseek/deepseek-v4-flash-latest",
   "modelServed": "deepseek/deepseek-v4-flash-0731",

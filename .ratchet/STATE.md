@@ -38,7 +38,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 - TER-39 Phase B live measurement (2026-08-25): 45 submissions, delivery 31%, §8.5; recommendation **REVISE**.
 - TER-44 steps 1/1b/2 (ADR-0002 "C then B"): spike C (#42), env-tunable effort + abort/timeout split (#44), bounded retry (#46); measured in §8.6–§8.8. Step 2 series: 14/14 delivered, zero retries fired, `todo-app --all` (30 KB) 2-for-2.
 - TER-45 output contract (#48, main `03656fc`): prompt `-v2` (English clause, consequence-graded severity rubric, style-findings ban), server-side language rejection (`workspace-review-language.ts`), corrective retry message on `language_invalid`/`schema_invalid`, 2 eval cases (suite now 12). Decision D-20260827-0100.
-- TER-45 measurement (2026-08-31, §8.9 + `docs/experiments/ter45-runs.json`): 28 live submissions against `dpl_BRcCmHMmCgBNH7cnTJUFwMRmQk4g`, first seed repetitions in the project.
+- TER-45 measurement (2026-08-31, §8.9 + `docs/experiments/ter45-runs.json`): 28 live submissions against `dpl_BRcCmH…`, first seed repetitions in the project.
 - Ratchet adoption (#37), Redis-quota + build fix (#38). Vercel plan is Pro since 2026-08-25 (D-20260825-0400).
 
 ## Working on
@@ -160,7 +160,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 - **Large-payload probe (2026-09-01), RAN live:** 2 submissions of
   `swift-app --all` (513,338 bytes, 99,610 input tokens each) against
-  production `dpl_7D3NrsXaAJrrCLvZfXMqEdU4NCcP` (main `364ea75`). 2/2 `ok`,
+  production `dpl_7D3Nrs…` (main `364ea75`). 2/2 `ok`,
   attempts 1, Reka both, 3.9/6.2 s server-side, ~$0.022 each; both log lines
   read via the Vercel runtime-logs API; `digestVerified` both;
   `redactionApplied: 2`; 9 client-side redacted spans (JWT/bearer/high-entropy)
@@ -169,7 +169,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
   at this size is docs-only by construction (TER-43), so no quality claim is
   made.
 - **TER-46 measurement (2026-08-31), RAN live:** 24 submissions against
-  production `dpl_6mrbMnTF2CPJLJuBpttH8EL7gJn3` (main `36de129`) under
+  production `dpl_6mrbMn…` (main `36de129`) under
   `WORKSPACE_MODEL_PROVIDER_ORDER=reka/fp4,makora` (set by owner, name
   confirmed via `vercel env ls`, value never read back). 24/24 `ok`, all 24
   matched to server log lines by `requestBytes` + timestamp; `provider:
@@ -187,7 +187,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
   uppercase-rejection test. **Not verified:** anything live — no request has
   ever carried `provider.order`; the §8.10 series is the measurement.
 - **TER-45 measurement (2026-08-31), RAN live:** 28 submissions against
-  production `dpl_BRcCmHMmCgBNH7cnTJUFwMRmQk4g` (main `03656fc`, prompt
+  production `dpl_BRcCmH…` (main `03656fc`, prompt
   `workspace-changeset-v2`). 28/28 `ok`; 27 runs matched to server log lines by
   `requestBytes` + timestamp from a live `vercel logs` stream, the 28th
   (rep2-S11py, stream-restart gap) recovered from the Vercel runtime-logs API.

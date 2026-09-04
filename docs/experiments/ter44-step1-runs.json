@@ -3,7 +3,7 @@
   "schema": "ter44-step1-runs/1",
   "generatedUtc": "2026-08-26T02:20:00Z",
   "endpoint": "POST /api/workspace-reviews (production)",
-  "deploymentId": "dpl_P3mkTH63AuEEZ9S99tToYBzNCdt3",
+  "deploymentId": "dpl_P3mkTH…",
   "commit": "f9226546ae0ba61e6d89ee95b4ef710e5f810b76",
   "modelRequested": "~deepseek/deepseek-v4-flash-latest",
   "modelServed": "deepseek/deepseek-v4-flash-0731",

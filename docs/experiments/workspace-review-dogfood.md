@@ -722,7 +722,7 @@ invisible.
 ## 8.6 TER-44 step 1 — spike C measurement (measured 2026-08-26)
 
 **12 live submissions** against production `POST /api/workspace-reviews`
-(deployment `dpl_P3mkTH63AuEEZ9S99tToYBzNCdt3`, main `f922654`), 12 seeds ×
+(deployment `dpl_P3mkTH…`, main `f922654`), 12 seeds ×
 1 repetition over the same TER-39 fixtures, concurrency 1, teed to disk as they
 arrived. Raw per-run record: `docs/experiments/ter44-step1-runs.json`.
 
@@ -976,7 +976,7 @@ and latency rather than by fixing the cause.
 ## 8.7 TER-44 step 1b — Experiment A: effort `none` on the incumbent (measured 2026-08-26)
 
 **12 live submissions** against production `POST /api/workspace-reviews`
-(deployment `dpl_5GiJiTpJYF1phGMevA8aYHdt9goy`, main `dc6cf4d`), the same 12
+(deployment `dpl_5GiJiT…`, main `dc6cf4d`), the same 12
 seeds × 1 repetition over the same TER-39 fixtures, concurrency 1, teed to disk
 as they arrived. Raw per-run record: `docs/experiments/ter44-step1b-runs.json`.
 
@@ -1238,7 +1238,7 @@ change. On the measurements:
 ## 8.8 TER-44 step 2 — bounded-retry measurement (measured 2026-08-26)
 
 **14 live submissions** against production `POST /api/workspace-reviews`
-(deployment `dpl_FPryknWTbnVHHdGo4qn2XBoaRjGf`, main `59a0b05`): the 12 seeds ×
+(deployment `dpl_FPrykn…`, main `59a0b05`): the 12 seeds ×
 1 repetition over the same TER-39 fixtures, plus **two repetitions of
 `todo-app --all`** — the 30 KB snapshot that went 0-for-2 in Phase B — from a
 detached scratch worktree of `d31c0c2`. Concurrency 1, two hourly gate windows,
@@ -1443,7 +1443,7 @@ log line** rather than inferred, closing §8.7.2's verification gap;
 ## 8.9 TER-45 output contract — first series under prompt `-v2` (measured 2026-08-31)
 
 **28 live submissions** against production `POST /api/workspace-reviews`
-(deployment `dpl_BRcCmHMmCgBNH7cnTJUFwMRmQk4g`, main `03656fc`, prompt
+(deployment `dpl_BRcCmH…`, main `03656fc`, prompt
 `workspace-changeset-v2`): the 12 seeds × **2 repetitions** over the TER-39
 fixtures, plus 4 make-up runs. Four hourly gate windows, concurrency 1, canary
 pre-flight before every transmit (28/28 CLEAN), fixture digest-verified after
@@ -1548,7 +1548,7 @@ driven by Phala/Reka price points). `reasoningTokens` 0 on all 28.
 ## 8.10 TER-46 provider.order pinning — the lottery ends (measured 2026-08-31)
 
 **24 live submissions** against production `POST /api/workspace-reviews`
-(deployment `dpl_6mrbMnTF2CPJLJuBpttH8EL7gJn3`, main `36de129`, prompt `-v2`)
+(deployment `dpl_6mrbMn…`, main `36de129`, prompt `-v2`)
 under `WORKSPACE_MODEL_PROVIDER_ORDER=reka/fp4,makora` — env-only, repository
 default still `"omit"`, per the D-20260826-0500 promotion pattern. 12 seeds ×
 2 repetitions, correct per-seed fixtures throughout (S07/S11 → python), three
@@ -1630,7 +1630,7 @@ taken. *(Taken: promoted 2026-08-31, D-20260831-0200, main `364ea75`.)*
 **2 submissions of `swift-app --all`** — a **513,338-byte** real-repo
 snapshot, 12× Phase B's failing 43 KB changeset and 17× the 30 KB `todo-app`
 snapshot — against production under the promoted pin (deployment
-`dpl_7D3NrsXaAJrrCLvZfXMqEdU4NCcP`, main `364ea75`). Raw record:
+`dpl_7D3Nrs…`, main `364ea75`). Raw record:
 `docs/experiments/swift-app-all-probe.json`.
 
 **Both delivered on attempt 1, from Reka, in 3.9 s and 6.2 s**, at 99,610
@@ -1763,7 +1763,7 @@ model it actually runs, it is both.
 
 ## 8.14 Per-token gate windows, proven live (measured 2026-09-02)
 
-TER-49 note. Against deployment `dpl_J3KnfxmDnRg35GXdf4Vtd4dxbXYf` (main
+TER-49 note. Against deployment `dpl_J3Knfx…` (main
 `29d0278` with `TERNARY_CLI_TOKEN` and `TERNARY_CLI_TOKEN_NEXT` both set): 2
 fixture submissions per token inside one hour — **4/4 delivered, zero 429**,
 and the log lines carry **two distinct principals** (`0093767f…`/slot
