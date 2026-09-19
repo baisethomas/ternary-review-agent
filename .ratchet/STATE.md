@@ -43,8 +43,8 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **Dependency security bump (2026-09-18, branch
-  `baise/deps-next-16.3.5-audit-fix`, PR pending Ternary review):** health
+- **Dependency security bump (2026-09-18, merged main `25e8265`, #66,
+  Ternary ✅, deployed and health-verified live):** health
   check found `next` 16.3.0 inside a critical advisory range (two
   unauthenticated RCEs, one in the Image Optimization API via AVIF — app uses no
   `next/image`, hosted on Linux, so practical exposure judged low) plus
