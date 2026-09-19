@@ -43,6 +43,17 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
+- **Dependency security bump (2026-09-18, branch
+  `baise/deps-next-16.3.5-audit-fix`, PR pending Ternary review):** health
+  check found `next` 16.3.0 inside a critical advisory range (two
+  unauthenticated RCEs, one in the Image Optimization API via AVIF — app uses no
+  `next/image`, hosted on Linux, so practical exposure judged low) plus
+  transitive highs in `js-yaml` and `sharp`. Bumped `next` +
+  `eslint-config-next` to 16.3.5 (exact pins kept) and ran a non-breaking
+  `npm audit fix`. Gate RAN: lint clean, 989/262 tests green, build green.
+  Residue: vitest moderate (`@vitest/mocker`) in both workspaces only clears
+  via vitest 5 major — deferred, dev-only. 32 merged local branches and PR #16
+  (do-not-merge experiment) still open — owner housekeeping.
 - **TER-49 CLOSED 2026-09-02** (merged `29d0278`, #61, Ternary 💬; gate half
   proven live §8.14: 2 submissions per token in one hour, 4/4 delivered, two
   distinct principals on the log lines, zero 429; D-20260901-0300).
