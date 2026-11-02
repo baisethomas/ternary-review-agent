@@ -48,9 +48,10 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
   D-20261102-2230):** root cause verified on Ratchet#15's check run — no
   `package.json`, `npm run lint --if-present` exit 254, `sandbox.ok: false`,
   `applyReviewPolicyToResult` ⇒ ⛔ with zero findings. Fix: `package.json`
-  probe gates the JS steps; Ternary time-limit, SIGKILL (137) and
-  missing-package-manager exits are `toolingFailure` (inconclusive,
-  non-blocking); every other non-zero exit still blocks. Second repro: brief
+  probe gates the JS steps; steps that run into Ternary's time limit and
+  Ternary's install missing its package manager are `toolingFailure`
+  (inconclusive, non-blocking); every other non-zero exit — including a bare
+  137, which code under review can forge — still blocks. Second repro: brief
   PR #68 (docs-only) — `npm install` completed ("in 1m", i.e. ≥60 s past the
   55 s `COMMAND_TIMEOUT`) and was SIGKILLed; most likely Ternary's own
   per-command limit, not memory (2 vCPU = 4 GB). Docs-only step skipping was
@@ -61,10 +62,11 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
   `runReview` harness (I/O stubbed, steps run with local bash) reproduced ⛔
   on main and ✅ on the fix for Ratchet `10b64d1` and for #68 (install
   replayed from the production check run); a JS fixture with a real failing
-  test stays ⛔. Fix PR #69 round 1: Ternary ⛔ — one valid warning (probe
-  not bounded by `deadlineAt`, fixed) plus production's own install SIGKILL
-  (137, "in 1m"), i.e. the defect itself, still live because production runs
-  main. **Watch:** this repo's own cold `npm ci` is ~55–60 s, so
+  test stays ⛔. Fix PR #69 review rounds (production runs main, so every
+  round also shows the defect itself: install SIGKILL 137, "in 1m"/"in 2m"):
+  round 1 valid warning (probe not bounded by `deadlineAt`, fixed); round 2
+  valid blocking (blanket 137 rule forgeable, withdrawn — time-limit rule
+  alone covers the live samples). **Watch:** this repo's own cold `npm ci` is ~55–60 s, so
   every Ternary self-review can hit the limit until the fix is deployed — and
   afterwards such reviews pass with tests unrun (⚠️); raising
   `COMMAND_TIMEOUT` for install is the follow-up. **Not verified:**
