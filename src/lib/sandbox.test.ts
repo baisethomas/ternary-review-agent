@@ -268,11 +268,9 @@ describe("sandbox step applicability and tooling failures", () => {
   // Repro of ternary-review-agent#68 (docs-only PR): `npm install` finished, then was SIGKILLed (137).
   const pr68InstallOutput = "\nadded 447 packages, and audited 448 packages in 1m\n\n164 packages are looking for funding\n";
 
-  it.each([
-    ["at Ternary's per-command time limit", 60_000, "Ternary's 55s time limit"],
-    ["before Ternary's time limit (memory)", 30_000, "SIGKILL, exit 137"],
-  ])("a finding-free docs-only review whose install was SIGKILLed %s is not blocked", async (_case, elapsedMs, reason) => {
-    const { clock, shells } = await scriptSandbox((shell) => (shell.includes("npm ci") ? { exitCode: 137, output: pr68InstallOutput, elapsedMs } : { exitCode: 0 }));
+  it("a finding-free docs-only review whose install ran into Ternary's time limit and was SIGKILLed is not blocked", async () => {
+    // npm reported "in 1m" (>= 60s) against Ternary's 55s command limit.
+    const { clock, shells } = await scriptSandbox((shell) => (shell.includes("npm ci") ? { exitCode: 137, output: pr68InstallOutput, elapsedMs: 60_000 } : { exitCode: 0 }));
     const sandbox = await runInSandbox({ ...sandboxRequest, owner: "baisethomas", repo: "ternary-review-agent", pullNumber: 68 }, "token", { now: () => clock.now });
 
     const review = applyReviewPolicyToResult({ verdict: "request_changes", summary: "Docs-only change; no material findings.", findings: [], sandbox }, safeReviewPolicy);
@@ -280,9 +278,21 @@ describe("sandbox step applicability and tooling failures", () => {
     expect(shells).toEqual([PACKAGE_JSON_PROBE, expect.stringContaining("npm ci")]);
     expect(sandbox.ok).toBe(true);
     expect(sandbox.status).toBe("partial");
-    expect(sandbox.commands).toEqual([expect.objectContaining({ command: "install dependencies", exitCode: 137, toolingFailure: expect.stringContaining(reason) })]);
+    expect(sandbox.commands).toEqual([expect.objectContaining({ command: "install dependencies", exitCode: 137, toolingFailure: expect.stringContaining("Ternary's 55s time limit") })]);
     expect(sandbox.skippedCommands).toEqual(["lint", "typecheck", "test", "build"]);
     expect(review.verdict).toBe("approve");
+  });
+
+  it("keeps a repository-controlled exit 137 before Ternary's time limit as a blocking code failure", async () => {
+    const { clock } = await scriptSandbox((shell) => (shell === "npm test --if-present" ? { exitCode: 137, output: "> test\n> node run-tests.js || exit 137", elapsedMs: 3_000 } : { exitCode: 0 }));
+    const sandbox = await runInSandbox(sandboxRequest, "token", { now: () => clock.now });
+
+    const review = applyReviewPolicyToResult({ verdict: "approve", summary: "No material findings.", findings: [], sandbox }, safeReviewPolicy);
+
+    expect(sandbox.ok).toBe(false);
+    expect(sandbox.commands.at(-1)).toMatchObject({ command: "test", exitCode: 137 });
+    expect(sandbox.commands.at(-1)?.toolingFailure).toBeUndefined();
+    expect(review.verdict).toBe("request_changes");
   });
 
   it("classifies only Ternary-caused exits as tooling failures", () => {
@@ -290,7 +300,9 @@ describe("sandbox step applicability and tooling failures", () => {
     expect(classifyToolingFailure({ label: "test" }, 1, 2_000, 55_000)).toBeUndefined();
     expect(classifyToolingFailure({ label: "lint" }, 127, 2_000, 55_000)).toBeUndefined();
     expect(classifyToolingFailure({ label: "test" }, 134, 2_000, 55_000)).toBeUndefined();
-    expect(classifyToolingFailure({ label: "build" }, 137, 20_000, 55_000)).toContain("SIGKILL");
+    expect(classifyToolingFailure({ label: "build" }, 137, 20_000, 55_000)).toBeUndefined();
+    expect(classifyToolingFailure({ label: "install dependencies" }, 137, 20_000, 55_000)).toBeUndefined();
+    expect(classifyToolingFailure({ label: "install dependencies" }, 137, 60_000, 55_000)).toContain("time limit");
     expect(classifyToolingFailure({ label: "test" }, 1, 55_000, 55_000)).toContain("time limit");
     expect(classifyToolingFailure({ label: "install dependencies" }, 127, 2_000, 55_000, "bash: line 1: bun: command not found")).toContain("sandbox image");
   });

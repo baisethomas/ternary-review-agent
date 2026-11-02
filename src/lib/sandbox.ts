@@ -117,18 +117,16 @@ export function sandboxCommandPlan(reviewCommands: string[] = [], options: Sandb
 }
 
 const PACKAGE_MANAGER_NOT_FOUND = /\b(?:corepack|pnpm|yarn|bun|npm): (?:command )?not found/;
-const SIGKILL_EXIT_CODE = 137;
 
 /**
- * A non-zero exit is a code failure unless Ternary's own tooling caused it: the step hit Ternary's
- * time limit, the sandbox SIGKILLed it (its time or memory limits; a failing check exits on its own),
- * or Ternary's install command needs a package manager the sandbox image lacks. A 127 from the
- * repository's own install scripts (npm propagates their exit code) stays a code failure.
+ * A non-zero exit is a code failure unless Ternary's own tooling caused it: the step ran into Ternary's
+ * time limit, or Ternary's install command needs a package manager the sandbox image lacks. Exit codes
+ * alone are never trusted as tooling signals: the sandbox API reports no termination reason, and code
+ * under review can exit 137 or 127 itself (npm propagates its lifecycle scripts' exit codes).
  */
 export function classifyToolingFailure(step: Pick<SandboxStep, "label">, exitCode: number, elapsedMs: number, timeoutMs: number, output = "") {
   if (exitCode === 0) return undefined;
   if (elapsedMs >= timeoutMs) return `stopped at Ternary's ${Math.round(timeoutMs / 1000)}s time limit for this command`;
-  if (exitCode === SIGKILL_EXIT_CODE) return "killed by the sandbox (SIGKILL, exit 137), which happens when a step exceeds the sandbox's time or memory limits";
   if (step.label === INSTALL_LABEL && exitCode === COMMAND_NOT_FOUND_EXIT_CODE && PACKAGE_MANAGER_NOT_FOUND.test(output)) {
     return "the package manager this repository uses is not available in Ternary's sandbox image";
   }
