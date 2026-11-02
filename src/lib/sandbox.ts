@@ -95,13 +95,6 @@ export type SandboxStep = {
 
 const NO_PACKAGE_JSON_REASON = "no package.json at the repository root, so JavaScript checks do not apply";
 
-/**
- * Runs only Ternary's shell (file tests and `command -v`), before any repository code, so its result is trusted.
- * Mirrors the install step's lockfile precedence. Exit 1: no package.json. Exit 3: the selected package manager
- * is missing from the sandbox image (its name on stdout). Exit 0: proceed.
- */
-export const JS_PROJECT_PROBE = `[ -f package.json ] || exit 1; if [ -f pnpm-lock.yaml ] || [ -f yarn.lock ]; then pm=corepack; elif [ -f bun.lock ] || [ -f bun.lockb ]; then pm=bun; else pm=npm; fi; command -v "$pm" >/dev/null 2>&1 || { echo "$pm"; exit 3; }`;
-
 export function sandboxCommandPlan(reviewCommands: string[] = [], options: SandboxCommandPlanOptions = {}): SandboxStep[] {
   const install = {
     label: "install dependencies",
@@ -122,9 +115,9 @@ export function sandboxCommandPlan(reviewCommands: string[] = [], options: Sandb
 }
 
 /**
- * A non-zero exit is a code failure unless the step ran into Ternary's own time limit. Exit codes and output
- * are never trusted as tooling signals: the sandbox API reports no termination reason, and code under review
- * controls both (npm propagates its lifecycle scripts' exit codes and output).
+ * A non-zero exit is a code failure unless the step ran into Ternary's own time limit. Exit codes, output,
+ * and lockfiles are never trusted as tooling signals: the sandbox API reports no termination reason, and the
+ * code under review controls all three (npm propagates its lifecycle scripts' exit codes and output).
  */
 export function classifyToolingFailure(exitCode: number, elapsedMs: number, timeoutMs: number) {
   if (exitCode === 0) return undefined;
@@ -154,14 +147,10 @@ async function raceDeadline<T>(operation: Promise<T>, remainingMs: number, label
   }
 }
 
-type JsProjectProbe = { kind: "proceed" } | { kind: "no-package-json" } | { kind: "missing-package-manager"; packageManager: string };
-
-/** Only a definite answer changes the plan; any other probe result runs the JavaScript steps as before. */
-async function probeJsProject(sandbox: Awaited<ReturnType<typeof Sandbox.create>>, repoDirectory: string, timeoutMs: number): Promise<JsProjectProbe> {
-  const probe = await sandbox.runCommand({ cmd: "bash", args: ["-lc", JS_PROJECT_PROBE], cwd: repoDirectory, timeoutMs });
-  if (probe.exitCode === 1) return { kind: "no-package-json" };
-  if (probe.exitCode === 3) return { kind: "missing-package-manager", packageManager: (await probe.output("stdout")).trim().slice(0, 40) || "unknown" };
-  return { kind: "proceed" };
+/** Only a definite "absent" (test exit 1) drops the JavaScript steps; any other probe result keeps them. */
+async function rootPackageJsonExists(sandbox: Awaited<ReturnType<typeof Sandbox.create>>, repoDirectory: string, timeoutMs: number) {
+  const probe = await sandbox.runCommand({ cmd: "bash", args: ["-lc", "test -f package.json"], cwd: repoDirectory, timeoutMs });
+  return probe.exitCode !== 1;
 }
 
 export async function runInSandbox(request: ReviewRequest, githubToken: string, options: SandboxRunOptions = {}): Promise<SandboxResult> {
@@ -204,21 +193,16 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
     const fullPlan = sandboxCommandPlan(request.policy?.reviewCommands, options);
     const probeBudgetMs = remainingBudgetMs();
     // Without budget to probe, keep the full plan so the loop reports every step as skipped for time.
-    const probe: JsProjectProbe = fullPlan.some((step) => step.requiresPackageJson) && probeBudgetMs >= SANDBOX_MIN_COMMAND_BUDGET_MS
-      ? await probeJsProject(sandbox, repoDirectory, Math.min(PACKAGE_JSON_PROBE_TIMEOUT, Math.floor(probeBudgetMs)))
-      : { kind: "proceed" };
-    const jsSteps = fullPlan.filter((step) => step.requiresPackageJson).map((step) => step.label);
-    const plan = probe.kind === "proceed" ? fullPlan : fullPlan.filter((step) => !step.requiresPackageJson);
-    const notApplicableCommands = probe.kind === "no-package-json" ? jsSteps : [];
-    if (probe.kind === "missing-package-manager") {
-      skippedCommands.push(...jsSteps);
-      skippedReason = `\`${probe.packageManager}\`, the package manager this repository uses, is not available in Ternary's sandbox image`;
-    }
+    const hasPackageJson = fullPlan.some((step) => step.requiresPackageJson) && probeBudgetMs >= SANDBOX_MIN_COMMAND_BUDGET_MS
+      ? await rootPackageJsonExists(sandbox, repoDirectory, Math.min(PACKAGE_JSON_PROBE_TIMEOUT, Math.floor(probeBudgetMs)))
+      : true;
+    const plan = hasPackageJson ? fullPlan : fullPlan.filter((step) => !step.requiresPackageJson);
+    const notApplicableCommands = hasPackageJson ? [] : fullPlan.filter((step) => step.requiresPackageJson).map((step) => step.label);
     for (const [index, step] of plan.entries()) {
       const remaining = remainingBudgetMs();
       if (remaining < SANDBOX_MIN_COMMAND_BUDGET_MS) {
         skippedCommands.push(...plan.slice(index).map((skipped) => skipped.label));
-        skippedReason ??= "sandbox time budget";
+        skippedReason = "sandbox time budget";
         break;
       }
       if (!step.network) await sandbox.updateNetworkPolicy("deny-all");
@@ -236,9 +220,8 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
       const toolingFailure = classifyToolingFailure(command.exitCode, elapsedMs, timeoutMs);
       commands.push({ command: step.label, exitCode: command.exitCode, output, ...(toolingFailure ? { toolingFailure } : {}) });
       if (toolingFailure) {
-        const remainingSteps = plan.slice(index + 1).map((skipped) => skipped.label);
-        skippedCommands.push(...remainingSteps);
-        if (remainingSteps.length) skippedReason ??= `\`${step.label}\` stopped by a Ternary tooling failure`;
+        skippedCommands.push(...plan.slice(index + 1).map((skipped) => skipped.label));
+        if (skippedCommands.length) skippedReason = `\`${step.label}\` stopped by a Ternary tooling failure`;
         break;
       }
       if (command.exitCode !== 0) break;

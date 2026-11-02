@@ -1,14 +1,10 @@
-import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { NonRetryableReviewError } from "./review-errors";
 import { safeReviewPolicy } from "./review-policy";
 import { applyReviewPolicyToResult } from "./review-policy-execution";
-import { classifyToolingFailure, JS_PROJECT_PROBE, runInSandbox, sandboxCommandPlan, sandboxCredentials, compactSandboxForModel, unavailableSandboxResult } from "./sandbox";
+import { classifyToolingFailure, runInSandbox, sandboxCommandPlan, sandboxCredentials, compactSandboxForModel, unavailableSandboxResult } from "./sandbox";
 
-const PACKAGE_JSON_PROBE = JS_PROJECT_PROBE;
+const PACKAGE_JSON_PROBE = "test -f package.json";
 
 const sandboxRequest = {
   owner: "baisethomas",
@@ -240,54 +236,14 @@ describe("sandbox step applicability and tooling failures", () => {
     expect(result.skippedReason).toContain("Ternary tooling failure");
   });
 
-  it("skips the JavaScript steps without running repository code when the probe finds the package manager missing", async () => {
-    const { shells } = await scriptSandbox((shell) => (shell === PACKAGE_JSON_PROBE ? { exitCode: 3, output: "bun\n" } : { exitCode: 0 }));
-
-    const result = await runInSandbox(sandboxRequest, "token");
-
-    expect(shells).toEqual([PACKAGE_JSON_PROBE]);
-    expect(result.ok).toBe(true);
-    expect(result.status).toBe("partial");
-    expect(result.commands).toEqual([]);
-    expect(result.skippedCommands).toEqual(["install dependencies", "lint", "typecheck", "test", "build"]);
-    expect(result.skippedReason).toBe("`bun`, the package manager this repository uses, is not available in Ternary's sandbox image");
-  });
-
-  it("keeps an install exit 127 whose output claims a missing package manager as a blocking code failure", async () => {
-    await scriptSandbox((shell) => (shell.includes("npm ci") ? { exitCode: 127, output: "> preinstall\nbash: bun: command not found" } : { exitCode: 0 }));
+  it("keeps an install exit 127 that claims a missing package manager as a blocking code failure", async () => {
+    await scriptSandbox((shell) => (shell.includes("bun install") ? { exitCode: 127, output: "> preinstall\nbash: bun: command not found" } : { exitCode: 0 }));
 
     const result = await runInSandbox(sandboxRequest, "token");
 
     expect(result.ok).toBe(false);
     expect(result.commands).toEqual([expect.objectContaining({ command: "install dependencies", exitCode: 127 })]);
     expect(result.commands[0]?.toolingFailure).toBeUndefined();
-  });
-
-  it("probe exit codes from a real shell: 1 without package.json, 3 plus name when the package manager is missing, 0 otherwise", () => {
-    const run = (files: string[], path: string) => {
-      const dir = mkdtempSync(join(tmpdir(), "ternary-probe-"));
-      for (const file of files) writeFileSync(join(dir, file), "{}");
-      const result = spawnSync("/bin/bash", ["-c", JS_PROJECT_PROBE], { cwd: dir, env: { ...process.env, PATH: path }, encoding: "utf8" });
-      return { status: result.status, stdout: result.stdout.trim() };
-    };
-    const binDir = mkdtempSync(join(tmpdir(), "ternary-probe-bin-"));
-    for (const tool of ["npm", "corepack"]) {
-      writeFileSync(join(binDir, tool), "#!/bin/sh\nexit 0\n");
-      chmodSync(join(binDir, tool), 0o755);
-    }
-
-    expect(run(["README.md"], binDir)).toEqual({ status: 1, stdout: "" });
-    expect(run(["package.json", "package-lock.json"], binDir)).toEqual({ status: 0, stdout: "" });
-    expect(run(["package.json", "pnpm-lock.yaml"], binDir)).toEqual({ status: 0, stdout: "" });
-    expect(run(["package.json", "bun.lock"], binDir)).toEqual({ status: 3, stdout: "bun" });
-    expect(run(["package.json"], "/nonexistent")).toEqual({ status: 3, stdout: "npm" });
-  });
-
-  it("probes for the package manager with the install step's lockfile precedence, using only shell builtins", () => {
-    expect(JS_PROJECT_PROBE).toContain("[ -f package.json ] || exit 1");
-    expect(JS_PROJECT_PROBE.indexOf("pnpm-lock.yaml")).toBeLessThan(JS_PROJECT_PROBE.indexOf("bun.lock"));
-    expect(JS_PROJECT_PROBE).toContain('command -v "$pm"');
-    expect(JS_PROJECT_PROBE).not.toMatch(/\b(?:npm|bun|corepack) (?:ci|install|run)\b/);
   });
 
   it("a finding-free review of a repository without package.json is not blocked by the sandbox", async () => {
