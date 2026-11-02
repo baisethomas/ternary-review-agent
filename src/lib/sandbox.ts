@@ -17,6 +17,7 @@ const INSTALL_NETWORK: NetworkPolicy = {
 
 const OUTPUT_LIMIT = 24_000;
 const COMMAND_TIMEOUT = 55_000;
+const PACKAGE_JSON_PROBE_TIMEOUT = 10_000;
 
 type SandboxCredentialEnvironment = Partial<Record<"VERCEL_TOKEN" | "VERCEL_TEAM_ID" | "VERCEL_PROJECT_ID", string>>;
 
@@ -157,8 +158,8 @@ async function raceDeadline<T>(operation: Promise<T>, remainingMs: number, label
 }
 
 /** Only a definite "absent" (test exit 1) drops the JavaScript steps; any other probe result keeps them. */
-async function rootPackageJsonExists(sandbox: Awaited<ReturnType<typeof Sandbox.create>>, repoDirectory: string) {
-  const probe = await sandbox.runCommand({ cmd: "bash", args: ["-lc", "test -f package.json"], cwd: repoDirectory, timeoutMs: 10_000 });
+async function rootPackageJsonExists(sandbox: Awaited<ReturnType<typeof Sandbox.create>>, repoDirectory: string, timeoutMs: number) {
+  const probe = await sandbox.runCommand({ cmd: "bash", args: ["-lc", "test -f package.json"], cwd: repoDirectory, timeoutMs });
   return probe.exitCode !== 1;
 }
 
@@ -200,8 +201,10 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
   try {
     const repoDirectory = request.repo;
     const fullPlan = sandboxCommandPlan(request.policy?.reviewCommands, options);
-    const hasPackageJson = fullPlan.some((step) => step.requiresPackageJson)
-      ? await rootPackageJsonExists(sandbox, repoDirectory)
+    const probeBudgetMs = remainingBudgetMs();
+    // Without budget to probe, keep the full plan so the loop reports every step as skipped for time.
+    const hasPackageJson = fullPlan.some((step) => step.requiresPackageJson) && probeBudgetMs >= SANDBOX_MIN_COMMAND_BUDGET_MS
+      ? await rootPackageJsonExists(sandbox, repoDirectory, Math.min(PACKAGE_JSON_PROBE_TIMEOUT, Math.floor(probeBudgetMs)))
       : true;
     const plan = hasPackageJson ? fullPlan : fullPlan.filter((step) => !step.requiresPackageJson);
     const notApplicableCommands = hasPackageJson ? [] : fullPlan.filter((step) => step.requiresPackageJson).map((step) => step.label);

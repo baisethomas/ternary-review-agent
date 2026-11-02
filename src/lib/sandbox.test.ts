@@ -22,9 +22,11 @@ async function scriptSandbox(script: (shell: string) => ScriptedStep) {
   const { Sandbox } = await import("@vercel/sandbox");
   const clock = { now: 0 };
   const shells: string[] = [];
-  const runCommand = vi.fn(async ({ args }: { args: string[] }) => {
+  const timeouts: Array<number | undefined> = [];
+  const runCommand = vi.fn(async ({ args, timeoutMs }: { args: string[]; timeoutMs?: number }) => {
     const shell = args[1] ?? "";
     shells.push(shell);
+    timeouts.push(timeoutMs);
     const step = script(shell);
     clock.now += step.elapsedMs ?? 1_000;
     return { exitCode: step.exitCode, output: async () => step.output ?? "" };
@@ -35,7 +37,7 @@ async function scriptSandbox(script: (shell: string) => ScriptedStep) {
     runCommand,
     stop: vi.fn(async () => undefined),
   } as never);
-  return { clock, shells };
+  return { clock, shells, timeouts };
 }
 
 vi.mock("@vercel/sandbox", () => {
@@ -176,6 +178,27 @@ describe("sandbox step applicability and tooling failures", () => {
 
     expect(shells.slice(1)).toEqual([expect.stringContaining("npm ci"), "npm run lint --if-present", "npm run typecheck --if-present", "npm test --if-present"]);
     expect(result.notApplicableCommands).toBeUndefined();
+  });
+
+  it("does not probe for package.json once the sandbox budget is exhausted and reports every step as skipped", async () => {
+    const { clock, shells } = await scriptSandbox(() => ({ exitCode: 1 }));
+
+    const result = await runInSandbox(sandboxRequest, "token", { skipBuild: true, deadlineAt: 4_000, now: () => clock.now });
+
+    expect(shells).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe("partial");
+    expect(result.skippedCommands).toEqual(["install dependencies", "lint", "typecheck", "test"]);
+    expect(result.notApplicableCommands).toBeUndefined();
+  });
+
+  it("caps the package.json probe timeout at the remaining sandbox budget", async () => {
+    const { clock, shells, timeouts } = await scriptSandbox(() => ({ exitCode: 1, elapsedMs: 0 }));
+
+    await runInSandbox(sandboxRequest, "token", { deadlineAt: 7_000, now: () => clock.now });
+
+    expect(shells).toEqual([PACKAGE_JSON_PROBE]);
+    expect(timeouts).toEqual([7_000]);
   });
 
   it("reports genuinely failing lint in a JavaScript repository as a code failure", async () => {
