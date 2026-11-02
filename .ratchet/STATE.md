@@ -48,15 +48,17 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
   D-20261102-2230):** root cause verified on Ratchet#15's check run — no
   `package.json`, `npm run lint --if-present` exit 254, `sandbox.ok: false`,
   `applyReviewPolicyToResult` ⇒ ⛔ with zero findings. Fix: `package.json`
-  probe gates the JS steps; steps that run into Ternary's time limit and
-  Ternary's install missing its package manager are `toolingFailure`
-  (inconclusive, non-blocking); every other non-zero exit — including a bare
-  137, which code under review can forge — still blocks. Second repro: brief
+  a Ternary-only probe (`JS_PROJECT_PROBE`, runs before any repo code)
+  marks the JS steps not applicable without `package.json`, or skipped when
+  the sandbox image lacks the repo's package manager; a step that runs into
+  Ternary's time limit is `toolingFailure` (inconclusive, non-blocking);
+  every other non-zero exit — including a bare 137 or 127, whose code and
+  output the repo controls — still blocks. Second repro: brief
   PR #68 (docs-only) — `npm install` completed ("in 1m", i.e. ≥60 s past the
   55 s `COMMAND_TIMEOUT`) and was SIGKILLed; most likely Ternary's own
   per-command limit, not memory (2 vCPU = 4 GB). Docs-only step skipping was
   rejected: `review-invocation-limits.test.ts` reads `README.md`. Gate RAN:
-  lint clean, 1009 passed / 1 failed (pre-existing `cli/src/capture.test.ts`
+  lint clean, 1012 passed / 1 failed (pre-existing `cli/src/capture.test.ts`
   hard-link test, fails identically on untouched main on this VM) / 9 skipped,
   build green; reproduce-revert-restore RAN for every behavior. Local
   `runReview` harness (I/O stubbed, steps run with local bash) reproduced ⛔
@@ -66,7 +68,9 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
   round also shows the defect itself: install SIGKILL 137, "in 1m"/"in 2m"):
   round 1 valid warning (probe not bounded by `deadlineAt`, fixed); round 2
   valid blocking (blanket 137 rule forgeable, withdrawn — time-limit rule
-  alone covers the live samples). **Watch:** this repo's own cold `npm ci` is ~55–60 s, so
+  alone covers the live samples); round 3 valid blocking (install-127
+  "not found" output rule forgeable by lifecycle scripts, withdrawn —
+  replaced by the trusted probe). **Watch:** this repo's own cold `npm ci` is ~55–60 s, so
   every Ternary self-review can hit the limit until the fix is deployed — and
   afterwards such reviews pass with tests unrun (⚠️); raising
   `COMMAND_TIMEOUT` for install is the follow-up. **Not verified:**
