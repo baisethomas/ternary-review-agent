@@ -65,10 +65,14 @@ export function compactSandboxForModel(sandbox: SandboxResult) {
     durationMs: sandbox.durationMs,
     ...(sandbox.status ? { status: sandbox.status } : {}),
     ...(sandbox.skippedCommands?.length ? { skippedCommands: sandbox.skippedCommands } : {}),
+    ...(sandbox.skippedReason ? { skippedReason: sandbox.skippedReason } : {}),
+    ...(sandbox.notApplicableCommands?.length ? { notApplicableCommands: sandbox.notApplicableCommands } : {}),
+    ...(sandbox.notApplicableReason ? { notApplicableReason: sandbox.notApplicableReason } : {}),
     ...(sandbox.unavailableReason ? { unavailableReason: sandbox.unavailableReason } : {}),
     commands: sandbox.commands.map((command) => ({
       command: command.command,
       exitCode: command.exitCode,
+      ...(command.toolingFailure ? { toolingFailure: command.toolingFailure } : {}),
       output: command.output.length > SANDBOX_MODEL_OUTPUT_LIMIT
         ? `${command.output.slice(0, SANDBOX_MODEL_OUTPUT_LIMIT)}\n… truncated for model input`
         : command.output,
@@ -80,22 +84,51 @@ export type SandboxCommandPlanOptions = {
   skipBuild?: boolean;
 };
 
-export function sandboxCommandPlan(reviewCommands: string[] = [], options: SandboxCommandPlanOptions = {}) {
+export type SandboxStep = {
+  label: string;
+  shell: string;
+  network: boolean;
+  /** Only meaningful in a JavaScript project; dropped from the run when the checkout has no root package.json. */
+  requiresPackageJson?: boolean;
+};
+
+const INSTALL_LABEL = "install dependencies";
+const NO_PACKAGE_JSON_REASON = "no package.json at the repository root, so JavaScript checks do not apply";
+const COMMAND_NOT_FOUND_EXIT_CODE = 127;
+
+export function sandboxCommandPlan(reviewCommands: string[] = [], options: SandboxCommandPlanOptions = {}): SandboxStep[] {
   const install = {
-    label: "install dependencies",
+    label: INSTALL_LABEL,
     shell: `if [ -f pnpm-lock.yaml ]; then corepack pnpm install --frozen-lockfile; elif [ -f yarn.lock ]; then corepack yarn install --immutable || corepack yarn install --frozen-lockfile; elif [ -f bun.lock ] || [ -f bun.lockb ]; then bun install --frozen-lockfile; elif [ -f package-lock.json ]; then npm ci; elif [ -f package.json ]; then npm install; else echo 'No JavaScript package manifest found'; fi`,
     network: true,
+    requiresPackageJson: true,
   };
-  const checks = reviewCommands.length
+  const checks: SandboxStep[] = reviewCommands.length
     ? reviewCommands.map((command) => ({ label: command, shell: command, network: false }))
     : [
-        { label: "lint", shell: "npm run lint --if-present", network: false },
-        { label: "typecheck", shell: "npm run typecheck --if-present", network: false },
-        { label: "test", shell: "npm test --if-present", network: false },
-        { label: "build", shell: "npm run build --if-present", network: false },
+        { label: "lint", shell: "npm run lint --if-present", network: false, requiresPackageJson: true },
+        { label: "typecheck", shell: "npm run typecheck --if-present", network: false, requiresPackageJson: true },
+        { label: "test", shell: "npm test --if-present", network: false, requiresPackageJson: true },
+        { label: "build", shell: "npm run build --if-present", network: false, requiresPackageJson: true },
       ];
   const selectedChecks = options.skipBuild ? checks.filter((step) => step.label !== "build") : checks;
   return [install, ...selectedChecks];
+}
+
+const PACKAGE_MANAGER_NOT_FOUND = /\b(?:corepack|pnpm|yarn|bun|npm): (?:command )?not found/;
+
+/**
+ * A non-zero exit is a code failure unless Ternary's own tooling caused it: the step hit Ternary's
+ * time limit, or Ternary's install command needs a package manager the sandbox image lacks. A 127
+ * from the repository's own install scripts (npm propagates their exit code) stays a code failure.
+ */
+export function classifyToolingFailure(step: Pick<SandboxStep, "label">, exitCode: number, elapsedMs: number, timeoutMs: number, output = "") {
+  if (exitCode === 0) return undefined;
+  if (elapsedMs >= timeoutMs) return `stopped at Ternary's ${Math.round(timeoutMs / 1000)}s time limit for this command`;
+  if (step.label === INSTALL_LABEL && exitCode === COMMAND_NOT_FOUND_EXIT_CODE && PACKAGE_MANAGER_NOT_FOUND.test(output)) {
+    return "the package manager this repository uses is not available in Ternary's sandbox image";
+  }
+  return undefined;
 }
 
 export type SandboxRunOptions = SandboxCommandPlanOptions & {
@@ -118,6 +151,12 @@ async function raceDeadline<T>(operation: Promise<T>, remainingMs: number, label
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/** Only a definite "absent" (test exit 1) drops the JavaScript steps; any other probe result keeps them. */
+async function rootPackageJsonExists(sandbox: Awaited<ReturnType<typeof Sandbox.create>>, repoDirectory: string) {
+  const probe = await sandbox.runCommand({ cmd: "bash", args: ["-lc", "test -f package.json"], cwd: repoDirectory, timeoutMs: 10_000 });
+  return probe.exitCode !== 1;
 }
 
 export async function runInSandbox(request: ReviewRequest, githubToken: string, options: SandboxRunOptions = {}): Promise<SandboxResult> {
@@ -154,34 +193,53 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
 
   const commands: SandboxResult["commands"] = [];
   const skippedCommands: string[] = [];
+  let skippedReason: string | undefined;
   try {
     const repoDirectory = request.repo;
-    const plan = sandboxCommandPlan(request.policy?.reviewCommands, options);
+    const fullPlan = sandboxCommandPlan(request.policy?.reviewCommands, options);
+    const hasPackageJson = fullPlan.some((step) => step.requiresPackageJson)
+      ? await rootPackageJsonExists(sandbox, repoDirectory)
+      : true;
+    const plan = hasPackageJson ? fullPlan : fullPlan.filter((step) => !step.requiresPackageJson);
+    const notApplicableCommands = hasPackageJson ? [] : fullPlan.filter((step) => step.requiresPackageJson).map((step) => step.label);
     for (const [index, step] of plan.entries()) {
       const remaining = remainingBudgetMs();
       if (remaining < SANDBOX_MIN_COMMAND_BUDGET_MS) {
         skippedCommands.push(...plan.slice(index).map((skipped) => skipped.label));
+        skippedReason = "sandbox time budget";
         break;
       }
       if (!step.network) await sandbox.updateNetworkPolicy("deny-all");
+      const timeoutMs = Math.min(COMMAND_TIMEOUT, Math.floor(remaining));
+      const commandStartedAt = now();
       const command = await sandbox.runCommand({
         cmd: "bash",
         args: ["-lc", step.shell],
         cwd: repoDirectory,
-        timeoutMs: Math.min(COMMAND_TIMEOUT, Math.floor(remaining)),
+        timeoutMs,
         env: { CI: "true", NEXT_TELEMETRY_DISABLED: "1" },
       });
+      const elapsedMs = now() - commandStartedAt;
       const output = trimOutput(await command.output("both"));
-      commands.push({ command: step.label, exitCode: command.exitCode, output });
+      const toolingFailure = classifyToolingFailure(step, command.exitCode, elapsedMs, timeoutMs, output);
+      commands.push({ command: step.label, exitCode: command.exitCode, output, ...(toolingFailure ? { toolingFailure } : {}) });
+      if (toolingFailure) {
+        skippedCommands.push(...plan.slice(index + 1).map((skipped) => skipped.label));
+        if (skippedCommands.length) skippedReason = `\`${step.label}\` stopped by a Ternary tooling failure`;
+        break;
+      }
       if (command.exitCode !== 0) break;
     }
 
+    const toolingFailed = commands.some((command) => command.toolingFailure);
     return {
-      ok: commands.every((command) => command.exitCode === 0),
+      ok: commands.every((command) => command.exitCode === 0 || command.toolingFailure !== undefined),
       sandboxId: sandbox.name,
       durationMs: now() - startedAt,
       commands,
-      ...(skippedCommands.length ? { status: "partial" as const, skippedCommands } : {}),
+      ...(skippedCommands.length || toolingFailed ? { status: "partial" as const } : {}),
+      ...(skippedCommands.length ? { skippedCommands, skippedReason } : {}),
+      ...(notApplicableCommands.length ? { notApplicableCommands, notApplicableReason: NO_PACKAGE_JSON_REASON } : {}),
     };
   } catch (error) {
     throw classifySandboxError(error);

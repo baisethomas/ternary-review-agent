@@ -207,4 +207,78 @@ describe("runReview", () => {
       expect.any(String),
     );
   });
+
+  function publishReviewOf(sandbox: Record<string, unknown>) {
+    mocks.getPullRequestDiff.mockResolvedValue("diff --git a/.github/workflows/scan.yml b/.github/workflows/scan.yml\n+++ b/.github/workflows/scan.yml\n+uses: scanner@new");
+    mocks.runInSandbox.mockResolvedValue(sandbox);
+    mocks.getRepositoryReviewContext.mockResolvedValue({ text: "", status: "ok", chunks: [], indexedCommitSha: null, latencyMs: 1 });
+    mocks.upsertPullRequestComment.mockResolvedValue(undefined);
+    mocks.syncFindingReviewComments.mockResolvedValue(undefined);
+    mocks.generateRoutedReview.mockImplementation(async (_diff: unknown, reviewedSandbox: unknown) => ({
+      verdict: "request_changes",
+      summary: "No material issues.",
+      findings: [],
+      sandbox: reviewedSandbox,
+      authoritativeFindings: true,
+    }));
+    return runReview(request);
+  }
+
+  it("passes the check run for a finding-free review of a repository without package.json", async () => {
+    const result = await publishReviewOf({
+      ok: true,
+      commands: [],
+      durationMs: 100,
+      sandboxId: "sandbox-1",
+      notApplicableCommands: ["install dependencies", "lint", "typecheck", "test", "build"],
+      notApplicableReason: "no package.json at the repository root, so JavaScript checks do not apply",
+    });
+
+    expect(result.verdict).toBe("approve");
+    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("success");
+    expect(markdown).toContain("➖ Not applicable (no package.json at the repository root, so JavaScript checks do not apply): `install dependencies`, `lint`, `typecheck`, `test`, `build`");
+    expect(markdown).not.toContain("❌");
+  });
+
+  it("reports a Ternary tooling failure as inconclusive instead of failing the check run", async () => {
+    const result = await publishReviewOf({
+      ok: true,
+      status: "partial",
+      commands: [
+        { command: "install dependencies", exitCode: 0, output: "" },
+        { command: "test", exitCode: 137, output: "", toolingFailure: "stopped at Ternary's 55s time limit for this command" },
+      ],
+      skippedCommands: ["build"],
+      skippedReason: "`test` stopped by a Ternary tooling failure",
+      durationMs: 100,
+      sandboxId: "sandbox-1",
+    });
+
+    expect(result.verdict).toBe("approve");
+    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("success");
+    expect(markdown).toContain("⚠️ `test` inconclusive, Ternary tooling failure (not a code failure): stopped at Ternary's 55s time limit");
+    expect(markdown).toContain("⚠️ `build` skipped (`test` stopped by a Ternary tooling failure)");
+    expect(markdown).not.toContain("❌");
+  });
+
+  it("still fails the check run when a JavaScript repository's tests genuinely fail", async () => {
+    const result = await publishReviewOf({
+      ok: false,
+      commands: [
+        { command: "install dependencies", exitCode: 0, output: "" },
+        { command: "lint", exitCode: 0, output: "" },
+        { command: "typecheck", exitCode: 0, output: "" },
+        { command: "test", exitCode: 1, output: "1 failed" },
+      ],
+      durationMs: 100,
+      sandboxId: "sandbox-1",
+    });
+
+    expect(result.verdict).toBe("request_changes");
+    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("failure");
+    expect(markdown).toContain("❌ `test`");
+  });
 });

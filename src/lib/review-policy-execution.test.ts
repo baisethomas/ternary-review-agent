@@ -83,4 +83,37 @@ rename to generated/new.ts`;
     expect(result.findings).toEqual([]);
     expect(result.verdict).toBe("approve");
   });
+
+  it("approves a finding-free review of a repository where no sandbox checks apply", () => {
+    const result = applyReviewPolicyToResult({
+      verdict: "request_changes",
+      summary: "No material findings.",
+      findings: [],
+      sandbox: { ok: true, commands: [], durationMs: 10, sandboxId: "sandbox", notApplicableCommands: ["install dependencies", "lint", "typecheck", "test", "build"], notApplicableReason: "no package.json at the repository root, so JavaScript checks do not apply" },
+    }, safeReviewPolicy);
+
+    expect(result.verdict).toBe("approve");
+  });
+
+  it("does not block a finding-free review on a Ternary tooling failure", () => {
+    const result = applyReviewPolicyToResult({
+      verdict: "request_changes",
+      summary: "No material findings.",
+      findings: [],
+      sandbox: { ok: true, status: "partial", commands: [{ command: "test", exitCode: 137, output: "", toolingFailure: "stopped at Ternary's 55s time limit for this command" }], durationMs: 10, sandboxId: "sandbox", skippedCommands: ["build"] },
+    }, safeReviewPolicy);
+
+    expect(result.verdict).not.toBe("request_changes");
+  });
+
+  it("still blocks a finding-free review when a sandbox check genuinely failed", () => {
+    const result = applyReviewPolicyToResult({
+      verdict: "approve",
+      summary: "No material findings.",
+      findings: [],
+      sandbox: { ok: false, commands: [{ command: "install dependencies", exitCode: 0, output: "" }, { command: "lint", exitCode: 1, output: "1 error" }], durationMs: 10, sandboxId: "sandbox" },
+    }, safeReviewPolicy);
+
+    expect(result.verdict).toBe("request_changes");
+  });
 });

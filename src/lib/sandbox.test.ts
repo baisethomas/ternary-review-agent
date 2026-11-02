@@ -1,6 +1,42 @@
 import { describe, expect, it, vi } from "vitest";
 import { NonRetryableReviewError } from "./review-errors";
-import { runInSandbox, sandboxCommandPlan, sandboxCredentials, compactSandboxForModel, unavailableSandboxResult } from "./sandbox";
+import { safeReviewPolicy } from "./review-policy";
+import { applyReviewPolicyToResult } from "./review-policy-execution";
+import { classifyToolingFailure, runInSandbox, sandboxCommandPlan, sandboxCredentials, compactSandboxForModel, unavailableSandboxResult } from "./sandbox";
+
+const PACKAGE_JSON_PROBE = "test -f package.json";
+
+const sandboxRequest = {
+  owner: "baisethomas",
+  repo: "Ratchet",
+  pullNumber: 15,
+  installationId: 1,
+  headSha: "10b64d174bc03c2a588cffa7c3162daf8621e20a",
+  cloneUrl: "https://github.com/baisethomas/Ratchet.git",
+};
+
+type ScriptedStep = { exitCode: number; output?: string; elapsedMs?: number };
+
+/** Sandbox whose commands resolve by shell text; `clock` advances by each step's simulated elapsed time. */
+async function scriptSandbox(script: (shell: string) => ScriptedStep) {
+  const { Sandbox } = await import("@vercel/sandbox");
+  const clock = { now: 0 };
+  const shells: string[] = [];
+  const runCommand = vi.fn(async ({ args }: { args: string[] }) => {
+    const shell = args[1] ?? "";
+    shells.push(shell);
+    const step = script(shell);
+    clock.now += step.elapsedMs ?? 1_000;
+    return { exitCode: step.exitCode, output: async () => step.output ?? "" };
+  });
+  vi.mocked(Sandbox.create).mockResolvedValueOnce({
+    name: "sandbox-scripted",
+    updateNetworkPolicy: vi.fn(async () => undefined),
+    runCommand,
+    stop: vi.fn(async () => undefined),
+  } as never);
+  return { clock, shells };
+}
 
 vi.mock("@vercel/sandbox", () => {
   class APIError extends Error {}
@@ -75,8 +111,8 @@ describe("sandbox review policy", () => {
       cloneUrl: "https://github.com/ternary/agent.git",
     };
     const { Sandbox } = await import("@vercel/sandbox");
-    const runCommand = vi.fn(async () => {
-      clock += 40_000;
+    const runCommand = vi.fn(async ({ args }: { args: string[] }) => {
+      if (args[1] !== PACKAGE_JSON_PROBE) clock += 40_000;
       return { exitCode: 0, output: async () => "ok" };
     });
     vi.mocked(Sandbox.create).mockResolvedValueOnce({
@@ -105,5 +141,122 @@ describe("sandbox review policy", () => {
     const compact = compactSandboxForModel(sandbox);
     expect(compact.commands[0]?.output.length).toBeLessThan(2000);
     expect(compact.commands[0]?.output).toContain("truncated for model input");
+  });
+});
+
+describe("sandbox step applicability and tooling failures", () => {
+  it("runs no npm steps on a repository without package.json and reports no failure", async () => {
+    const { shells } = await scriptSandbox((shell) => (shell === PACKAGE_JSON_PROBE ? { exitCode: 1 } : { exitCode: 254, output: "npm error enoent Could not read package.json" }));
+
+    const result = await runInSandbox(sandboxRequest, "token");
+
+    expect(shells).toEqual([PACKAGE_JSON_PROBE]);
+    expect(result.ok).toBe(true);
+    expect(result.status).toBeUndefined();
+    expect(result.commands).toEqual([]);
+    expect(result.notApplicableCommands).toEqual(["install dependencies", "lint", "typecheck", "test", "build"]);
+    expect(result.notApplicableReason).toContain("no package.json");
+  });
+
+  it("still runs owner-configured review commands on a repository without package.json", async () => {
+    const { shells } = await scriptSandbox((shell) => ({ exitCode: shell === PACKAGE_JSON_PROBE ? 1 : 0 }));
+
+    const result = await runInSandbox({ ...sandboxRequest, policy: { automaticReview: { opened: true, reopened: true, synchronize: true, readyForReview: true }, minimumSeverity: "suggestion", model: "test/model", reviewCommands: ["bash tests/run.sh"], excludedPaths: [] } }, "token");
+
+    expect(shells).toEqual([PACKAGE_JSON_PROBE, "bash tests/run.sh"]);
+    expect(result.commands.map((command) => command.command)).toEqual(["bash tests/run.sh"]);
+    expect(result.notApplicableCommands).toEqual(["install dependencies"]);
+    expect(result.ok).toBe(true);
+  });
+
+  it("keeps the JavaScript steps when the package.json probe is inconclusive", async () => {
+    const { shells } = await scriptSandbox((shell) => ({ exitCode: shell === PACKAGE_JSON_PROBE ? 2 : 0 }));
+
+    const result = await runInSandbox(sandboxRequest, "token", { skipBuild: true });
+
+    expect(shells.slice(1)).toEqual([expect.stringContaining("npm ci"), "npm run lint --if-present", "npm run typecheck --if-present", "npm test --if-present"]);
+    expect(result.notApplicableCommands).toBeUndefined();
+  });
+
+  it("reports genuinely failing lint in a JavaScript repository as a code failure", async () => {
+    await scriptSandbox((shell) => (shell === "npm run lint --if-present" ? { exitCode: 1, output: "src/index.js\n  1:7  error  'unused' is assigned a value but never used  no-unused-vars" } : { exitCode: 0 }));
+
+    const result = await runInSandbox(sandboxRequest, "token");
+
+    expect(result.ok).toBe(false);
+    expect(result.commands.map((command) => [command.command, command.exitCode, command.toolingFailure])).toEqual([
+      ["install dependencies", 0, undefined],
+      ["lint", 1, undefined],
+    ]);
+    expect(result.status).toBeUndefined();
+  });
+
+  it("reports genuinely failing tests in a JavaScript repository as a code failure", async () => {
+    const { clock } = await scriptSandbox((shell) => (shell === "npm test --if-present" ? { exitCode: 1, output: "1 failed" } : { exitCode: 0 }));
+
+    const result = await runInSandbox(sandboxRequest, "token", { now: () => clock.now });
+
+    expect(result.ok).toBe(false);
+    expect(result.commands.at(-1)).toMatchObject({ command: "test", exitCode: 1 });
+    expect(result.commands.at(-1)?.toolingFailure).toBeUndefined();
+  });
+
+  it("treats a step stopped at Ternary's per-command time limit as a tooling failure and skips the rest", async () => {
+    const { clock } = await scriptSandbox((shell) => (shell === "npm test --if-present" ? { exitCode: 137, elapsedMs: 55_000 } : { exitCode: 0 }));
+
+    const result = await runInSandbox(sandboxRequest, "token", { now: () => clock.now });
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe("partial");
+    expect(result.commands.at(-1)).toMatchObject({ command: "test", exitCode: 137, toolingFailure: expect.stringContaining("Ternary's 55s time limit") });
+    expect(result.skippedCommands).toEqual(["build"]);
+    expect(result.skippedReason).toContain("Ternary tooling failure");
+  });
+
+  it("treats a missing package manager in Ternary's install step as a tooling failure", async () => {
+    await scriptSandbox((shell) => (shell.includes("bun install") ? { exitCode: 127, output: "bash: bun: command not found" } : { exitCode: 0 }));
+
+    const result = await runInSandbox(sandboxRequest, "token");
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe("partial");
+    expect(result.commands).toEqual([expect.objectContaining({ command: "install dependencies", exitCode: 127, toolingFailure: expect.stringContaining("not available in Ternary's sandbox image") })]);
+    expect(result.skippedCommands).toEqual(["lint", "typecheck", "test", "build"]);
+  });
+
+  it("a finding-free review of a repository without package.json is not blocked by the sandbox", async () => {
+    await scriptSandbox((shell) => (shell === PACKAGE_JSON_PROBE ? { exitCode: 1 } : { exitCode: 254 }));
+    const sandbox = await runInSandbox(sandboxRequest, "token");
+
+    const review = applyReviewPolicyToResult({ verdict: "request_changes", summary: "No material findings.", findings: [], sandbox }, safeReviewPolicy);
+
+    expect(review.verdict).toBe("approve");
+  });
+
+  it("a finding-free review of a JavaScript repository with failing tests is still blocked by the sandbox", async () => {
+    const { clock } = await scriptSandbox((shell) => (shell === "npm test --if-present" ? { exitCode: 1, output: "1 failed" } : { exitCode: 0 }));
+    const sandbox = await runInSandbox(sandboxRequest, "token", { now: () => clock.now });
+
+    const review = applyReviewPolicyToResult({ verdict: "approve", summary: "No material findings.", findings: [], sandbox }, safeReviewPolicy);
+
+    expect(review.verdict).toBe("request_changes");
+  });
+
+  it("classifies only Ternary-caused exits as tooling failures", () => {
+    expect(classifyToolingFailure({ label: "test" }, 0, 60_000, 55_000)).toBeUndefined();
+    expect(classifyToolingFailure({ label: "test" }, 1, 2_000, 55_000)).toBeUndefined();
+    expect(classifyToolingFailure({ label: "lint" }, 127, 2_000, 55_000)).toBeUndefined();
+    expect(classifyToolingFailure({ label: "test" }, 1, 55_000, 55_000)).toContain("time limit");
+    expect(classifyToolingFailure({ label: "install dependencies" }, 127, 2_000, 55_000, "bash: line 1: bun: command not found")).toContain("sandbox image");
+  });
+
+  it("keeps a 127 from the repository's own install script as a code failure", async () => {
+    await scriptSandbox((shell) => (shell.includes("npm ci") ? { exitCode: 127, output: "> postinstall\n> codegen\nsh: 1: codegen: not found\nnpm error code 127" } : { exitCode: 0 }));
+
+    const result = await runInSandbox(sandboxRequest, "token");
+
+    expect(result.ok).toBe(false);
+    expect(result.commands).toEqual([expect.objectContaining({ command: "install dependencies", exitCode: 127 })]);
+    expect(result.commands[0]?.toolingFailure).toBeUndefined();
   });
 });
