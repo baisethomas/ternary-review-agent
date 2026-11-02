@@ -242,10 +242,32 @@ describe("sandbox step applicability and tooling failures", () => {
     expect(review.verdict).toBe("request_changes");
   });
 
+  // Repro of ternary-review-agent#68 (docs-only PR): `npm install` finished, then was SIGKILLed (137).
+  const pr68InstallOutput = "\nadded 447 packages, and audited 448 packages in 1m\n\n164 packages are looking for funding\n";
+
+  it.each([
+    ["at Ternary's per-command time limit", 60_000, "Ternary's 55s time limit"],
+    ["before Ternary's time limit (memory)", 30_000, "SIGKILL, exit 137"],
+  ])("a finding-free docs-only review whose install was SIGKILLed %s is not blocked", async (_case, elapsedMs, reason) => {
+    const { clock, shells } = await scriptSandbox((shell) => (shell.includes("npm ci") ? { exitCode: 137, output: pr68InstallOutput, elapsedMs } : { exitCode: 0 }));
+    const sandbox = await runInSandbox({ ...sandboxRequest, owner: "baisethomas", repo: "ternary-review-agent", pullNumber: 68 }, "token", { now: () => clock.now });
+
+    const review = applyReviewPolicyToResult({ verdict: "request_changes", summary: "Docs-only change; no material findings.", findings: [], sandbox }, safeReviewPolicy);
+
+    expect(shells).toEqual([PACKAGE_JSON_PROBE, expect.stringContaining("npm ci")]);
+    expect(sandbox.ok).toBe(true);
+    expect(sandbox.status).toBe("partial");
+    expect(sandbox.commands).toEqual([expect.objectContaining({ command: "install dependencies", exitCode: 137, toolingFailure: expect.stringContaining(reason) })]);
+    expect(sandbox.skippedCommands).toEqual(["lint", "typecheck", "test", "build"]);
+    expect(review.verdict).toBe("approve");
+  });
+
   it("classifies only Ternary-caused exits as tooling failures", () => {
     expect(classifyToolingFailure({ label: "test" }, 0, 60_000, 55_000)).toBeUndefined();
     expect(classifyToolingFailure({ label: "test" }, 1, 2_000, 55_000)).toBeUndefined();
     expect(classifyToolingFailure({ label: "lint" }, 127, 2_000, 55_000)).toBeUndefined();
+    expect(classifyToolingFailure({ label: "test" }, 134, 2_000, 55_000)).toBeUndefined();
+    expect(classifyToolingFailure({ label: "build" }, 137, 20_000, 55_000)).toContain("SIGKILL");
     expect(classifyToolingFailure({ label: "test" }, 1, 55_000, 55_000)).toContain("time limit");
     expect(classifyToolingFailure({ label: "install dependencies" }, 127, 2_000, 55_000, "bash: line 1: bun: command not found")).toContain("sandbox image");
   });
