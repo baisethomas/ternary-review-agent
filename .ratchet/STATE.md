@@ -55,13 +55,16 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
   55 s `COMMAND_TIMEOUT`) and was SIGKILLed; most likely Ternary's own
   per-command limit, not memory (2 vCPU = 4 GB). Docs-only step skipping was
   rejected: `review-invocation-limits.test.ts` reads `README.md`. Gate RAN:
-  lint clean, 1007 passed / 1 failed (pre-existing `cli/src/capture.test.ts`
+  lint clean, 1009 passed / 1 failed (pre-existing `cli/src/capture.test.ts`
   hard-link test, fails identically on untouched main on this VM) / 9 skipped,
   build green; reproduce-revert-restore RAN for every behavior. Local
   `runReview` harness (I/O stubbed, steps run with local bash) reproduced ⛔
   on main and ✅ on the fix for Ratchet `10b64d1` and for #68 (install
   replayed from the production check run); a JS fixture with a real failing
-  test stays ⛔. **Watch:** this repo's own cold `npm ci` is ~55–60 s, so
+  test stays ⛔. Fix PR #69 round 1: Ternary ⛔ — one valid warning (probe
+  not bounded by `deadlineAt`, fixed) plus production's own install SIGKILL
+  (137, "in 1m"), i.e. the defect itself, still live because production runs
+  main. **Watch:** this repo's own cold `npm ci` is ~55–60 s, so
   every Ternary self-review can hit the limit until the fix is deployed — and
   afterwards such reviews pass with tests unrun (⚠️); raising
   `COMMAND_TIMEOUT` for install is the follow-up. **Not verified:**
