@@ -17,17 +17,17 @@ export type SandboxCommandResult = {
   command: string;
   exitCode: number;
   output: string;
-  /** Set when the step failed because of a limit in Ternary's own tooling, not the code under review. */
+  /** Set only when Ternary can prove the step failed on its own side. Repo-command results never set this. */
   toolingFailure?: string;
 };
 
 export type SandboxResult = {
-  /** True when no executed check failed because of the code under review; unrun or tooling-failed checks are reported via status, not ok. */
+  /** True when every executed check exited 0. Unrun checks (not applicable, skipped before start, unavailable) are reported via status, not ok. */
   ok: boolean;
   commands: SandboxCommandResult[];
   durationMs: number;
   sandboxId: string;
-  /** Absent means "complete". "partial": the time budget or a Ternary tooling failure cut checks short. "unavailable": sandbox could not run at all. */
+  /** Absent means "complete". "partial": Ternary's budget cut remaining checks short before they started. "unavailable": sandbox could not run at all. */
   status?: "complete" | "partial" | "unavailable";
   skippedCommands?: string[];
   skippedReason?: string;

@@ -95,15 +95,26 @@ rename to generated/new.ts`;
     expect(result.verdict).toBe("approve");
   });
 
-  it("does not block a finding-free review on a Ternary tooling failure", () => {
+  it("does not block a finding-free review when the sandbox never ran (Ternary-side unavailable)", () => {
     const result = applyReviewPolicyToResult({
       verdict: "request_changes",
       summary: "No material findings.",
       findings: [],
-      sandbox: { ok: true, status: "partial", commands: [{ command: "test", exitCode: 137, output: "", toolingFailure: "stopped at Ternary's 55s time limit for this command" }], durationMs: 10, sandboxId: "sandbox", skippedCommands: ["build"] },
+      sandbox: { ok: true, status: "unavailable", commands: [], durationMs: 0, sandboxId: "unavailable", unavailableReason: "quota exhausted" },
     }, safeReviewPolicy);
 
     expect(result.verdict).not.toBe("request_changes");
+  });
+
+  it("blocks a finding-free review when a repo command was killed at the time limit", () => {
+    const result = applyReviewPolicyToResult({
+      verdict: "approve",
+      summary: "No material findings.",
+      findings: [],
+      sandbox: { ok: false, commands: [{ command: "test", exitCode: 137, output: "" }], durationMs: 10, sandboxId: "sandbox" },
+    }, safeReviewPolicy);
+
+    expect(result.verdict).toBe("request_changes");
   });
 
   it("still blocks a finding-free review when a sandbox check genuinely failed", () => {

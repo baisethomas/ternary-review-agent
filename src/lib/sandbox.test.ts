@@ -224,16 +224,48 @@ describe("sandbox step applicability and tooling failures", () => {
     expect(result.commands.at(-1)?.toolingFailure).toBeUndefined();
   });
 
-  it("treats a step stopped at Ternary's per-command time limit as a tooling failure and skips the rest", async () => {
+  it("blocks a hanging test script instead of treating the time-limit kill as a tooling failure", async () => {
     const { clock } = await scriptSandbox((shell) => (shell === "npm test --if-present" ? { exitCode: 137, elapsedMs: 55_000 } : { exitCode: 0 }));
+    const sandbox = await runInSandbox(sandboxRequest, "token", { now: () => clock.now });
 
-    const result = await runInSandbox(sandboxRequest, "token", { now: () => clock.now });
+    const review = applyReviewPolicyToResult({ verdict: "approve", summary: "No material findings.", findings: [], sandbox }, safeReviewPolicy);
 
-    expect(result.ok).toBe(true);
-    expect(result.status).toBe("partial");
-    expect(result.commands.at(-1)).toMatchObject({ command: "test", exitCode: 137, toolingFailure: expect.stringContaining("Ternary's 55s time limit") });
-    expect(result.skippedCommands).toEqual(["build"]);
-    expect(result.skippedReason).toContain("Ternary tooling failure");
+    expect(sandbox.ok).toBe(false);
+    expect(sandbox.commands.at(-1)).toMatchObject({ command: "test", exitCode: 137 });
+    expect(sandbox.commands.at(-1)?.toolingFailure).toBeUndefined();
+    expect(sandbox.commands.map((command) => command.command)).not.toContain("build");
+    expect(review.verdict).toBe("request_changes");
+  });
+
+  it("blocks a hanging postinstall and does not skip remaining checks into an approve", async () => {
+    const { clock } = await scriptSandbox((shell) => (shell.includes("npm ci") ? { exitCode: 137, output: "> postinstall\n> sleep 9999", elapsedMs: 55_000 } : { exitCode: 0 }));
+    const sandbox = await runInSandbox(sandboxRequest, "token", { now: () => clock.now });
+
+    const review = applyReviewPolicyToResult({ verdict: "approve", summary: "No material findings.", findings: [], sandbox }, safeReviewPolicy);
+
+    expect(sandbox.ok).toBe(false);
+    expect(sandbox.commands).toEqual([expect.objectContaining({ command: "install dependencies", exitCode: 137 })]);
+    expect(sandbox.commands[0]?.toolingFailure).toBeUndefined();
+    expect(sandbox.commands.map((command) => command.command)).toEqual(["install dependencies"]);
+    expect(review.verdict).toBe("request_changes");
+  });
+
+  it("blocks a slow late failure when timeoutMs has shrunk to the remaining budget", async () => {
+    const { clock, timeouts } = await scriptSandbox((shell) => {
+      if (shell === PACKAGE_JSON_PROBE) return { exitCode: 0, elapsedMs: 0 };
+      if (shell.includes("npm ci")) return { exitCode: 0, elapsedMs: 12_000 };
+      if (shell === "npm run lint --if-present") return { exitCode: 1, output: "1 error", elapsedMs: 8_000 };
+      return { exitCode: 0 };
+    });
+    const sandbox = await runInSandbox(sandboxRequest, "token", { skipBuild: true, deadlineAt: 20_000, now: () => clock.now });
+
+    const review = applyReviewPolicyToResult({ verdict: "approve", summary: "No material findings.", findings: [], sandbox }, safeReviewPolicy);
+
+    expect(timeouts).toEqual([10_000, 20_000, 8_000]);
+    expect(sandbox.ok).toBe(false);
+    expect(sandbox.commands.at(-1)).toMatchObject({ command: "lint", exitCode: 1 });
+    expect(sandbox.commands.at(-1)?.toolingFailure).toBeUndefined();
+    expect(review.verdict).toBe("request_changes");
   });
 
   it("keeps an install exit 127 that claims a missing package manager as a blocking code failure", async () => {
@@ -267,19 +299,19 @@ describe("sandbox step applicability and tooling failures", () => {
   // Repro of ternary-review-agent#68 (docs-only PR): `npm install` finished, then was SIGKILLed (137).
   const pr68InstallOutput = "\nadded 447 packages, and audited 448 packages in 1m\n\n164 packages are looking for funding\n";
 
-  it("a finding-free docs-only review whose install ran into Ternary's time limit and was SIGKILLed is not blocked", async () => {
-    // npm reported "in 1m" (>= 60s) against Ternary's 55s command limit.
+  it("blocks a docs-only review whose install was killed at the time limit — the repo command is untrusted", async () => {
+    // npm reported "in 1m" (>= 60s) against Ternary's 55s command limit. The sandbox API
+    // does not prove the kill was Ternary's, so this stays a blocking code failure.
     const { clock, shells } = await scriptSandbox((shell) => (shell.includes("npm ci") ? { exitCode: 137, output: pr68InstallOutput, elapsedMs: 60_000 } : { exitCode: 0 }));
     const sandbox = await runInSandbox({ ...sandboxRequest, owner: "baisethomas", repo: "ternary-review-agent", pullNumber: 68 }, "token", { now: () => clock.now });
 
-    const review = applyReviewPolicyToResult({ verdict: "request_changes", summary: "Docs-only change; no material findings.", findings: [], sandbox }, safeReviewPolicy);
+    const review = applyReviewPolicyToResult({ verdict: "approve", summary: "Docs-only change; no material findings.", findings: [], sandbox }, safeReviewPolicy);
 
     expect(shells).toEqual([PACKAGE_JSON_PROBE, expect.stringContaining("npm ci")]);
-    expect(sandbox.ok).toBe(true);
-    expect(sandbox.status).toBe("partial");
-    expect(sandbox.commands).toEqual([expect.objectContaining({ command: "install dependencies", exitCode: 137, toolingFailure: expect.stringContaining("Ternary's 55s time limit") })]);
-    expect(sandbox.skippedCommands).toEqual(["lint", "typecheck", "test", "build"]);
-    expect(review.verdict).toBe("approve");
+    expect(sandbox.ok).toBe(false);
+    expect(sandbox.commands).toEqual([expect.objectContaining({ command: "install dependencies", exitCode: 137 })]);
+    expect(sandbox.commands[0]?.toolingFailure).toBeUndefined();
+    expect(review.verdict).toBe("request_changes");
   });
 
   it("keeps a repository-controlled exit 137 before Ternary's time limit as a blocking code failure", async () => {
@@ -294,14 +326,8 @@ describe("sandbox step applicability and tooling failures", () => {
     expect(review.verdict).toBe("request_changes");
   });
 
-  it("classifies only Ternary-caused exits as tooling failures", () => {
-    expect(classifyToolingFailure(0, 60_000, 55_000)).toBeUndefined();
-    expect(classifyToolingFailure(1, 2_000, 55_000)).toBeUndefined();
-    expect(classifyToolingFailure(127, 2_000, 55_000)).toBeUndefined();
-    expect(classifyToolingFailure(134, 2_000, 55_000)).toBeUndefined();
-    expect(classifyToolingFailure(137, 20_000, 55_000)).toBeUndefined();
-    expect(classifyToolingFailure(137, 60_000, 55_000)).toContain("time limit");
-    expect(classifyToolingFailure(1, 55_000, 55_000)).toContain("time limit");
+  it("never classifies a repo-command result as a Ternary tooling failure", () => {
+    expect(classifyToolingFailure()).toBeUndefined();
   });
 
   it("keeps a 127 from the repository's own install script as a code failure", async () => {

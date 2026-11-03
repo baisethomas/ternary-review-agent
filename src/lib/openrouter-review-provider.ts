@@ -219,8 +219,8 @@ function fallbackReview(sandbox: SandboxResult): ReviewResult {
       ? "One or more sandbox checks failed."
       : sandbox.status === "unavailable"
         ? "Sandbox checks were unavailable. AI review is disabled until OPENROUTER_API_KEY is configured."
-        : sandbox.commands.some((command) => command.toolingFailure)
-          ? "Sandbox checks were inconclusive because of a Ternary tooling failure. AI review is disabled until OPENROUTER_API_KEY is configured."
+        : sandbox.status === "partial"
+          ? "Sandbox checks were incomplete because of a Ternary limit. AI review is disabled until OPENROUTER_API_KEY is configured."
           : sandbox.commands.length === 0 && sandbox.notApplicableCommands?.length
             ? "No sandbox checks apply to this repository. AI review is disabled until OPENROUTER_API_KEY is configured."
             : "Sandbox checks passed. AI review is disabled until OPENROUTER_API_KEY is configured.",

@@ -115,13 +115,13 @@ export function sandboxCommandPlan(reviewCommands: string[] = [], options: Sandb
 }
 
 /**
- * A non-zero exit is a code failure unless the step ran into Ternary's own time limit. Exit codes, output,
- * and lockfiles are never trusted as tooling signals: the sandbox API reports no termination reason, and the
- * code under review controls all three (npm propagates its lifecycle scripts' exit codes and output).
+ * A repo-command result is never a Ternary tooling failure. Exit codes, elapsed time, output, and lockfiles
+ * are all under the control of the code under review (a hang, `exit 137`, a slow late failure at a shrunk
+ * timeout). The sandbox API reports no termination reason, so a time-limit kill cannot be proven to be
+ * Ternary's. Non-blocking inconclusive is reserved for Ternary-side failures that never ran repo commands
+ * (`unavailableSandboxResult`: sandbox creation, platform errors, budget too thin to start).
  */
-export function classifyToolingFailure(exitCode: number, elapsedMs: number, timeoutMs: number) {
-  if (exitCode === 0) return undefined;
-  if (elapsedMs >= timeoutMs) return `stopped at Ternary's ${Math.round(timeoutMs / 1000)}s time limit for this command`;
+export function classifyToolingFailure() {
   return undefined;
 }
 
@@ -207,7 +207,6 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
       }
       if (!step.network) await sandbox.updateNetworkPolicy("deny-all");
       const timeoutMs = Math.min(COMMAND_TIMEOUT, Math.floor(remaining));
-      const commandStartedAt = now();
       const command = await sandbox.runCommand({
         cmd: "bash",
         args: ["-lc", step.shell],
@@ -215,26 +214,17 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
         timeoutMs,
         env: { CI: "true", NEXT_TELEMETRY_DISABLED: "1" },
       });
-      const elapsedMs = now() - commandStartedAt;
       const output = trimOutput(await command.output("both"));
-      const toolingFailure = classifyToolingFailure(command.exitCode, elapsedMs, timeoutMs);
-      commands.push({ command: step.label, exitCode: command.exitCode, output, ...(toolingFailure ? { toolingFailure } : {}) });
-      if (toolingFailure) {
-        skippedCommands.push(...plan.slice(index + 1).map((skipped) => skipped.label));
-        if (skippedCommands.length) skippedReason = `\`${step.label}\` stopped by a Ternary tooling failure`;
-        break;
-      }
+      commands.push({ command: step.label, exitCode: command.exitCode, output });
       if (command.exitCode !== 0) break;
     }
 
-    const toolingFailed = commands.some((command) => command.toolingFailure);
     return {
-      ok: commands.every((command) => command.exitCode === 0 || command.toolingFailure !== undefined),
+      ok: commands.every((command) => command.exitCode === 0),
       sandboxId: sandbox.name,
       durationMs: now() - startedAt,
       commands,
-      ...(skippedCommands.length || toolingFailed ? { status: "partial" as const } : {}),
-      ...(skippedCommands.length ? { skippedCommands, skippedReason } : {}),
+      ...(skippedCommands.length ? { status: "partial" as const, skippedCommands, skippedReason } : {}),
       ...(notApplicableCommands.length ? { notApplicableCommands, notApplicableReason: NO_PACKAGE_JSON_REASON } : {}),
     };
   } catch (error) {

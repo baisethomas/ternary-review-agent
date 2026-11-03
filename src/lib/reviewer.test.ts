@@ -241,26 +241,24 @@ describe("runReview", () => {
     expect(markdown).not.toContain("❌");
   });
 
-  it("reports a Ternary tooling failure as inconclusive instead of failing the check run", async () => {
+  it("fails the check run when a test hangs until the time limit", async () => {
     const result = await publishReviewOf({
-      ok: true,
-      status: "partial",
+      ok: false,
       commands: [
         { command: "install dependencies", exitCode: 0, output: "" },
-        { command: "test", exitCode: 137, output: "", toolingFailure: "stopped at Ternary's 55s time limit for this command" },
+        { command: "lint", exitCode: 0, output: "" },
+        { command: "typecheck", exitCode: 0, output: "" },
+        { command: "test", exitCode: 137, output: "" },
       ],
-      skippedCommands: ["build"],
-      skippedReason: "`test` stopped by a Ternary tooling failure",
       durationMs: 100,
       sandboxId: "sandbox-1",
     });
 
-    expect(result.verdict).toBe("approve");
+    expect(result.verdict).toBe("request_changes");
     const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
-    expect(conclusion).toBe("success");
-    expect(markdown).toContain("⚠️ `test` inconclusive, Ternary tooling failure (not a code failure): stopped at Ternary's 55s time limit");
-    expect(markdown).toContain("⚠️ `build` skipped (`test` stopped by a Ternary tooling failure)");
-    expect(markdown).not.toContain("❌");
+    expect(conclusion).toBe("failure");
+    expect(markdown).toContain("❌ `test`");
+    expect(markdown).not.toContain("inconclusive");
   });
 
   it("still fails the check run when a JavaScript repository's tests genuinely fail", async () => {
