@@ -106,6 +106,17 @@ rename to generated/new.ts`;
     expect(result.verdict).not.toBe("request_changes");
   });
 
+  it("blocks a finding-free review when needed sandbox steps were skipped for time budget", () => {
+    const result = applyReviewPolicyToResult({
+      verdict: "approve",
+      summary: "No material findings.",
+      findings: [],
+      sandbox: { ok: false, status: "partial", commands: [{ command: "install dependencies", exitCode: 0, output: "" }, { command: "lint", exitCode: 0, output: "" }], durationMs: 10, sandboxId: "sandbox", skippedCommands: ["typecheck", "test"], skippedReason: "sandbox time budget" },
+    }, safeReviewPolicy);
+
+    expect(result.verdict).toBe("request_changes");
+  });
+
   it("blocks a finding-free review when a repo command was killed at the time limit", () => {
     const result = applyReviewPolicyToResult({
       verdict: "approve",

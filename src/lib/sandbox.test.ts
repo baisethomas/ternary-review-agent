@@ -15,7 +15,7 @@ const sandboxRequest = {
   cloneUrl: "https://github.com/baisethomas/Ratchet.git",
 };
 
-type ScriptedStep = { exitCode: number; output?: string; elapsedMs?: number };
+type ScriptedStep = { exitCode: number; output?: string; elapsedMs?: number; throwError?: Error };
 
 /** Sandbox whose commands resolve by shell text; `clock` advances by each step's simulated elapsed time. */
 async function scriptSandbox(script: (shell: string) => ScriptedStep) {
@@ -29,6 +29,7 @@ async function scriptSandbox(script: (shell: string) => ScriptedStep) {
     timeouts.push(timeoutMs);
     const step = script(shell);
     clock.now += step.elapsedMs ?? 1_000;
+    if (step.throwError) throw step.throwError;
     return { exitCode: step.exitCode, output: async () => step.output ?? "" };
   });
   vi.mocked(Sandbox.create).mockResolvedValueOnce({
@@ -102,7 +103,7 @@ describe("sandbox review policy", () => {
     expect(result.commands).toEqual([]);
   });
 
-  it("skips remaining checks once the deadline budget is exhausted and reports a partial result", async () => {
+  it("blocks when the deadline budget skips remaining checks the repository still needs", async () => {
     let clock = 0;
     const request = {
       owner: "ternary",
@@ -125,12 +126,14 @@ describe("sandbox review policy", () => {
     } as never);
 
     const result = await runInSandbox(request, "token", { skipBuild: true, deadlineAt: 80_000, now: () => clock });
+    const review = applyReviewPolicyToResult({ verdict: "approve", summary: "No material findings.", findings: [], sandbox: result }, safeReviewPolicy);
 
-    // install (40s) + lint (40s) exhaust the 80s budget; typecheck and test are skipped.
+    // install (40s) + lint (40s) exhaust the 80s budget; typecheck and test never run.
     expect(result.commands.map((command) => command.command)).toEqual(["install dependencies", "lint"]);
     expect(result.status).toBe("partial");
     expect(result.skippedCommands).toEqual(["typecheck", "test"]);
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(review.verdict).toBe("request_changes");
   });
 
   it("compacts sandbox command output for model prompts", () => {
@@ -186,7 +189,7 @@ describe("sandbox step applicability and tooling failures", () => {
     const result = await runInSandbox(sandboxRequest, "token", { skipBuild: true, deadlineAt: 4_000, now: () => clock.now });
 
     expect(shells).toEqual([]);
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
     expect(result.status).toBe("partial");
     expect(result.skippedCommands).toEqual(["install dependencies", "lint", "typecheck", "test"]);
     expect(result.notApplicableCommands).toBeUndefined();
@@ -328,6 +331,25 @@ describe("sandbox step applicability and tooling failures", () => {
 
   it("never classifies a repo-command result as a Ternary tooling failure", () => {
     expect(classifyToolingFailure()).toBeUndefined();
+  });
+
+  it("blocks when the sandbox SDK throws during a repo command instead of treating the sandbox as unavailable", async () => {
+    await scriptSandbox((shell) => (shell.includes("npm ci") ? { exitCode: 1, throwError: new Error("sandbox command aborted") } : { exitCode: 0 }));
+
+    const sandbox = await runInSandbox(sandboxRequest, "token");
+    const review = applyReviewPolicyToResult({ verdict: "approve", summary: "No material findings.", findings: [], sandbox }, safeReviewPolicy);
+
+    expect(sandbox.ok).toBe(false);
+    expect(sandbox.status).toBe("partial");
+    expect(sandbox.commands).toEqual([expect.objectContaining({ command: "install dependencies", exitCode: 1, output: expect.stringContaining("sandbox command aborted") })]);
+    expect(sandbox.skippedCommands).toEqual(["lint", "typecheck", "test", "build"]);
+    expect(review.verdict).toBe("request_changes");
+  });
+
+  it("still throws when the sandbox SDK fails before any repo command, so the reviewer can mark it unavailable", async () => {
+    await scriptSandbox((shell) => (shell === PACKAGE_JSON_PROBE ? { exitCode: 1, throwError: new Error("sandbox create raced the probe") } : { exitCode: 0 }));
+
+    await expect(runInSandbox(sandboxRequest, "token")).rejects.toThrow("sandbox create raced the probe");
   });
 
   it("keeps a 127 from the repository's own install script as a code failure", async () => {

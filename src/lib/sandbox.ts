@@ -120,6 +120,7 @@ export function sandboxCommandPlan(reviewCommands: string[] = [], options: Sandb
  * timeout). The sandbox API reports no termination reason, so a time-limit kill cannot be proven to be
  * Ternary's. Non-blocking inconclusive is reserved for Ternary-side failures that never ran repo commands
  * (`unavailableSandboxResult`: sandbox creation, platform errors, budget too thin to start).
+ * Skipping a step the repository still needs, or an SDK throw during a repo command, sets ok: false.
  */
 export function classifyToolingFailure() {
   return undefined;
@@ -188,6 +189,10 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
   const commands: SandboxResult["commands"] = [];
   const skippedCommands: string[] = [];
   let skippedReason: string | undefined;
+  let startedRepoCommand = false;
+  let currentStepLabel: string | undefined;
+  let plan: ReturnType<typeof sandboxCommandPlan> = [];
+  let notApplicableCommands: string[] = [];
   try {
     const repoDirectory = request.repo;
     const fullPlan = sandboxCommandPlan(request.policy?.reviewCommands, options);
@@ -196,8 +201,8 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
     const hasPackageJson = fullPlan.some((step) => step.requiresPackageJson) && probeBudgetMs >= SANDBOX_MIN_COMMAND_BUDGET_MS
       ? await rootPackageJsonExists(sandbox, repoDirectory, Math.min(PACKAGE_JSON_PROBE_TIMEOUT, Math.floor(probeBudgetMs)))
       : true;
-    const plan = hasPackageJson ? fullPlan : fullPlan.filter((step) => !step.requiresPackageJson);
-    const notApplicableCommands = hasPackageJson ? [] : fullPlan.filter((step) => step.requiresPackageJson).map((step) => step.label);
+    plan = hasPackageJson ? fullPlan : fullPlan.filter((step) => !step.requiresPackageJson);
+    notApplicableCommands = hasPackageJson ? [] : fullPlan.filter((step) => step.requiresPackageJson).map((step) => step.label);
     for (const [index, step] of plan.entries()) {
       const remaining = remainingBudgetMs();
       if (remaining < SANDBOX_MIN_COMMAND_BUDGET_MS) {
@@ -205,6 +210,8 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
         skippedReason = "sandbox time budget";
         break;
       }
+      startedRepoCommand = true;
+      currentStepLabel = step.label;
       if (!step.network) await sandbox.updateNetworkPolicy("deny-all");
       const timeoutMs = Math.min(COMMAND_TIMEOUT, Math.floor(remaining));
       const command = await sandbox.runCommand({
@@ -220,7 +227,7 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
     }
 
     return {
-      ok: commands.every((command) => command.exitCode === 0),
+      ok: commands.every((command) => command.exitCode === 0) && skippedCommands.length === 0,
       sandboxId: sandbox.name,
       durationMs: now() - startedAt,
       commands,
@@ -228,7 +235,23 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
       ...(notApplicableCommands.length ? { notApplicableCommands, notApplicableReason: NO_PACKAGE_JSON_REASON } : {}),
     };
   } catch (error) {
-    throw classifySandboxError(error);
+    if (!startedRepoCommand) throw classifySandboxError(error);
+    const message = error instanceof Error ? error.message : "sandbox command failed";
+    if (currentStepLabel && !commands.some((command) => command.command === currentStepLabel)) {
+      commands.push({ command: currentStepLabel, exitCode: 1, output: trimOutput(message) });
+    }
+    const recorded = new Set(commands.map((command) => command.command));
+    skippedCommands.push(...plan.map((step) => step.label).filter((label) => !recorded.has(label) && !skippedCommands.includes(label)));
+    if (skippedCommands.length) skippedReason ??= "sandbox command failed";
+    return {
+      ok: false,
+      sandboxId: sandbox.name,
+      durationMs: now() - startedAt,
+      commands,
+      status: "partial",
+      ...(skippedCommands.length ? { skippedCommands, skippedReason } : {}),
+      ...(notApplicableCommands.length ? { notApplicableCommands, notApplicableReason: NO_PACKAGE_JSON_REASON } : {}),
+    };
   } finally {
     await sandbox.stop().catch((error) => console.error("Unable to stop sandbox", error));
   }

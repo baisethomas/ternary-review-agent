@@ -22,12 +22,12 @@ export type SandboxCommandResult = {
 };
 
 export type SandboxResult = {
-  /** True when every executed check exited 0. Unrun checks (not applicable, skipped before start, unavailable) are reported via status, not ok. */
+  /** True when every needed check ran and exited 0. Skipped needed steps set ok false; not-applicable and unavailable do not. */
   ok: boolean;
   commands: SandboxCommandResult[];
   durationMs: number;
   sandboxId: string;
-  /** Absent means "complete". "partial": Ternary's budget cut remaining checks short before they started. "unavailable": sandbox could not run at all. */
+  /** Absent means "complete". "partial": remaining needed checks were skipped or a repo command threw. "unavailable": sandbox could not run at all. */
   status?: "complete" | "partial" | "unavailable";
   skippedCommands?: string[];
   skippedReason?: string;

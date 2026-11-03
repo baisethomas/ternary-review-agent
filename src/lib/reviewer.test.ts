@@ -241,6 +241,27 @@ describe("runReview", () => {
     expect(markdown).not.toContain("❌");
   });
 
+  it("fails the check run when needed sandbox steps were skipped for time budget", async () => {
+    const result = await publishReviewOf({
+      ok: false,
+      status: "partial",
+      commands: [
+        { command: "install dependencies", exitCode: 0, output: "" },
+        { command: "lint", exitCode: 0, output: "" },
+      ],
+      skippedCommands: ["typecheck", "test"],
+      skippedReason: "sandbox time budget",
+      durationMs: 100,
+      sandboxId: "sandbox-1",
+    });
+
+    expect(result.verdict).toBe("request_changes");
+    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("failure");
+    expect(markdown).toContain("⚠️ `typecheck` skipped (sandbox time budget)");
+    expect(markdown).toContain("⚠️ `test` skipped (sandbox time budget)");
+  });
+
   it("fails the check run when a test hangs until the time limit", async () => {
     const result = await publishReviewOf({
       ok: false,
