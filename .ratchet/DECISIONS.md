@@ -186,7 +186,7 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 
 ### D-20261102-2355-repo-command-timeouts-block — a repo-command hang or timeout always blocks; only Ternary-side unavailable is inconclusive
 
-- **Status:** accepted
+- **Status:** superseded by D-20261103-0015
 - **Impact:** medium
 - **Date:** 2026-11-02
 - **Decision:** Nothing the code under review controls may produce a non-blocking verdict. That includes hangs, time-limit kills, shrinking-budget late failures, and every exit code from a repo command. `classifyToolingFailure` therefore never classifies a repo-command result as tooling. `ok` is true only when every executed command exited 0. The no-root-`package.json` skip from D-20261102-2230 stays: those JavaScript steps never run. A non-blocking inconclusive is allowed only when Ternary can prove the failure came from its own side and no repo command ran — `unavailableSandboxResult` (sandbox creation, platform errors, budget too thin to start the sandbox). Skipping remaining steps that have not started because Ternary's overall budget ran out, after the executed commands exited 0, is still `status: "partial"` and does not set `ok: false`.
@@ -194,4 +194,16 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 - **Rejected / alternatives:** keeping the time-limit exemption (the hole); treating a SIGKILL or 137 as Ternary-side (forgeable, withdrawn on earlier #69 rounds); raising `COMMAND_TIMEOUT` on this PR so Ternary's self-review of this repo goes green (out of scope; this repo's cold `npm ci` is ~60 s and will keep self-reviews red until a later, separate change). The no-`package.json` skip is not rejected.
 - **Consequences:** This repo's own cold install (~60 s) will keep Ternary's self-review of #69 red until the install is faster or a later ticket raises the install limit. That is accepted. A #68-style install killed at the time limit now blocks, not ⚠️ inconclusive. The earlier claim that the #68 replay "passes as partial/inconclusive" is withdrawn.
 - **Revisit when:** the sandbox API reports a termination reason Ternary can trust, or an owner-approved install time-limit increase lands as its own change.
+- **Approved by:** agent, under the operator's explicit follow-up on #69; surfaced in the fix PR for owner review
+
+### D-20261103-0015-needed-step-skips-and-sdk-throws-block — skipping a needed check, or an SDK throw during a repo command, always blocks
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-03
+- **Decision:** `ok` is true only when every needed sandbox step ran and exited 0. Remaining steps skipped because the sandbox budget ran out (`skippedCommands`) set `ok: false` and therefore `request_changes`. The no-root-`package.json` path is unchanged: those steps are `notApplicableCommands`, not skips, and a finding-free review may approve. An `@vercel/sandbox` throw during or after a repo command is returned as `ok: false` (the failed step recorded, later steps skipped); only a throw before any repo command (sandbox creation or the package.json probe) still propagates so `gatherSandboxEvidence` can mark the sandbox `unavailable`. Time-limit kills of repo commands still block (D-20261102-2355).
+- **Why:** Independent review of #69 @ `86a769f`: a slow-but-passing install/lint/typecheck could exhaust the budget, skip test/build, and approve. The same review: if the SDK threw during a repo command instead of returning 137, `reviewer.ts` turned it into `unavailable` with `ok: true`.
+- **Rejected / alternatives:** reading `status: "partial"` in the policy (policy stays `!ok` → `request_changes`; `ok` is what changed); treating a probe throw as a repo-command failure (the probe is Ternary setup, so it may still be unavailable).
+- **Consequences:** A JS repo whose checks do not finish inside Ternary's budget now blocks even if every executed step passed. That includes this repo's own ~60 s install: self-review stays red until a later install-limit change. Accepted; the rule is not loosened.
+- **Revisit when:** the sandbox API reports a termination reason, or an owner-approved install time-limit increase lands as its own change.
 - **Approved by:** agent, under the operator's explicit follow-up on #69; surfaced in the fix PR for owner review
