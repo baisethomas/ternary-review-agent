@@ -44,40 +44,25 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 ## Working on
 
 - **Sandbox stops failing non-JS repos (2026-11-02, branch
-  `cursor/sandbox-non-js-repos-c308`, brief PR #68, decision
-  D-20261102-2230):** root cause verified on Ratchet#15's check run — no
-  `package.json`, `npm run lint --if-present` exit 254, `sandbox.ok: false`,
-  `applyReviewPolicyToResult` ⇒ ⛔ with zero findings. Fix: `package.json`
-  a `package.json` probe marks the JS steps not applicable when it is
-  absent; a step that runs into Ternary's time limit is `toolingFailure`
-  (inconclusive, non-blocking); every other non-zero exit — including a
-  bare 137 or 127, whose code and output the repo controls — still blocks.
-  A repo whose package manager the image lacks (e.g. bun) still blocks as
-  on main: no trusted signal exists (lockfiles are repo-controlled). Second repro: brief
-  PR #68 (docs-only) — `npm install` completed ("in 1m", i.e. ≥60 s past the
-  55 s `COMMAND_TIMEOUT`) and was SIGKILLed; most likely Ternary's own
-  per-command limit, not memory (2 vCPU = 4 GB). Docs-only step skipping was
-  rejected: `review-invocation-limits.test.ts` reads `README.md`. Gate RAN:
-  lint clean, 1009 passed / 1 failed (pre-existing `cli/src/capture.test.ts`
-  hard-link test, fails identically on untouched main on this VM) / 9 skipped,
-  build green; reproduce-revert-restore RAN for every behavior. Local
-  `runReview` harness (I/O stubbed, steps run with local bash) reproduced ⛔
-  on main and ✅ on the fix for Ratchet `10b64d1` and for #68 (install
-  replayed from the production check run); a JS fixture with a real failing
-  test stays ⛔. Fix PR #69 review rounds (production runs main, so every
-  round also shows the defect itself: install SIGKILL 137, "in 1m"/"in 2m"):
-  round 1 valid warning (probe not bounded by `deadlineAt`, fixed); round 2
-  valid blocking (blanket 137 rule forgeable, withdrawn — time-limit rule
-  alone covers the live samples); round 3 valid blocking (install-127
-  "not found" output rule forgeable by lifecycle scripts, withdrawn); round
-  4 valid blocking (its replacement, a probe for the lockfile-selected
-  package manager, is forgeable by adding `bun.lock`, withdrawn). **Watch:** this repo's own cold `npm ci` is ~55–60 s, so
-  every Ternary self-review can hit the limit until the fix is deployed — and
-  afterwards such reviews pass with tests unrun (⚠️); raising
-  `COMMAND_TIMEOUT` for install is the follow-up. **Not verified:**
-  the live Vercel Sandbox path (no credentials here) and timeout exit codes
-  from a real SIGKILL — only production use after the operator's merge/deploy
-  proves those. Merge and production deploy are operator-reserved.
+  `cursor/sandbox-non-js-repos-c308`, brief PR #68, decisions
+  D-20261102-2230 superseded-in-part by D-20261102-2355):** root cause
+  verified on Ratchet#15 — no `package.json`, `npm run lint --if-present`
+  exit 254, `sandbox.ok: false`, ⛔ with zero findings. A `package.json`
+  probe still marks the JS steps not applicable when it is absent. A
+  repo-command hang, time-limit kill, shrinking-budget late failure, or
+  any other non-zero exit **blocks** (`ok: false`). Non-blocking
+  inconclusive is only `unavailableSandboxResult` (Ternary-side; no repo
+  command ran). The earlier claim that a #68-style install 137 at the
+  time limit is ⚠️ inconclusive is withdrawn — that case blocks. Docs-only
+  step skipping was rejected: `review-invocation-limits.test.ts` reads
+  `README.md`. Ratchet @ 10b64d1 before/after is committed as
+  `src/lib/sandbox-ratchet-replay.test.ts` (`npx vitest run
+  src/lib/sandbox-ratchet-replay.test.ts`). **Accepted:** this repo's
+  cold `npm ci` is ~55–60 s, so Ternary's self-review of #69 stays red
+  until a later ticket raises the install limit or the install gets
+  faster. Do not loosen the rule to green that check. **Not verified:**
+  the live Vercel Sandbox path (no credentials here). Merge and
+  production deploy are operator-reserved.
 - **Dependency security bump (2026-09-18, merged main `25e8265`, #66,
   Ternary ✅, deployed and health-verified live):** health
   check found `next` 16.3.0 inside a critical advisory range (two
@@ -284,7 +269,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Last handoff
 
-- Updated: 2026-11-02 (sandbox non-JS fix on `cursor/sandbox-non-js-repos-c308`, awaiting operator merge)
+- Updated: 2026-11-02 (sandbox non-JS fix + timeout-blocks on `cursor/sandbox-non-js-repos-c308`, awaiting operator merge)
 - By: agent (Cursor cloud agent)
 - Branch: `cursor/sandbox-non-js-repos-c308` off main `0a64b9f`.
 - **The one thing a fresh agent should not misread:** §8.9's 100% delivery and
