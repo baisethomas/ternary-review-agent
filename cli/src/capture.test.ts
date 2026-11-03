@@ -5,6 +5,7 @@ import {
   closeSync,
   existsSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -627,9 +628,17 @@ describe("adversarial: env files, symlinks, and hard links (spec 4.2, 7.2)", () 
     const victimAbs = join(dir, "victim.ts");
     // Race: the classified file is swapped for a different, hard-linked file
     // at the same path — a different inode, so the classifying dev/ino no
-    // longer match.
+    // longer match. Some filesystems reuse the freed inode immediately; burn
+    // a few inodes so the swapped file is actually a different identity.
+    const classified = lstatSync(victimAbs);
     rmSync(victimAbs);
-    writeFileSync(victimAbs, "swapped\n");
+    for (let attempt = 0; attempt < 32; attempt += 1) {
+      writeFileSync(victimAbs, "swapped\n");
+      if (lstatSync(victimAbs).ino !== classified.ino || lstatSync(victimAbs).dev !== classified.dev) break;
+      rmSync(victimAbs);
+      writeFileSync(join(dir, `.inode-pad-${attempt}`), `pad-${attempt}\n`);
+    }
+    expect(lstatSync(victimAbs).ino, "swapped victim.ts must use a different inode than the classifying lstat").not.toBe(classified.ino);
     linkSync(victimAbs, join(dir, "victim-alias.ts"));
     // Force the read's one bounded re-classification retry to fail (ENOENT),
     // so the identity mismatch cannot self-heal on the second attempt.

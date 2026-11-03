@@ -46,6 +46,62 @@ describe("OpenRouter review provider", () => {
     });
   });
 
+  it("fallback: no applicable sandbox checks still comments rather than requesting changes", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "");
+    const unused = {
+      ok: true,
+      commands: [],
+      durationMs: 10,
+      sandboxId: "sandbox-1",
+      notApplicableCommands: ["install dependencies", "lint", "typecheck", "test", "build"],
+      notApplicableReason: "no package.json at the repository root, so JavaScript checks do not apply",
+    };
+
+    await expect(generateOpenRouterReview("diff", unused, "context")).resolves.toMatchObject({
+      verdict: "comment",
+      authoritativeFindings: false,
+      summary: "No sandbox checks apply to this repository. AI review is disabled until OPENROUTER_API_KEY is configured.",
+      findings: [],
+    });
+  });
+
+  it("fallback: unavailable sandbox requests changes so the check fails", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "");
+    const unavailable = {
+      ok: false,
+      commands: [],
+      durationMs: 0,
+      sandboxId: "unavailable",
+      status: "unavailable" as const,
+      unavailableReason: "quota exhausted",
+    };
+
+    await expect(generateOpenRouterReview("diff", unavailable, "context")).resolves.toMatchObject({
+      verdict: "request_changes",
+      authoritativeFindings: false,
+      summary: "One or more sandbox checks failed.",
+    });
+  });
+
+  it("fallback: skipped needed steps with ok false request changes", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "");
+    const partial = {
+      ok: false,
+      status: "partial" as const,
+      commands: [{ command: "install dependencies", exitCode: 0, output: "" }, { command: "lint", exitCode: 0, output: "" }],
+      durationMs: 10,
+      sandboxId: "sandbox-1",
+      skippedCommands: ["typecheck", "test"],
+      skippedReason: "sandbox time budget",
+    };
+
+    await expect(generateOpenRouterReview("diff", partial, "context")).resolves.toMatchObject({
+      verdict: "request_changes",
+      authoritativeFindings: false,
+      summary: "One or more sandbox checks failed.",
+    });
+  });
+
   it("requests a strict structured review and records OpenRouter usage", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "router-key");
     vi.stubEnv("OPENROUTER_MODEL", "openai/gpt-5.6-sol");

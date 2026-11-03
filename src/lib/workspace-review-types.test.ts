@@ -38,7 +38,7 @@ describe("workspace-review-types", () => {
     expect(complete.truncation).toBeUndefined();
 
     const unavailable = checkEvidenceFromSandboxResult({
-      ok: true,
+      ok: false,
       commands: [],
       durationMs: 0,
       sandboxId: "unavailable",

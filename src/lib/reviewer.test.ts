@@ -29,7 +29,7 @@ vi.mock("./dashboard-change-service", () => ({
 vi.mock("./sandbox", () => ({
   runInSandbox: (...args: unknown[]) => mocks.runInSandbox(...args),
   unavailableSandboxResult: (reason: string) => ({
-    ok: true,
+    ok: false,
     commands: [],
     durationMs: 0,
     sandboxId: "unavailable",
@@ -171,14 +171,14 @@ describe("runReview", () => {
     expect(result.verdict).toBe("request_changes");
   });
 
-  it("degrades to an AI-only review when the sandbox is unavailable instead of failing the job", async () => {
+  it("fails the check when the sandbox is unavailable", async () => {
     mocks.getPullRequestDiff.mockResolvedValue("diff --git a/a.ts b/a.ts\n+++ b/a.ts\n+change");
     mocks.runInSandbox.mockRejectedValue(new Error("Sandbox creation is paused: monthly quota exhausted"));
     mocks.getRepositoryReviewContext.mockResolvedValue({ text: "", status: "ok", chunks: [], indexedCommitSha: null, latencyMs: 1 });
     mocks.upsertPullRequestComment.mockResolvedValue(undefined);
     mocks.syncFindingReviewComments.mockResolvedValue(undefined);
     mocks.generateRoutedReview.mockImplementation(async (_diff: unknown, sandbox: { status?: string }) => ({
-      verdict: "comment",
+      verdict: "approve",
       summary: "ok",
       findings: [],
       sandbox,
@@ -187,10 +187,12 @@ describe("runReview", () => {
 
     const result = await runReview(request);
 
+    expect(result.verdict).toBe("request_changes");
     expect(result.sandbox.status).toBe("unavailable");
+    expect(result.sandbox.ok).toBe(false);
     expect(mocks.generateRoutedReview).toHaveBeenCalledWith(
       expect.any(String),
-      expect.objectContaining({ status: "unavailable", ok: true }),
+      expect.objectContaining({ status: "unavailable", ok: false }),
       expect.any(String),
       expect.anything(),
       expect.anything(),
@@ -201,10 +203,103 @@ describe("runReview", () => {
       "agent",
       99,
       "token",
-      "success",
+      "failure",
       "Review complete",
       expect.stringContaining("Sandbox checks did not run"),
       expect.any(String),
     );
+  });
+
+  function publishReviewOf(sandbox: Record<string, unknown>) {
+    mocks.getPullRequestDiff.mockResolvedValue("diff --git a/.github/workflows/scan.yml b/.github/workflows/scan.yml\n+++ b/.github/workflows/scan.yml\n+uses: scanner@new");
+    mocks.runInSandbox.mockResolvedValue(sandbox);
+    mocks.getRepositoryReviewContext.mockResolvedValue({ text: "", status: "ok", chunks: [], indexedCommitSha: null, latencyMs: 1 });
+    mocks.upsertPullRequestComment.mockResolvedValue(undefined);
+    mocks.syncFindingReviewComments.mockResolvedValue(undefined);
+    mocks.generateRoutedReview.mockImplementation(async (_diff: unknown, reviewedSandbox: unknown) => ({
+      verdict: "request_changes",
+      summary: "No material issues.",
+      findings: [],
+      sandbox: reviewedSandbox,
+      authoritativeFindings: true,
+    }));
+    return runReview(request);
+  }
+
+  it("passes the check run for a finding-free review of a repository without package.json", async () => {
+    const result = await publishReviewOf({
+      ok: true,
+      commands: [],
+      durationMs: 100,
+      sandboxId: "sandbox-1",
+      notApplicableCommands: ["install dependencies", "lint", "typecheck", "test", "build"],
+      notApplicableReason: "no package.json at the repository root, so JavaScript checks do not apply",
+    });
+
+    expect(result.verdict).toBe("approve");
+    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("success");
+    expect(markdown).toContain("➖ Not applicable (no package.json at the repository root, so JavaScript checks do not apply): `install dependencies`, `lint`, `typecheck`, `test`, `build`");
+    expect(markdown).not.toContain("❌");
+  });
+
+  it("fails the check run when needed sandbox steps were skipped for time budget", async () => {
+    const result = await publishReviewOf({
+      ok: false,
+      status: "partial",
+      commands: [
+        { command: "install dependencies", exitCode: 0, output: "" },
+        { command: "lint", exitCode: 0, output: "" },
+      ],
+      skippedCommands: ["typecheck", "test"],
+      skippedReason: "sandbox time budget",
+      durationMs: 100,
+      sandboxId: "sandbox-1",
+    });
+
+    expect(result.verdict).toBe("request_changes");
+    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("failure");
+    expect(markdown).toContain("⚠️ `typecheck` skipped (sandbox time budget)");
+    expect(markdown).toContain("⚠️ `test` skipped (sandbox time budget)");
+  });
+
+  it("fails the check run when a test hangs until the time limit", async () => {
+    const result = await publishReviewOf({
+      ok: false,
+      commands: [
+        { command: "install dependencies", exitCode: 0, output: "" },
+        { command: "lint", exitCode: 0, output: "" },
+        { command: "typecheck", exitCode: 0, output: "" },
+        { command: "test", exitCode: 137, output: "" },
+      ],
+      durationMs: 100,
+      sandboxId: "sandbox-1",
+    });
+
+    expect(result.verdict).toBe("request_changes");
+    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("failure");
+    expect(markdown).toContain("❌ `test`");
+    expect(markdown).not.toContain("inconclusive");
+  });
+
+  it("still fails the check run when a JavaScript repository's tests genuinely fail", async () => {
+    const result = await publishReviewOf({
+      ok: false,
+      commands: [
+        { command: "install dependencies", exitCode: 0, output: "" },
+        { command: "lint", exitCode: 0, output: "" },
+        { command: "typecheck", exitCode: 0, output: "" },
+        { command: "test", exitCode: 1, output: "1 failed" },
+      ],
+      durationMs: 100,
+      sandboxId: "sandbox-1",
+    });
+
+    expect(result.verdict).toBe("request_changes");
+    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("failure");
+    expect(markdown).toContain("❌ `test`");
   });
 });
