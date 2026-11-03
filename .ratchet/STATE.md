@@ -43,28 +43,22 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **Sandbox stops failing non-JS repos (2026-11-02, branch
-  `cursor/sandbox-non-js-repos-c308`, brief PR #68, decisions
-  D-20261102-2230 superseded-in-part by D-20261102-2355):** root cause
-  verified on Ratchet#15 — no `package.json`, `npm run lint --if-present`
-  exit 254, `sandbox.ok: false`, ⛔ with zero findings. A `package.json`
-  probe still marks the JS steps not applicable when it is absent. A
-  repo-command hang, time-limit kill, shrinking-budget late failure,
-  skipped needed step, SDK throw during a repo command, or any other
-  non-zero exit **blocks** (`ok: false`). Non-blocking inconclusive is
-  only `unavailableSandboxResult` (throw before any repo command:
-  sandbox creation or the package.json probe). Skipping needed steps
-  for time budget no longer approves. D-20261102-2355 superseded by
-  D-20261103-0015. Docs-only
-  step skipping was rejected: `review-invocation-limits.test.ts` reads
-  `README.md`. Ratchet @ 10b64d1 before/after is committed as
-  `src/lib/sandbox-ratchet-replay.test.ts` (`npx vitest run
-  src/lib/sandbox-ratchet-replay.test.ts`). **Accepted:** this repo's
-  cold `npm ci` is ~55–60 s, so Ternary's self-review of #69 stays red
-  until a later ticket raises the install limit or the install gets
-  faster. Do not loosen the rule to green that check. **Not verified:**
-  the live Vercel Sandbox path (no credentials here). Merge and
-  production deploy are operator-reserved.
+- **Sandbox stops failing non-JS repos (2026-11-03, branch
+  `cursor/sandbox-non-js-repos-c308`, brief PR #68, fix PR #69,
+  D-20261103-0145):** no-root-`package.json` skip is unchanged
+  (`notApplicableCommands`, `ok: true`). Every other incomplete
+  sandbox is `ok: false` → `request_changes` → check failure: needed
+  step skipped, repo-command non-zero/timeout/SDK throw, create/clone
+  fail or timeout, budget below `SANDBOX_MIN_BUDGET_MS` (90 s),
+  package.json probe throw, `updateNetworkPolicy` fail. Per-command
+  cap is 120 s (production 137 samples 60–67 s; npm "in 2m" from
+  90 s). Sandbox window stays 190 s. **#69 Ternary stays red until
+  this head is deployed** — production runs `main`. Do not call that
+  check green. Local cold `npm ci` (empty cache, this repo) was 7.1 s;
+  that is local, not a sandbox sample. Ratchet @ 10b64d1 replay:
+  `src/lib/sandbox-ratchet-replay.test.ts`. **Not verified:** live
+  Vercel Sandbox path (no credentials here). Merge and production
+  deploy are operator-reserved.
 - **Dependency security bump (2026-09-18, merged main `25e8265`, #66,
   Ternary ✅, deployed and health-verified live):** health
   check found `next` 16.3.0 inside a critical advisory range (two
@@ -271,7 +265,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Last handoff
 
-- Updated: 2026-11-03 (needed-step skips and SDK throws block; GHA test workflow with contents:read; dropped dead toolingFailure path)
+- Updated: 2026-11-03 (120 s command cap; setup failures block; D-20261103-0145)
 - By: agent (Cursor cloud agent)
 - Branch: `cursor/sandbox-non-js-repos-c308` off main `0a64b9f`.
 - **The one thing a fresh agent should not misread:** §8.9's 100% delivery and

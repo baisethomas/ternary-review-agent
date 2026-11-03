@@ -198,7 +198,7 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 
 ### D-20261103-0015-needed-step-skips-and-sdk-throws-block — skipping a needed check, or an SDK throw during a repo command, always blocks
 
-- **Status:** accepted
+- **Status:** superseded by D-20261103-0145
 - **Impact:** medium
 - **Date:** 2026-11-03
 - **Decision:** `ok` is true only when every needed sandbox step ran and exited 0. Remaining steps skipped because the sandbox budget ran out (`skippedCommands`) set `ok: false` and therefore `request_changes`. The no-root-`package.json` path is unchanged: those steps are `notApplicableCommands`, not skips, and a finding-free review may approve. An `@vercel/sandbox` throw during or after a repo command is returned as `ok: false` (the failed step recorded, later steps skipped); only a throw before any repo command (sandbox creation or the package.json probe) still propagates so `gatherSandboxEvidence` can mark the sandbox `unavailable`. Time-limit kills of repo commands still block (D-20261102-2355).
@@ -207,3 +207,15 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 - **Consequences:** A JS repo whose checks do not finish inside Ternary's budget now blocks even if every executed step passed. That includes this repo's own ~60 s install: self-review stays red until a later install-limit change. Accepted; the rule is not loosened.
 - **Revisit when:** the sandbox API reports a termination reason, or an owner-approved install time-limit increase lands as its own change.
 - **Approved by:** agent, under the operator's explicit follow-up on #69; surfaced in the fix PR for owner review
+
+### D-20261103-0145-command-timeout-120s-and-setup-failures-block — 120 s per-command cap; setup failures block
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-03
+- **Decision:** `COMMAND_TIMEOUT` is 120 s. `SANDBOX_MIN_BUDGET_MS` is 90 s. The reviewer sandbox window stays 190 s (`WORKER_INVOCATION_BUDGET_MS` − publish 20 s − AI 90 s). Setup failures return `unavailableSandboxResult` with `ok: false` and therefore `request_changes` / check failure: `Sandbox.create` or clone fail/timeout, remaining budget below `SANDBOX_MIN_BUDGET_MS`, a throwing package.json probe, and a failing `updateNetworkPolicy`. The no-root-`package.json` skip is unchanged (`notApplicableCommands`, `ok: true`).
+- **Why:** Owner direction on #69 round 4. Production 137 samples on this repo's cold install measured 60–67 s `durationMs`; npm printed "in 1m" / "in 2m" (`ms` prints "2m" from 90 s). 120 s clears 67 s by 53 s and the 90 s print by 30 s, and still fits in the 190 s window. The previous 55 s cap killed a finished install. Setup `unavailable` with `ok: true` was the last non-blocking hole besides the kept package.json skip.
+- **Rejected / alternatives:** leaving the 55 s cap (this repo's install cannot finish; self-review stays red for a limit Ternary now chooses to raise); 90 s (no headroom above the "2m" print); raising the 190 s window or Hobby-encoded 300 s worker cap (out of scope; Pro since 2026-08-25, but those knobs stay ticket-by-ticket); treating setup failures as non-blocking unavailable (the hole this change closes).
+- **Consequences:** #69's own Ternary check stays red until this head is deployed, because production still runs `main`. After deploy, a 60–67 s sandbox install should fit the 120 s cap; that is not a claim that the current production check is green. A local cold `npm ci` of this repo (empty cache, 2026-11-03) finished in 7.1 s — labeled local, not a sandbox sample.
+- **Revisit when:** production self-review after deploy still 137s, or a non-JS ecosystem adds default steps that need a different cap.
+- **Approved by:** Baise Thomas (owner), via explicit round-4 direction on #69
