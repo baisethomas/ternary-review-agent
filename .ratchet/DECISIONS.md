@@ -219,3 +219,15 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 - **Consequences:** #69's own Ternary check stays red until this head is deployed, because production still runs `main`. After deploy, a 60–67 s sandbox install should fit the 120 s cap; that is not a claim that the current production check is green. A local cold `npm ci` of this repo (empty cache, 2026-11-03) finished in 7.1 s — labeled local, not a sandbox sample.
 - **Revisit when:** production self-review after deploy still 137s, or a non-JS ecosystem adds default steps that need a different cap.
 - **Approved by:** Baise Thomas (owner), via explicit round-4 direction on #69
+
+### D-20261103-0235-review-worker-cap-480s — live review worker cap is the Pro 480 s target
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-03
+- **Decision:** `REVIEW_WORKER_MAX_DURATION_SECONDS` is `PRO_REVIEW_WORKER_MAX_DURATION_SECONDS` (480). The worker route `maxDuration` literal is 480 (Next.js 16.3.5 extracts a numeric literal only; a test pins the literal to the constant). The reviewer sandbox window is 370 s (480 − 20 publish − 90 AI). Sandbox VM timeout is 400 s (above the window). `SANDBOX_MIN_BUDGET_MS` stays 90 s. `COMMAND_TIMEOUT` stays 120 s. Other `maxDuration = 300` routes are unchanged: they enqueue or serve a different product path.
+- **Why:** Owner direction on #69 round 5. Production has been on Vercel Pro since 2026-08-25 (D-20260825-0400); the 300 s cap was the leftover Hobby encoding. Raising the worker lets a 60–67 s install plus later steps sit inside a 370 s window instead of fighting a 190 s one.
+- **Rejected / alternatives:** deriving `maxDuration` from the constant (Next 16.3.5 `extract-const-value` only accepts a numeric literal); raising enqueue/index/Workspace Review routes (not the review execution path; Workspace Review stays 180 s / route 300 per ADR-0002); raising `COMMAND_TIMEOUT` (120 s already clears the measured install).
+- **Consequences:** #69's own Ternary check stays red until this head is deployed — production still runs `main`. `vercel.json` plan settings and the Vercel dashboard were not changed.
+- **Revisit when:** the Pro function ceiling changes, or a review still cannot finish inside 480 s.
+- **Approved by:** Baise Thomas (owner), via explicit round-5 direction on #69
