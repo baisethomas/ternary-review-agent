@@ -28,7 +28,7 @@ This repository is also Ternary's own dogfood target: every PR here is reviewed 
 
 Ternary is tuned to complete reviews inside conservative, self-imposed serverless time budgets (480s functions as the worker's hard ceiling, regardless of what the host allows):
 
-- Sandbox evidence is best-effort: when sandbox creation fails or the time budget runs thin, the review proceeds AI-only and the PR comment notes that sandbox checks did not run.
+- Sandbox setup failures (create/clone, a budget too thin to start, or a probe/`updateNetworkPolicy` error) fail the check. JavaScript steps with no root `package.json` are reported as not applicable and do not fail the review.
 - Every GitHub API call is bounded (15s; 30s for diff downloads), and the worker only claims a job when enough invocation time remains to finish it.
 - A recurring queue schedule wakes the review worker, with a protected daily cron as a recovery backstop, so retrying jobs are never stranded.
 
