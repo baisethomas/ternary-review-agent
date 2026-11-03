@@ -335,6 +335,26 @@ describe("sandbox step applicability and tooling failures", () => {
     expect(review.verdict).toBe("request_changes");
   });
 
+  it("still throws when network-policy setup fails before any repo command", async () => {
+    const { Sandbox } = await import("@vercel/sandbox");
+    vi.mocked(Sandbox.create).mockResolvedValueOnce({
+      name: "sandbox-policy",
+      updateNetworkPolicy: vi.fn(async () => {
+        throw new Error("network policy update failed");
+      }),
+      runCommand: vi.fn(async ({ args }: { args: string[] }) => {
+        if (args[1] === PACKAGE_JSON_PROBE) return { exitCode: 1, output: async () => "" };
+        throw new Error("repo command must not run");
+      }),
+      stop: vi.fn(async () => undefined),
+    } as never);
+
+    await expect(runInSandbox({
+      ...sandboxRequest,
+      policy: { automaticReview: { opened: true, reopened: true, synchronize: true, readyForReview: true }, minimumSeverity: "suggestion", model: "test/model", reviewCommands: ["bash tests/run.sh"], excludedPaths: [] },
+    }, "token")).rejects.toThrow("network policy update failed");
+  });
+
   it("still throws when the sandbox SDK fails before any repo command, so the reviewer can mark it unavailable", async () => {
     await scriptSandbox((shell) => (shell === PACKAGE_JSON_PROBE ? { exitCode: 1, throwError: new Error("sandbox create raced the probe") } : { exitCode: 0 }));
 

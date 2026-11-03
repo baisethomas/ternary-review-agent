@@ -197,9 +197,9 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
         skippedReason = "sandbox time budget";
         break;
       }
+      if (!step.network) await sandbox.updateNetworkPolicy("deny-all");
       startedRepoCommand = true;
       currentStepLabel = step.label;
-      if (!step.network) await sandbox.updateNetworkPolicy("deny-all");
       const timeoutMs = Math.min(COMMAND_TIMEOUT, Math.floor(remaining));
       const command = await sandbox.runCommand({
         cmd: "bash",
