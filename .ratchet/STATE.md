@@ -271,7 +271,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Last handoff
 
-- Updated: 2026-11-03 (needed-step skips and SDK throws block; GHA test workflow on `cursor/sandbox-non-js-repos-c308`)
+- Updated: 2026-11-03 (needed-step skips and SDK throws block; GHA test workflow; dropped dead toolingFailure path after Ternary review of 29ddf9e)
 - By: agent (Cursor cloud agent)
 - Branch: `cursor/sandbox-non-js-repos-c308` off main `0a64b9f`.
 - **The one thing a fresh agent should not misread:** §8.9's 100% delivery and
