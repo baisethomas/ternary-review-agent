@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_OPENROUTER_TIMEOUT_MS,
   PRO_REVIEW_WORKER_MAX_DURATION_SECONDS,
+  REVIEW_AI_RESERVE_MS,
   REVIEW_MODEL_FALLBACK_SLICE_MS,
   REVIEW_PUBLISH_RESERVE_MS,
   REVIEW_WORKER_DRAIN_RESERVE_MS,
   REVIEW_WORKER_MAX_DURATION_MS,
   REVIEW_WORKER_MAX_DURATION_SECONDS,
+  SANDBOX_MIN_BUDGET_MS,
+  SANDBOX_MIN_COMMAND_BUDGET_MS,
   WORKER_INVOCATION_BUDGET_MS,
   WORKSPACE_REVIEW_ASSEMBLY_RESERVE_MS,
   WORKSPACE_REVIEW_ATTEMPT_BUDGET_MS,
@@ -16,6 +19,7 @@ import {
   timeoutForModelAttempt,
 } from "./review-invocation-limits";
 import { remainingInvocationBudgetMs, resolveOpenRouterTimeoutMs } from "./openrouter-review-provider";
+import { COMMAND_TIMEOUT } from "./sandbox";
 
 describe("review invocation limits", () => {
   it("keeps worker duration constants aligned with the Hobby plan cap", () => {
@@ -46,6 +50,20 @@ describe("review invocation limits", () => {
     expect(timeoutForModelAttempt(120_000, 2)).toBe(75_000);
     expect(timeoutForModelAttempt(40_000, 1)).toBe(40_000);
     expect(timeoutForModelAttempt(90_000, 3)).toBe(30_000);
+  });
+
+  it("keeps the sandbox window, minimum start budget, and per-command cap consistent", () => {
+    // reviewer.ts: sandboxDeadlineAt = startedAt + worker − publish − AI
+    const sandboxWindowMs = WORKER_INVOCATION_BUDGET_MS - REVIEW_PUBLISH_RESERVE_MS - REVIEW_AI_RESERVE_MS;
+    expect(sandboxWindowMs).toBe(190_000);
+    expect(COMMAND_TIMEOUT).toBe(120_000);
+    expect(SANDBOX_MIN_BUDGET_MS).toBe(90_000);
+    expect(COMMAND_TIMEOUT).toBeLessThanOrEqual(sandboxWindowMs);
+    expect(SANDBOX_MIN_BUDGET_MS).toBeLessThanOrEqual(sandboxWindowMs);
+    expect(SANDBOX_MIN_BUDGET_MS).toBeGreaterThanOrEqual(SANDBOX_MIN_COMMAND_BUDGET_MS);
+    // Longest measured production install durationMs was 67 s; npm "in 2m" prints from 90 s.
+    expect(COMMAND_TIMEOUT).toBeGreaterThan(67_000);
+    expect(SANDBOX_MIN_BUDGET_MS).toBeGreaterThan(67_000);
   });
 
   it("keeps the README's documented time budgets in sync with the enforced constants", async () => {

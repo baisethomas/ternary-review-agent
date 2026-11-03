@@ -16,7 +16,12 @@ const INSTALL_NETWORK: NetworkPolicy = {
 };
 
 const OUTPUT_LIMIT = 24_000;
-const COMMAND_TIMEOUT = 55_000;
+/**
+ * Per-command wall-clock cap. Production 137 samples on this repo's cold install
+ * measured 60–67 s (`durationMs`) and npm printed "in 1m" / "in 2m" (the `ms`
+ * package prints "2m" from 90 s). 120 s clears those with headroom.
+ */
+export const COMMAND_TIMEOUT = 120_000;
 const PACKAGE_JSON_PROBE_TIMEOUT = 10_000;
 
 type SandboxCredentialEnvironment = Partial<Record<"VERCEL_TOKEN" | "VERCEL_TEAM_ID" | "VERCEL_PROJECT_ID", string>>;
@@ -50,7 +55,7 @@ export const SANDBOX_MODEL_OUTPUT_LIMIT = 1_500;
 
 export function unavailableSandboxResult(reason: string): SandboxResult {
   return {
-    ok: true,
+    ok: false,
     commands: [],
     durationMs: 0,
     sandboxId: "unavailable",
@@ -149,7 +154,7 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, "-");
   const sandboxName = `${sandboxBaseName.slice(0, 54)}-${randomUUID().slice(0, 8)}`;
-  let sandbox: Awaited<ReturnType<typeof Sandbox.create>>;
+  let sandbox: Awaited<ReturnType<typeof Sandbox.create>> | undefined;
   try {
     sandbox = await raceDeadline(Sandbox.create({
       ...sandboxCredentials(),
@@ -170,8 +175,11 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
       tags: { service: "ternary", repository: `${request.owner}-${request.repo}`.slice(0, 63), pr: String(request.pullNumber) },
     }), remainingBudgetMs(), "Sandbox creation");
   } catch (error) {
-    throw classifySandboxError(error);
+    const classified = classifySandboxError(error);
+    const message = classified instanceof Error ? classified.message : "Sandbox creation failed";
+    return unavailableSandboxResult(message);
   }
+  if (!sandbox) return unavailableSandboxResult("Sandbox creation failed");
 
   const commands: SandboxResult["commands"] = [];
   const skippedCommands: string[] = [];
@@ -222,7 +230,11 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
       ...(notApplicableCommands.length ? { notApplicableCommands, notApplicableReason: NO_PACKAGE_JSON_REASON } : {}),
     };
   } catch (error) {
-    if (!startedRepoCommand) throw classifySandboxError(error);
+    if (!startedRepoCommand) {
+      const classified = classifySandboxError(error);
+      const message = classified instanceof Error ? classified.message : "sandbox setup failed";
+      return unavailableSandboxResult(message);
+    }
     const message = error instanceof Error ? error.message : "sandbox command failed";
     if (currentStepLabel && !commands.some((command) => command.command === currentStepLabel)) {
       commands.push({ command: currentStepLabel, exitCode: 1, output: trimOutput(message) });
@@ -240,6 +252,6 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
       ...(notApplicableCommands.length ? { notApplicableCommands, notApplicableReason: NO_PACKAGE_JSON_REASON } : {}),
     };
   } finally {
-    await sandbox.stop().catch((error) => console.error("Unable to stop sandbox", error));
+    await sandbox?.stop().catch((error) => console.error("Unable to stop sandbox", error));
   }
 }

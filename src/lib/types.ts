@@ -20,7 +20,7 @@ export type SandboxCommandResult = {
 };
 
 export type SandboxResult = {
-  /** True when every needed check ran and exited 0. Skipped needed steps set ok false; not-applicable and unavailable do not. */
+  /** True when every needed check ran and exited 0. Skipped needed steps, setup failures, and unavailable sandboxes set ok false. Not-applicable does not. */
   ok: boolean;
   commands: SandboxCommandResult[];
   durationMs: number;

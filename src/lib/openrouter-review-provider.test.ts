@@ -65,10 +65,10 @@ describe("OpenRouter review provider", () => {
     });
   });
 
-  it("fallback: unavailable sandbox comments instead of failing the check", async () => {
+  it("fallback: unavailable sandbox requests changes so the check fails", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "");
     const unavailable = {
-      ok: true,
+      ok: false,
       commands: [],
       durationMs: 0,
       sandboxId: "unavailable",
@@ -77,10 +77,9 @@ describe("OpenRouter review provider", () => {
     };
 
     await expect(generateOpenRouterReview("diff", unavailable, "context")).resolves.toMatchObject({
-      verdict: "comment",
+      verdict: "request_changes",
       authoritativeFindings: false,
-      summary: "Sandbox checks were unavailable. AI review is disabled until OPENROUTER_API_KEY is configured.",
-      findings: [],
+      summary: "One or more sandbox checks failed.",
     });
   });
 

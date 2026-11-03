@@ -29,7 +29,7 @@ vi.mock("./dashboard-change-service", () => ({
 vi.mock("./sandbox", () => ({
   runInSandbox: (...args: unknown[]) => mocks.runInSandbox(...args),
   unavailableSandboxResult: (reason: string) => ({
-    ok: true,
+    ok: false,
     commands: [],
     durationMs: 0,
     sandboxId: "unavailable",
@@ -171,14 +171,14 @@ describe("runReview", () => {
     expect(result.verdict).toBe("request_changes");
   });
 
-  it("degrades to an AI-only review when the sandbox is unavailable instead of failing the job", async () => {
+  it("fails the check when the sandbox is unavailable", async () => {
     mocks.getPullRequestDiff.mockResolvedValue("diff --git a/a.ts b/a.ts\n+++ b/a.ts\n+change");
     mocks.runInSandbox.mockRejectedValue(new Error("Sandbox creation is paused: monthly quota exhausted"));
     mocks.getRepositoryReviewContext.mockResolvedValue({ text: "", status: "ok", chunks: [], indexedCommitSha: null, latencyMs: 1 });
     mocks.upsertPullRequestComment.mockResolvedValue(undefined);
     mocks.syncFindingReviewComments.mockResolvedValue(undefined);
     mocks.generateRoutedReview.mockImplementation(async (_diff: unknown, sandbox: { status?: string }) => ({
-      verdict: "comment",
+      verdict: "approve",
       summary: "ok",
       findings: [],
       sandbox,
@@ -187,10 +187,12 @@ describe("runReview", () => {
 
     const result = await runReview(request);
 
+    expect(result.verdict).toBe("request_changes");
     expect(result.sandbox.status).toBe("unavailable");
+    expect(result.sandbox.ok).toBe(false);
     expect(mocks.generateRoutedReview).toHaveBeenCalledWith(
       expect.any(String),
-      expect.objectContaining({ status: "unavailable", ok: true }),
+      expect.objectContaining({ status: "unavailable", ok: false }),
       expect.any(String),
       expect.anything(),
       expect.anything(),
@@ -201,7 +203,7 @@ describe("runReview", () => {
       "agent",
       99,
       "token",
-      "success",
+      "failure",
       "Review complete",
       expect.stringContaining("Sandbox checks did not run"),
       expect.any(String),

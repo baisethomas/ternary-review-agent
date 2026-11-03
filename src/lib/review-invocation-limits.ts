@@ -32,8 +32,12 @@ export const REVIEW_MODEL_FALLBACK_SLICE_MS = 45_000;
 /** Guaranteed floor for the AI cascade after sandbox evidence gathering (primary slice + one fallback slice). */
 export const REVIEW_AI_RESERVE_MS = 90_000;
 
-/** Below this remaining sandbox budget, skip sandbox creation entirely and run an AI-only review. */
-export const SANDBOX_MIN_BUDGET_MS = 30_000;
+/**
+ * Below this remaining sandbox budget, do not start the sandbox. Must be enough
+ * for this repo's measured cold install (~60–67 s) plus create/probe overhead,
+ * and must stay below the reviewer sandbox window (worker − publish − AI).
+ */
+export const SANDBOX_MIN_BUDGET_MS = 90_000;
 
 /** Minimum useful time for one sandbox command; below this, remaining checks are skipped. */
 export const SANDBOX_MIN_COMMAND_BUDGET_MS = 5_000;

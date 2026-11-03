@@ -95,15 +95,15 @@ rename to generated/new.ts`;
     expect(result.verdict).toBe("approve");
   });
 
-  it("does not block a finding-free review when the sandbox never ran (Ternary-side unavailable)", () => {
+  it("blocks a finding-free review when the sandbox never ran (setup unavailable)", () => {
     const result = applyReviewPolicyToResult({
-      verdict: "request_changes",
+      verdict: "approve",
       summary: "No material findings.",
       findings: [],
-      sandbox: { ok: true, status: "unavailable", commands: [], durationMs: 0, sandboxId: "unavailable", unavailableReason: "quota exhausted" },
+      sandbox: { ok: false, status: "unavailable", commands: [], durationMs: 0, sandboxId: "unavailable", unavailableReason: "quota exhausted" },
     }, safeReviewPolicy);
 
-    expect(result.verdict).not.toBe("request_changes");
+    expect(result.verdict).toBe("request_changes");
   });
 
   it("blocks a finding-free review when needed sandbox steps were skipped for time budget", () => {

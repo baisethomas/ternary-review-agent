@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { NonRetryableReviewError } from "./review-errors";
 import { safeReviewPolicy } from "./review-policy";
 import { applyReviewPolicyToResult } from "./review-policy-execution";
-import { runInSandbox, sandboxCommandPlan, sandboxCredentials, compactSandboxForModel, unavailableSandboxResult } from "./sandbox";
+import { COMMAND_TIMEOUT, runInSandbox, sandboxCommandPlan, sandboxCredentials, compactSandboxForModel, unavailableSandboxResult } from "./sandbox";
 
 const PACKAGE_JSON_PROBE = "test -f package.json";
 
@@ -95,9 +95,9 @@ describe("sandbox review policy", () => {
     ]);
   });
 
-  it("marks a sandbox result unavailable without claiming any check failed", () => {
+  it("marks a sandbox result unavailable as a blocking failure", () => {
     const result = unavailableSandboxResult("quota exhausted");
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
     expect(result.status).toBe("unavailable");
     expect(result.unavailableReason).toBe("quota exhausted");
     expect(result.commands).toEqual([]);
@@ -298,7 +298,7 @@ describe("sandbox step applicability and tooling failures", () => {
   const pr68InstallOutput = "\nadded 447 packages, and audited 448 packages in 1m\n\n164 packages are looking for funding\n";
 
   it("blocks a docs-only review whose install was killed at the time limit — the repo command is untrusted", async () => {
-    // npm reported "in 1m" (>= 60s) against Ternary's 55s command limit. The sandbox API
+    // npm reported "in 1m" (>= 60s) against the previous 55s command limit. The sandbox API
     // does not prove the kill was Ternary's, so this stays a blocking code failure.
     const { clock, shells } = await scriptSandbox((shell) => (shell.includes("npm ci") ? { exitCode: 137, output: pr68InstallOutput, elapsedMs: 60_000 } : { exitCode: 0 }));
     const sandbox = await runInSandbox({ ...sandboxRequest, owner: "baisethomas", repo: "ternary-review-agent", pullNumber: 68 }, "token", { now: () => clock.now });
@@ -335,7 +335,20 @@ describe("sandbox step applicability and tooling failures", () => {
     expect(review.verdict).toBe("request_changes");
   });
 
-  it("still throws when network-policy setup fails before any repo command", async () => {
+  it("blocks when Sandbox.create or the clone fails", async () => {
+    const { Sandbox } = await import("@vercel/sandbox");
+    vi.mocked(Sandbox.create).mockRejectedValueOnce(new Error("clone timed out"));
+
+    const sandbox = await runInSandbox(sandboxRequest, "token");
+    const review = applyReviewPolicyToResult({ verdict: "approve", summary: "No material findings.", findings: [], sandbox }, safeReviewPolicy);
+
+    expect(sandbox.ok).toBe(false);
+    expect(sandbox.status).toBe("unavailable");
+    expect(sandbox.unavailableReason).toContain("clone timed out");
+    expect(review.verdict).toBe("request_changes");
+  });
+
+  it("blocks when updateNetworkPolicy fails before any repo command", async () => {
     const { Sandbox } = await import("@vercel/sandbox");
     vi.mocked(Sandbox.create).mockResolvedValueOnce({
       name: "sandbox-policy",
@@ -349,16 +362,38 @@ describe("sandbox step applicability and tooling failures", () => {
       stop: vi.fn(async () => undefined),
     } as never);
 
-    await expect(runInSandbox({
+    const sandbox = await runInSandbox({
       ...sandboxRequest,
       policy: { automaticReview: { opened: true, reopened: true, synchronize: true, readyForReview: true }, minimumSeverity: "suggestion", model: "test/model", reviewCommands: ["bash tests/run.sh"], excludedPaths: [] },
-    }, "token")).rejects.toThrow("network policy update failed");
+    }, "token");
+    const review = applyReviewPolicyToResult({ verdict: "approve", summary: "No material findings.", findings: [], sandbox }, safeReviewPolicy);
+
+    expect(sandbox.ok).toBe(false);
+    expect(sandbox.status).toBe("unavailable");
+    expect(sandbox.unavailableReason).toContain("network policy update failed");
+    expect(review.verdict).toBe("request_changes");
   });
 
-  it("still throws when the sandbox SDK fails before any repo command, so the reviewer can mark it unavailable", async () => {
+  it("blocks when the package.json probe throws", async () => {
     await scriptSandbox((shell) => (shell === PACKAGE_JSON_PROBE ? { exitCode: 1, throwError: new Error("sandbox create raced the probe") } : { exitCode: 0 }));
 
-    await expect(runInSandbox(sandboxRequest, "token")).rejects.toThrow("sandbox create raced the probe");
+    const sandbox = await runInSandbox(sandboxRequest, "token");
+    const review = applyReviewPolicyToResult({ verdict: "approve", summary: "No material findings.", findings: [], sandbox }, safeReviewPolicy);
+
+    expect(sandbox.ok).toBe(false);
+    expect(sandbox.status).toBe("unavailable");
+    expect(sandbox.unavailableReason).toContain("sandbox create raced the probe");
+    expect(review.verdict).toBe("request_changes");
+  });
+
+  it("gives each repo command the raised COMMAND_TIMEOUT when remaining budget is larger", async () => {
+    const { timeouts } = await scriptSandbox(() => ({ exitCode: 0, elapsedMs: 0 }));
+
+    await runInSandbox(sandboxRequest, "token", { skipBuild: true });
+
+    expect(COMMAND_TIMEOUT).toBe(120_000);
+    expect(timeouts[0]).toBe(10_000);
+    expect(timeouts.slice(1)).toEqual([COMMAND_TIMEOUT, COMMAND_TIMEOUT, COMMAND_TIMEOUT, COMMAND_TIMEOUT]);
   });
 
   it("keeps a 127 from the repository's own install script as a code failure", async () => {
