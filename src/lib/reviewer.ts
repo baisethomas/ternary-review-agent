@@ -28,9 +28,7 @@ function formatSandboxLines(sandbox: SandboxResult) {
     return `- ⚠️ Sandbox checks did not run: ${sandbox.unavailableReason ?? "sandbox unavailable"}`;
   }
   return [
-    ...sandbox.commands.map((command) => command.toolingFailure
-      ? `- ⚠️ \`${command.command}\` inconclusive, Ternary tooling failure (not a code failure): ${command.toolingFailure}`
-      : `- ${command.exitCode === 0 ? "✅" : "❌"} \`${command.command}\``),
+    ...sandbox.commands.map((command) => `- ${command.exitCode === 0 ? "✅" : "❌"} \`${command.command}\``),
     ...(sandbox.skippedCommands ?? []).map((label) => `- ⚠️ \`${label}\` skipped (${sandbox.skippedReason ?? "sandbox time budget"})`),
     ...(sandbox.notApplicableCommands?.length
       ? [`- ➖ Not applicable (${sandbox.notApplicableReason ?? "does not apply to this repository"}): ${sandbox.notApplicableCommands.map((label) => `\`${label}\``).join(", ")}`]

@@ -73,7 +73,6 @@ export function compactSandboxForModel(sandbox: SandboxResult) {
     commands: sandbox.commands.map((command) => ({
       command: command.command,
       exitCode: command.exitCode,
-      ...(command.toolingFailure ? { toolingFailure: command.toolingFailure } : {}),
       output: command.output.length > SANDBOX_MODEL_OUTPUT_LIMIT
         ? `${command.output.slice(0, SANDBOX_MODEL_OUTPUT_LIMIT)}\n… truncated for model input`
         : command.output,
@@ -112,18 +111,6 @@ export function sandboxCommandPlan(reviewCommands: string[] = [], options: Sandb
       ];
   const selectedChecks = options.skipBuild ? checks.filter((step) => step.label !== "build") : checks;
   return [install, ...selectedChecks];
-}
-
-/**
- * A repo-command result is never a Ternary tooling failure. Exit codes, elapsed time, output, and lockfiles
- * are all under the control of the code under review (a hang, `exit 137`, a slow late failure at a shrunk
- * timeout). The sandbox API reports no termination reason, so a time-limit kill cannot be proven to be
- * Ternary's. Non-blocking inconclusive is reserved for Ternary-side failures that never ran repo commands
- * (`unavailableSandboxResult`: sandbox creation, platform errors, budget too thin to start).
- * Skipping a step the repository still needs, or an SDK throw during a repo command, sets ok: false.
- */
-export function classifyToolingFailure() {
-  return undefined;
 }
 
 export type SandboxRunOptions = SandboxCommandPlanOptions & {

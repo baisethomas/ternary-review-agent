@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { NonRetryableReviewError } from "./review-errors";
 import { safeReviewPolicy } from "./review-policy";
 import { applyReviewPolicyToResult } from "./review-policy-execution";
-import { classifyToolingFailure, runInSandbox, sandboxCommandPlan, sandboxCredentials, compactSandboxForModel, unavailableSandboxResult } from "./sandbox";
+import { runInSandbox, sandboxCommandPlan, sandboxCredentials, compactSandboxForModel, unavailableSandboxResult } from "./sandbox";
 
 const PACKAGE_JSON_PROBE = "test -f package.json";
 
@@ -210,9 +210,9 @@ describe("sandbox step applicability and tooling failures", () => {
     const result = await runInSandbox(sandboxRequest, "token");
 
     expect(result.ok).toBe(false);
-    expect(result.commands.map((command) => [command.command, command.exitCode, command.toolingFailure])).toEqual([
-      ["install dependencies", 0, undefined],
-      ["lint", 1, undefined],
+    expect(result.commands.map((command) => [command.command, command.exitCode])).toEqual([
+      ["install dependencies", 0],
+      ["lint", 1],
     ]);
     expect(result.status).toBeUndefined();
   });
@@ -224,7 +224,6 @@ describe("sandbox step applicability and tooling failures", () => {
 
     expect(result.ok).toBe(false);
     expect(result.commands.at(-1)).toMatchObject({ command: "test", exitCode: 1 });
-    expect(result.commands.at(-1)?.toolingFailure).toBeUndefined();
   });
 
   it("blocks a hanging test script instead of treating the time-limit kill as a tooling failure", async () => {
@@ -235,7 +234,6 @@ describe("sandbox step applicability and tooling failures", () => {
 
     expect(sandbox.ok).toBe(false);
     expect(sandbox.commands.at(-1)).toMatchObject({ command: "test", exitCode: 137 });
-    expect(sandbox.commands.at(-1)?.toolingFailure).toBeUndefined();
     expect(sandbox.commands.map((command) => command.command)).not.toContain("build");
     expect(review.verdict).toBe("request_changes");
   });
@@ -248,7 +246,6 @@ describe("sandbox step applicability and tooling failures", () => {
 
     expect(sandbox.ok).toBe(false);
     expect(sandbox.commands).toEqual([expect.objectContaining({ command: "install dependencies", exitCode: 137 })]);
-    expect(sandbox.commands[0]?.toolingFailure).toBeUndefined();
     expect(sandbox.commands.map((command) => command.command)).toEqual(["install dependencies"]);
     expect(review.verdict).toBe("request_changes");
   });
@@ -267,7 +264,6 @@ describe("sandbox step applicability and tooling failures", () => {
     expect(timeouts).toEqual([10_000, 20_000, 8_000]);
     expect(sandbox.ok).toBe(false);
     expect(sandbox.commands.at(-1)).toMatchObject({ command: "lint", exitCode: 1 });
-    expect(sandbox.commands.at(-1)?.toolingFailure).toBeUndefined();
     expect(review.verdict).toBe("request_changes");
   });
 
@@ -278,7 +274,6 @@ describe("sandbox step applicability and tooling failures", () => {
 
     expect(result.ok).toBe(false);
     expect(result.commands).toEqual([expect.objectContaining({ command: "install dependencies", exitCode: 127 })]);
-    expect(result.commands[0]?.toolingFailure).toBeUndefined();
   });
 
   it("a finding-free review of a repository without package.json is not blocked by the sandbox", async () => {
@@ -313,7 +308,6 @@ describe("sandbox step applicability and tooling failures", () => {
     expect(shells).toEqual([PACKAGE_JSON_PROBE, expect.stringContaining("npm ci")]);
     expect(sandbox.ok).toBe(false);
     expect(sandbox.commands).toEqual([expect.objectContaining({ command: "install dependencies", exitCode: 137 })]);
-    expect(sandbox.commands[0]?.toolingFailure).toBeUndefined();
     expect(review.verdict).toBe("request_changes");
   });
 
@@ -325,12 +319,7 @@ describe("sandbox step applicability and tooling failures", () => {
 
     expect(sandbox.ok).toBe(false);
     expect(sandbox.commands.at(-1)).toMatchObject({ command: "test", exitCode: 137 });
-    expect(sandbox.commands.at(-1)?.toolingFailure).toBeUndefined();
     expect(review.verdict).toBe("request_changes");
-  });
-
-  it("never classifies a repo-command result as a Ternary tooling failure", () => {
-    expect(classifyToolingFailure()).toBeUndefined();
   });
 
   it("blocks when the sandbox SDK throws during a repo command instead of treating the sandbox as unavailable", async () => {
@@ -359,6 +348,5 @@ describe("sandbox step applicability and tooling failures", () => {
 
     expect(result.ok).toBe(false);
     expect(result.commands).toEqual([expect.objectContaining({ command: "install dependencies", exitCode: 127 })]);
-    expect(result.commands[0]?.toolingFailure).toBeUndefined();
   });
 });

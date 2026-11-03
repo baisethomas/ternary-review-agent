@@ -17,8 +17,6 @@ export type SandboxCommandResult = {
   command: string;
   exitCode: number;
   output: string;
-  /** Set only when Ternary can prove the step failed on its own side. Repo-command results never set this. */
-  toolingFailure?: string;
 };
 
 export type SandboxResult = {
