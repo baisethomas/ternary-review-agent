@@ -9,8 +9,8 @@ import { REVIEW_WORKER_DRAIN_RESERVE_MS } from "@/lib/review-invocation-limits";
 import { runOpsAlertCheck } from "@/lib/ops-alert-service";
 import { ensureReviewWorkerWakeSchedule } from "@/lib/review-worker-wake-schedule";
 
-/** Must match REVIEW_WORKER_MAX_DURATION_SECONDS in review-invocation-limits.ts (Next.js requires a literal; Hobby max 300). */
-export const maxDuration = 300;
+/** Must match REVIEW_WORKER_MAX_DURATION_SECONDS (Next.js 16.3.5 extracts a numeric literal only). */
+export const maxDuration = 480;
 
 /** Keep enough time for OpenRouter abort + trailing QStash publish. */
 const DRAIN_RESERVE_MS = REVIEW_WORKER_DRAIN_RESERVE_MS;

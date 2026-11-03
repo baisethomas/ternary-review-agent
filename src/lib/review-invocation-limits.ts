@@ -1,8 +1,12 @@
 /**
- * Worker invocation limits. Vercel Hobby caps function duration at 300s; Pro allows up to 800s.
- * Raise REVIEW_WORKER_MAX_DURATION_SECONDS (and the worker route literal) after upgrading the plan.
+ * Worker invocation limits. Production is on Vercel Pro (D-20260825-0400),
+ * which allows up to 800s. The live cap is the existing Pro target of 480s.
+ * Next.js 16.3.5 extracts `maxDuration` from a numeric literal only — keep the
+ * worker route literal in sync (pinned by review-invocation-limits.test.ts).
  */
-export const REVIEW_WORKER_MAX_DURATION_SECONDS = 300;
+export const PRO_REVIEW_WORKER_MAX_DURATION_SECONDS = 480;
+
+export const REVIEW_WORKER_MAX_DURATION_SECONDS = PRO_REVIEW_WORKER_MAX_DURATION_SECONDS;
 
 export const REVIEW_WORKER_MAX_DURATION_MS = REVIEW_WORKER_MAX_DURATION_SECONDS * 1_000;
 
@@ -32,11 +36,21 @@ export const REVIEW_MODEL_FALLBACK_SLICE_MS = 45_000;
 /** Guaranteed floor for the AI cascade after sandbox evidence gathering (primary slice + one fallback slice). */
 export const REVIEW_AI_RESERVE_MS = 90_000;
 
-/** Below this remaining sandbox budget, skip sandbox creation entirely and run an AI-only review. */
-export const SANDBOX_MIN_BUDGET_MS = 30_000;
+/**
+ * Below this remaining sandbox budget, do not start the sandbox. Must be enough
+ * for this repo's measured cold install (~60–67 s) plus create/probe overhead,
+ * and must stay below the reviewer sandbox window (worker − publish − AI).
+ */
+export const SANDBOX_MIN_BUDGET_MS = 90_000;
 
 /** Minimum useful time for one sandbox command; below this, remaining checks are skipped. */
 export const SANDBOX_MIN_COMMAND_BUDGET_MS = 5_000;
+
+/**
+ * Vercel Sandbox VM lifetime. Must stay above the reviewer sandbox window
+ * (worker − publish − AI = 370s at the 480s cap).
+ */
+export const SANDBOX_VM_TIMEOUT_MS = 400_000;
 
 /** Split remaining invocation time across remaining model attempts. */
 export function timeoutForModelAttempt(
@@ -52,9 +66,6 @@ export function timeoutForModelAttempt(
   const reservePerLater = Math.min(sliceMs, evenSplit);
   return budget - reservePerLater * (attempts - 1);
 }
-
-/** Pro-plan target once maxDuration can exceed 300s (Hobby deploy will reject higher values). */
-export const PRO_REVIEW_WORKER_MAX_DURATION_SECONDS = 480;
 
 // --- Workspace Review sync endpoint (ADR-0002, TER-44 step 2) ---
 //

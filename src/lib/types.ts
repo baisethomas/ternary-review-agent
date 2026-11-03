@@ -13,15 +13,25 @@ export type ReviewRequest = {
 
 export type WebhookReviewRequest = ReviewRequest & { webhookDeliveryId: string };
 
+export type SandboxCommandResult = {
+  command: string;
+  exitCode: number;
+  output: string;
+};
+
 export type SandboxResult = {
-  /** True when no executed check failed; unavailable/partial sandboxes report unrun checks via status, not ok. */
+  /** True when every needed check ran and exited 0. Skipped needed steps, setup failures, and unavailable sandboxes set ok false. Not-applicable does not. */
   ok: boolean;
-  commands: Array<{ command: string; exitCode: number; output: string }>;
+  commands: SandboxCommandResult[];
   durationMs: number;
   sandboxId: string;
-  /** Absent means "complete". "partial": time budget cut checks short. "unavailable": sandbox could not run at all. */
+  /** Absent means "complete". "partial": remaining needed checks were skipped or a repo command threw. "unavailable": sandbox could not run at all. */
   status?: "complete" | "partial" | "unavailable";
   skippedCommands?: string[];
+  skippedReason?: string;
+  /** Checks that do not apply to this repository (for example JavaScript checks without a package.json); never run, never a failure. */
+  notApplicableCommands?: string[];
+  notApplicableReason?: string;
   unavailableReason?: string;
 };
 

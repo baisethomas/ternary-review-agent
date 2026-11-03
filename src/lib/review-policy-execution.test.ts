@@ -83,4 +83,59 @@ rename to generated/new.ts`;
     expect(result.findings).toEqual([]);
     expect(result.verdict).toBe("approve");
   });
+
+  it("approves a finding-free review of a repository where no sandbox checks apply", () => {
+    const result = applyReviewPolicyToResult({
+      verdict: "request_changes",
+      summary: "No material findings.",
+      findings: [],
+      sandbox: { ok: true, commands: [], durationMs: 10, sandboxId: "sandbox", notApplicableCommands: ["install dependencies", "lint", "typecheck", "test", "build"], notApplicableReason: "no package.json at the repository root, so JavaScript checks do not apply" },
+    }, safeReviewPolicy);
+
+    expect(result.verdict).toBe("approve");
+  });
+
+  it("blocks a finding-free review when the sandbox never ran (setup unavailable)", () => {
+    const result = applyReviewPolicyToResult({
+      verdict: "approve",
+      summary: "No material findings.",
+      findings: [],
+      sandbox: { ok: false, status: "unavailable", commands: [], durationMs: 0, sandboxId: "unavailable", unavailableReason: "quota exhausted" },
+    }, safeReviewPolicy);
+
+    expect(result.verdict).toBe("request_changes");
+  });
+
+  it("blocks a finding-free review when needed sandbox steps were skipped for time budget", () => {
+    const result = applyReviewPolicyToResult({
+      verdict: "approve",
+      summary: "No material findings.",
+      findings: [],
+      sandbox: { ok: false, status: "partial", commands: [{ command: "install dependencies", exitCode: 0, output: "" }, { command: "lint", exitCode: 0, output: "" }], durationMs: 10, sandboxId: "sandbox", skippedCommands: ["typecheck", "test"], skippedReason: "sandbox time budget" },
+    }, safeReviewPolicy);
+
+    expect(result.verdict).toBe("request_changes");
+  });
+
+  it("blocks a finding-free review when a repo command was killed at the time limit", () => {
+    const result = applyReviewPolicyToResult({
+      verdict: "approve",
+      summary: "No material findings.",
+      findings: [],
+      sandbox: { ok: false, commands: [{ command: "test", exitCode: 137, output: "" }], durationMs: 10, sandboxId: "sandbox" },
+    }, safeReviewPolicy);
+
+    expect(result.verdict).toBe("request_changes");
+  });
+
+  it("still blocks a finding-free review when a sandbox check genuinely failed", () => {
+    const result = applyReviewPolicyToResult({
+      verdict: "approve",
+      summary: "No material findings.",
+      findings: [],
+      sandbox: { ok: false, commands: [{ command: "install dependencies", exitCode: 0, output: "" }, { command: "lint", exitCode: 1, output: "1 error" }], durationMs: 10, sandboxId: "sandbox" },
+    }, safeReviewPolicy);
+
+    expect(result.verdict).toBe("request_changes");
+  });
 });

@@ -43,6 +43,19 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
+- **Sandbox stops failing non-JS repos (2026-11-03, branch
+  `cursor/sandbox-non-js-repos-c308`, brief PR #68, fix PR #69,
+  D-20261103-0235):** live worker cap is the Pro target **480 s**
+  (`REVIEW_WORKER_MAX_DURATION_SECONDS = PRO_REVIEW_WORKER_MAX_DURATION_SECONDS`).
+  Worker route `maxDuration` literal is 480 (Next 16.3.5 needs a
+  literal; test pins it). Sandbox window **370 s** (480 − 20 − 90).
+  VM timeout **400 s**. `SANDBOX_MIN_BUDGET_MS` 90 s and
+  `COMMAND_TIMEOUT` 120 s unchanged. Setup failures still block;
+  no-root-`package.json` skip unchanged. Other `maxDuration = 300`
+  routes left as enqueue/index/Workspace Review. **#69 Ternary stays
+  red until this head is deployed** — production runs `main`. Do not
+  call that check green. `vercel.json` / dashboard / env untouched.
+  Merge and production deploy are operator-reserved.
 - **Dependency security bump (2026-09-18, merged main `25e8265`, #66,
   Ternary ✅, deployed and health-verified live):** health
   check found `next` 16.3.0 inside a critical advisory range (two
@@ -249,9 +262,9 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Last handoff
 
-- Updated: 2026-09-04 (PR #65 infra scrub merged; public-repo hardening pass complete; TER-49 fully closed)
-- By: agent (Claude Code, orchestrator)
-- Branch: main `645a867` + this file (uncommitted).
+- Updated: 2026-11-03 (review worker cap 480 s; sandbox window 370 s; D-20261103-0235)
+- By: agent (Cursor cloud agent)
+- Branch: `cursor/sandbox-non-js-repos-c308` off main `0a64b9f`.
 - **The one thing a fresh agent should not misread:** §8.9's 100% delivery and
   80% severity agreement are two-repetition numbers on a 12-seed fixture set
   under a brand-new prompt. They are evidence the contract behaves as designed,
