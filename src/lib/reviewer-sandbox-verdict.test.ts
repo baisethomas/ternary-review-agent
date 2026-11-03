@@ -98,7 +98,7 @@ describe("runReview maps sandbox setup failures through the real sandbox module"
   it("blocks when remaining sandbox budget is below SANDBOX_MIN_BUDGET_MS", async () => {
     const result = await runReview({
       ...request,
-      startedAt: Date.now() - 200_000,
+      startedAt: Date.now() - 400_000,
     } as typeof request & { startedAt: number });
 
     expect(Sandbox.create).not.toHaveBeenCalled();

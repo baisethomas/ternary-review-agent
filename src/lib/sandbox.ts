@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { APIError, Sandbox, type NetworkPolicy } from "@vercel/sandbox";
 import { isRetryableHttpStatus, NonRetryableReviewError } from "./review-errors";
-import { SANDBOX_MIN_COMMAND_BUDGET_MS } from "./review-invocation-limits";
+import { SANDBOX_MIN_COMMAND_BUDGET_MS, SANDBOX_VM_TIMEOUT_MS } from "./review-invocation-limits";
 import type { ReviewRequest, SandboxResult } from "./types";
 
 const INSTALL_NETWORK: NetworkPolicy = {
@@ -169,7 +169,7 @@ export async function runInSandbox(request: ReviewRequest, githubToken: string, 
       },
       image: "vercel/sandbox/node:24",
       resources: { vcpus: 2 },
-      timeout: 240_000,
+      timeout: SANDBOX_VM_TIMEOUT_MS,
       persistent: false,
       networkPolicy: INSTALL_NETWORK,
       tags: { service: "ternary", repository: `${request.owner}-${request.repo}`.slice(0, 63), pr: String(request.pullNumber) },

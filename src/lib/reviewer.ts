@@ -77,6 +77,7 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
     const routeConfig = resolveReviewRouteConfig();
     const diffPrep = prepareReviewRouteFromDiff(reviewDiff, routeConfig);
     const skipBuild = shouldSkipSandboxBuild(diffPrep, routeConfig);
+    // 480s worker − 20s publish − 90s AI = 370s sandbox window.
     const sandboxDeadlineAt = invocationStartedAt + WORKER_INVOCATION_BUDGET_MS - REVIEW_PUBLISH_RESERVE_MS - REVIEW_AI_RESERVE_MS;
     const [sandbox, repositoryContext] = await Promise.all([
       gatherSandboxEvidence(request, token, { skipBuild, deadlineAt: sandboxDeadlineAt }),
