@@ -33,8 +33,8 @@ vi.mock("./review-submission", () => ({
 vi.mock("./github-finding-feedback", () => ({ ingestGitHubFindingFeedback: mocks.ingestFeedback }));
 vi.mock("./github", () => ({
   getGitHubApp: mocks.getApp,
-  createInstallationToken: (...args: unknown[]) => mocks.createToken(...args),
-  getPullRequest: (...args: unknown[]) => mocks.getPull(...args),
+  createInstallationToken: mocks.createToken,
+  getPullRequest: mocks.getPull,
   TERNARY_CHECK_NAME: "Ternary review",
   TERNARY_RERUN_ACTION: { label: "Re-run Ternary", description: "Retry this review without a new push", identifier: "rerun" },
 }));
