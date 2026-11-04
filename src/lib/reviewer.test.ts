@@ -166,7 +166,7 @@ describe("runReview", () => {
       expect.objectContaining({ deadlineAt: expect.any(Number) }),
     );
     expect(mocks.finishCheckRun).toHaveBeenCalledWith(
-      "ternary", "agent", 99, "token", "failure", "Review complete", expect.any(String), expect.any(String),
+      "ternary", "agent", 99, "token", "failure", "Review complete", expect.stringContaining("Authorization removed"), expect.any(String),
     );
     expect(result.verdict).toBe("request_changes");
   });
@@ -190,24 +190,42 @@ describe("runReview", () => {
     expect(result.verdict).toBe("request_changes");
     expect(result.sandbox.status).toBe("unavailable");
     expect(result.sandbox.ok).toBe(false);
-    expect(mocks.generateRoutedReview).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({ status: "unavailable", ok: false }),
-      expect.any(String),
-      expect.anything(),
-      expect.anything(),
+    expect(result.findings).toEqual([]);
+    expect(mocks.generateRoutedReview).not.toHaveBeenCalled();
+    expect(mocks.syncFindingReviewComments).toHaveBeenCalledWith(
+      "ternary",
+      "agent",
+      8,
+      "abc1234",
+      "token",
+      [],
+      expect.objectContaining({ deadlineAt: expect.any(Number) }),
     );
-    expect(mocks.upsertPullRequestComment).toHaveBeenCalled();
+    expect(mocks.upsertPullRequestComment).toHaveBeenCalledWith(
+      "ternary",
+      "agent",
+      8,
+      "token",
+      expect.stringMatching(/infrastructure failure[\s\S]*No code findings/),
+      undefined,
+    );
+    const comment = mocks.upsertPullRequestComment.mock.calls[0]?.[4] as string;
+    expect(comment).not.toContain("No material findings.");
+    expect(comment).not.toMatch(/### \d+\./);
+    expect(comment).not.toContain("Sandbox checks failed");
     expect(mocks.finishCheckRun).toHaveBeenCalledWith(
       "ternary",
       "agent",
       99,
       "token",
       "failure",
-      "Review complete",
-      expect.stringContaining("Sandbox checks did not run"),
+      "Sandbox infrastructure failure",
+      expect.stringContaining("infrastructure failure"),
       expect.any(String),
     );
+    const [, , , , , title, summary] = mocks.finishCheckRun.mock.calls[0];
+    expect(title).toBe("Sandbox infrastructure failure");
+    expect(summary).toBe(comment);
   });
 
   function publishReviewOf(sandbox: Record<string, unknown>) {
@@ -243,6 +261,18 @@ describe("runReview", () => {
     expect(markdown).not.toContain("❌");
   });
 
+  function expectInfraLabeledFailure() {
+    expect(mocks.generateRoutedReview).not.toHaveBeenCalled();
+    const [, , , , conclusion, title, markdown] = mocks.finishCheckRun.mock.calls[0] ?? [];
+    expect(conclusion).toBe("failure");
+    expect(title).toBe("Sandbox infrastructure failure");
+    expect(markdown).toMatch(/infrastructure failure/i);
+    expect(markdown).toContain("No code findings");
+    expect(markdown).not.toContain("No material findings.");
+    expect(markdown).not.toMatch(/### \d+\./);
+    return markdown as string;
+  }
+
   it("fails the check run when needed sandbox steps were skipped for time budget", async () => {
     const result = await publishReviewOf({
       ok: false,
@@ -258,30 +288,55 @@ describe("runReview", () => {
     });
 
     expect(result.verdict).toBe("request_changes");
-    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
-    expect(conclusion).toBe("failure");
+    expect(result.findings).toEqual([]);
+    const markdown = expectInfraLabeledFailure();
     expect(markdown).toContain("⚠️ `typecheck` skipped (sandbox time budget)");
     expect(markdown).toContain("⚠️ `test` skipped (sandbox time budget)");
   });
 
-  it("fails the check run when a test hangs until the time limit", async () => {
+  it("fails the check run when a command times out partway through a run", async () => {
     const result = await publishReviewOf({
       ok: false,
       commands: [
         { command: "install dependencies", exitCode: 0, output: "" },
-        { command: "lint", exitCode: 0, output: "" },
-        { command: "typecheck", exitCode: 0, output: "" },
-        { command: "test", exitCode: 137, output: "" },
+        { command: "lint", exitCode: 137, output: "" },
       ],
-      durationMs: 100,
+      durationMs: 120_000,
       sandboxId: "sandbox-1",
     });
 
     expect(result.verdict).toBe("request_changes");
-    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
-    expect(conclusion).toBe("failure");
-    expect(markdown).toContain("❌ `test`");
-    expect(markdown).not.toContain("inconclusive");
+    expect(result.findings).toEqual([]);
+    expectInfraLabeledFailure();
+  });
+
+  it("fails the check run when a command is OOM-killed with exit 137", async () => {
+    const result = await publishReviewOf({
+      ok: false,
+      commands: [{ command: "install dependencies", exitCode: 137, output: "Killed" }],
+      durationMs: 8_000,
+      sandboxId: "sandbox-1",
+    });
+
+    expect(result.verdict).toBe("request_changes");
+    expect(result.findings).toEqual([]);
+    expectInfraLabeledFailure();
+  });
+
+  it("fails the check run when the sandbox SDK throws in the middle of a command", async () => {
+    const result = await publishReviewOf({
+      ok: false,
+      status: "partial",
+      commands: [{ command: "install dependencies", exitCode: 1, output: "sandbox command aborted" }],
+      skippedCommands: ["lint", "typecheck", "test", "build"],
+      skippedReason: "sandbox command failed",
+      durationMs: 20,
+      sandboxId: "sandbox-1",
+    });
+
+    expect(result.verdict).toBe("request_changes");
+    expect(result.findings).toEqual([]);
+    expectInfraLabeledFailure();
   });
 
   it("still fails the check run when a JavaScript repository's tests genuinely fail", async () => {
@@ -298,8 +353,15 @@ describe("runReview", () => {
     });
 
     expect(result.verdict).toBe("request_changes");
-    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
+    const [, , , , conclusion, title, markdown] = mocks.finishCheckRun.mock.calls[0];
     expect(conclusion).toBe("failure");
+    expect(title).toBe("Review complete");
+    expect(markdown).toContain("## ⛔ Ternary review");
+    expect(markdown).toContain("No material findings.");
     expect(markdown).toContain("❌ `test`");
+    expect(markdown).not.toMatch(/infrastructure failure/i);
+    expect(mocks.upsertPullRequestComment).toHaveBeenCalledWith(
+      "ternary", "agent", 8, "token", markdown, undefined,
+    );
   });
 });

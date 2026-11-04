@@ -231,3 +231,51 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 - **Consequences:** #69's own Ternary check stays red until this head is deployed — production still runs `main`. `vercel.json` plan settings and the Vercel dashboard were not changed.
 - **Revisit when:** the Pro function ceiling changes, or a review still cannot finish inside 480 s.
 - **Approved by:** Baise Thomas (owner), via explicit round-5 direction on #69
+
+### D-20261104-0140-sandbox-infra-labeled-rerun — Infra sandbox failures are labeled and re-runnable, still fail-closed
+
+- **Status:** superseded in part by D-20261104-1635 (partial / 137 / mid-run timeout / SDK throw are now infra-labeled; unavailable + re-run path still stand)
+- **Impact:** medium
+- **Date:** 2026-11-04
+- **Decision:** A sandbox result with `status: "unavailable"` (setup, clone, create, probe, network-policy, thin budget) still concludes check **failure**. The check title is `Sandbox infrastructure failure`; the PR comment states this is an infrastructure failure, not a code failure; findings are empty; the AI review is not invoked. Command failures and partial skipped-step failures keep today's `Review complete` title, summary, and comment. Completed check runs include a `Re-run Ternary` `requested_action`. The GitHub webhook handles `check_run` `requested_action` (identifier `rerun`) and `check_run` `rerequested`, enqueueing with `github-delivery:` idempotency only (not the canonical SHA key) so a recovered sandbox can be retried without a new push. Linear tracking (team TER) is added to this repo's `AGENTS.md` and `CLAUDE.md`; `ratchet/drop-in/` copies are Ratchet templates for other repos and were left unchanged.
+- **Why:** TER-50 / brief `briefs/2026-11-03-sandbox-outage-handling.md`. #69 made these failures block every PR, which is correct but unlabeled and unrecoverable without a push.
+- **Rejected / alternatives:** treating unavailable as success (reopens the fail-open hole); putting the infra reason only in the collapsed Sandbox checks section (today's bug); using the canonical SHA idempotency key for re-runs (a completed review of this head would no-op); editing `ratchet/drop-in/AGENTS.md` and `CLAUDE.md` (those are FILL-ME templates synced from Ratchet, not Ternary's operating copies).
+- **Consequences:** Production Ternary of this PR still runs `main` until deploy, so a live self-review cannot exercise the new infra label or re-run button until this head is deployed. The GitHub App must already subscribe to `check_run` webhooks for rerequested/requested_action to arrive; this change does not alter GitHub App settings.
+- **Revisit when:** GitHub App `check_run` subscription is confirmed live, or `In Review`/`Verified` Linear states are added.
+- **Approved by:** agent, under operator brief TER-50 (brief PR #71, implementation PR #72)
+
+### D-20261104-0145-linear-tracking-rule — Linear (team TER) is the work tracker, with claim and handoff rules
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-04
+- **Decision:** Agents follow the Linear tracking section in `AGENTS.md` and `CLAUDE.md` (workspace loomlogiclabs, team TER): claim before start, include the issue ID in branch and PR names/titles, file follow-ups as linked Linear issues, and hand off status builder → verifier → Baise. Until Baise adds `In Review` and `Verified` workflow states, keep `In Progress` and record those labels in an issue comment. Do not create Linear states.
+- **Why:** TER-50 brief required the rule in the same PR as sandbox outage handling, with revised multi-agent claim/handoff text.
+- **Rejected / alternatives:** putting the rule only in `AGENTS.md` (brief required CLAUDE.md too); copying it into `ratchet/drop-in/` (templates for other repos).
+- **Consequences:** Claiming and state transitions remain operator-gated on this ticket (`Don't change Linear states or settings yourself`).
+- **Revisit when:** Baise adds `In Review` and `Verified` states.
+- **Approved by:** agent, under operator brief TER-50 (brief PR #71, implementation PR #72)
+
+### D-20261104-0200-rerun-closed-guard-and-check-run-alias — Re-runs reject closed/merged PRs; idempotency adds a check-run alias
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-04
+- **Decision:** A `check_run` re-run (`rerequested` or `requested_action` `rerun`) is rejected with `accepted: false` when the associated pull request is merged or closed; no job is enqueued. Re-run idempotency keys are the GitHub delivery id plus `github-check-rerun:<owner>/<repo>#<pull>:<sha>:<checkRunId>` — still not the canonical SHA key. An infrastructure sandbox result syncs an empty inline-finding set so a same-SHA re-run does not leave stale review comments next to "No code findings."
+- **Why:** Operator follow-up on PR #72. Closed/merged was a live Ternary warning. Delivery-only keys let GitHub redeliveries of the same click enqueue a second job after a timeout; the check-run alias drops those without blocking a later re-run of a different completed check on the same head. Empty-set sync makes the infra comment's "No code findings" match GitHub inline state.
+- **Rejected / alternatives:** using the canonical SHA key (would no-op a recovered-sandbox retry of a completed head); wiping findings from the ledger (infra results stay `authoritativeFindings: false`).
+- **Consequences:** Clicking Re-run twice on the *same* completed check run coalesces for the idempotency TTL (7 days); click the newer check run instead. Linear tracking and `ratchet/drop-in/` copies are unchanged.
+- **Revisit when:** GitHub App `check_run` subscription is confirmed live.
+- **Approved by:** agent, under operator follow-up on TER-50 / PR #72
+
+### D-20261104-1635-widen-sandbox-infra-classes — Timeouts, 137, budget-partial, and mid-command SDK throws are infra-labeled
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-04
+- **Decision:** Fail-closed sandbox results are labeled `Sandbox infrastructure failure` (no code findings, no AI review, Re-run path) when any of: `status: "unavailable"`; `status: "partial"` (budget skip or an SDK throw mid-command); a command exit 137 (timeout or OOM kill). A genuine command failure (for example `test` exit 1) keeps today's `Review complete` title, summary, and comment. `check_suite` `rerequested` is handled like `check_run` rerequested (app slug, current head, closed/merged guard) with delivery-id idempotency.
+- **Why:** Operator follow-up on PR #72. Timeouts, OOM kills, unfinished budget windows, and SDK throws are Ternary/platform failures, not this PR's code. GitHub's "Re-run all checks" sends `check_suite` `rerequested`.
+- **Rejected / alternatives:** treating 137 before the time limit as a code failure (the operator classed exit 137 / OOM as infra); using the canonical SHA key for suite re-runs (would no-op a recovered retry of a completed head).
+- **Consequences:** A script that `exit 137` on purpose is now labeled infra. GitHub App still needs `check_run` and `check_suite` events for the re-run path to fire live. `ratchet/drop-in/` unchanged.
+- **Revisit when:** GitHub App `check_run` / `check_suite` subscriptions are confirmed live.
+- **Approved by:** agent, under operator follow-up on TER-50 / PR #72

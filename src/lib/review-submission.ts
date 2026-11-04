@@ -19,6 +19,23 @@ export function webhookReviewIdempotencyKeys(request: WebhookReviewRequest) {
   return [canonicalReviewIdempotencyKey(request), `github-delivery:${request.webhookDeliveryId}`];
 }
 
+/**
+ * Re-runs must not reuse the canonical SHA key, or a completed review of this head would no-op.
+ * In-flight jobs for the same head are still coalesced by submitActiveReview.
+ * The check-run id alias drops GitHub redeliveries of the same click (new delivery ids)
+ * while still allowing a later re-run of a different completed check on this head.
+ */
+export function checkRunRerunIdempotencyKeys(request: WebhookReviewRequest, checkRunId: number) {
+  return [
+    `github-delivery:${request.webhookDeliveryId}`,
+    `github-check-rerun:${request.owner.toLowerCase()}/${request.repo.toLowerCase()}#${request.pullNumber}:${request.headSha}:${checkRunId}`,
+  ];
+}
+
+export function checkSuiteRerunIdempotencyKeys(request: WebhookReviewRequest) {
+  return [`github-delivery:${request.webhookDeliveryId}`];
+}
+
 export async function submitReview(
   queue: ReviewQueue,
   dispatch: DispatchReviewWorker,

@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   recordHeadChanged: vi.fn(async () => undefined),
   ingestFeedback: vi.fn(async () => ({ accepted: true, findingId: "finding-auth" })),
   getApp: vi.fn(async () => ({ slug: "ternary-review-agent" })),
+  createToken: vi.fn(async () => "token"),
+  getPull: vi.fn(async () => ({ draft: false, number: 8, state: "open", merged: false, head: { sha: "abc1234" } })),
   resolvePolicy: vi.fn(),
   recordDelivery: vi.fn(async () => null),
 }));
@@ -24,9 +26,19 @@ vi.mock("./review-event-ledger-service", () => ({
   recordPullRequestReopenedEvent: mocks.recordReopened,
   recordPullRequestHeadChangedEvent: mocks.recordHeadChanged,
 }));
-vi.mock("./review-submission", () => ({ webhookReviewIdempotencyKeys: vi.fn(() => []) }));
+vi.mock("./review-submission", () => ({
+  webhookReviewIdempotencyKeys: vi.fn(() => ["canonical-key"]),
+  checkRunRerunIdempotencyKeys: vi.fn(() => ["rerun-key"]),
+  checkSuiteRerunIdempotencyKeys: vi.fn(() => ["suite-rerun-key"]),
+}));
 vi.mock("./github-finding-feedback", () => ({ ingestGitHubFindingFeedback: mocks.ingestFeedback }));
-vi.mock("./github", () => ({ getGitHubApp: mocks.getApp }));
+vi.mock("./github", () => ({
+  getGitHubApp: mocks.getApp,
+  createInstallationToken: mocks.createToken,
+  getPullRequest: mocks.getPull,
+  TERNARY_CHECK_NAME: "Ternary review",
+  TERNARY_RERUN_ACTION: { label: "Re-run Ternary", description: "Retry this review without a new push", identifier: "rerun" },
+}));
 vi.mock("./review-policy-service", () => ({ resolveReviewPolicyFor: mocks.resolvePolicy }));
 vi.mock("./webhook-delivery-audit-service", () => ({ recordWebhookDelivery: mocks.recordDelivery }));
 
@@ -271,5 +283,313 @@ describe("repository index webhook events", () => {
       reason: "index unavailable",
       httpStatus: 500,
     }));
+  });
+});
+
+describe("check run re-run webhook events", () => {
+  const checkRunPayload = {
+    installation: { id: 7 },
+    repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" },
+    check_run: {
+      id: 55,
+      name: "Ternary review",
+      head_sha: "abc1234",
+      app: { slug: "ternary-review-agent" },
+      pull_requests: [{ number: 8, head: { sha: "abc1234" } }],
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.watched.mockResolvedValue(true);
+    mocks.enqueueReview.mockResolvedValue({ id: "job-rerun" });
+    mocks.getApp.mockResolvedValue({ slug: "ternary-review-agent" });
+    mocks.createToken.mockResolvedValue("token");
+    mocks.getPull.mockResolvedValue({ draft: false, number: 8, state: "open", merged: false, head: { sha: "abc1234" } });
+    mocks.resolvePolicy.mockResolvedValue({
+      automaticReview: { opened: true, reopened: true, synchronize: true, readyForReview: true },
+      minimumSeverity: "suggestion", model: "openai/gpt-5.6-terra", reviewCommands: [], excludedPaths: [],
+    });
+  });
+
+  it("re-runs Ternary when a check_run is rerequested", async () => {
+    const response = await handleGitHubWebhook("check_run", JSON.stringify({
+      ...checkRunPayload,
+      action: "rerequested",
+    }), "delivery-rerequested");
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ accepted: true, jobId: "job-rerun" });
+    expect(mocks.enqueueReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: "ternary",
+        repo: "agent",
+        pullNumber: 8,
+        installationId: 7,
+        headSha: "abc1234",
+        cloneUrl: "https://github.com/ternary/agent.git",
+        webhookDeliveryId: "delivery-rerequested",
+      }),
+      ["rerun-key"],
+      "delivery-rerequested",
+    );
+  });
+
+  it("re-runs Ternary when the Re-run Ternary requested_action is clicked", async () => {
+    const response = await handleGitHubWebhook("check_run", JSON.stringify({
+      ...checkRunPayload,
+      action: "requested_action",
+      requested_action: { identifier: "rerun" },
+    }), "delivery-requested-action");
+
+    expect(response.status).toBe(202);
+    expect(mocks.enqueueReview).toHaveBeenCalledWith(
+      expect.objectContaining({ pullNumber: 8, headSha: "abc1234", webhookDeliveryId: "delivery-requested-action" }),
+      ["rerun-key"],
+      "delivery-requested-action",
+    );
+  });
+
+  it("uses the check suite pull request when check_run.pull_requests is empty", async () => {
+    await handleGitHubWebhook("check_run", JSON.stringify({
+      action: "rerequested",
+      installation: { id: 7 },
+      repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" },
+      check_run: {
+        id: 55,
+        name: "Ternary review",
+        head_sha: "abc1234",
+        app: { slug: "ternary-review-agent" },
+        pull_requests: [],
+        check_suite: { pull_requests: [{ number: 12 }] },
+      },
+    }), "delivery-suite-pr");
+
+    expect(mocks.getPull).toHaveBeenCalledWith("ternary", "agent", 12, "token");
+    expect(mocks.enqueueReview).toHaveBeenCalledWith(
+      expect.objectContaining({ pullNumber: 12, headSha: "abc1234" }),
+      ["rerun-key"],
+      "delivery-suite-pr",
+    );
+  });
+
+  it("ignores completed check_run events and unknown requested actions", async () => {
+    const completed = await handleGitHubWebhook("check_run", JSON.stringify({
+      ...checkRunPayload,
+      action: "completed",
+    }), "delivery-completed");
+    const otherAction = await handleGitHubWebhook("check_run", JSON.stringify({
+      ...checkRunPayload,
+      action: "requested_action",
+      requested_action: { identifier: "something-else" },
+    }), "delivery-other-action");
+
+    expect(completed.status).toBe(200);
+    await expect(completed.json()).resolves.toMatchObject({ accepted: false, reason: "Check run event does not request a re-run" });
+    expect(otherAction.status).toBe(200);
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("ignores re-runs for other check names, other apps, and checks without a pull request", async () => {
+    const otherName = await handleGitHubWebhook("check_run", JSON.stringify({
+      ...checkRunPayload,
+      action: "rerequested",
+      check_run: { ...checkRunPayload.check_run, name: "CI" },
+    }), "delivery-other-check");
+    const otherApp = await handleGitHubWebhook("check_run", JSON.stringify({
+      ...checkRunPayload,
+      action: "rerequested",
+      check_run: { ...checkRunPayload.check_run, app: { slug: "not-ternary" } },
+    }), "delivery-other-app");
+    const noPr = await handleGitHubWebhook("check_run", JSON.stringify({
+      action: "rerequested",
+      installation: { id: 7 },
+      repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" },
+      check_run: { id: 55, name: "Ternary review", head_sha: "abc1234", app: { slug: "ternary-review-agent" }, pull_requests: [] },
+    }), "delivery-no-pr");
+
+    expect(otherName.status).toBe(200);
+    await expect(otherName.json()).resolves.toMatchObject({ accepted: false, reason: "Check run is not Ternary" });
+    expect(otherApp.status).toBe(200);
+    await expect(otherApp.json()).resolves.toMatchObject({ accepted: false, reason: "Check run is not Ternary" });
+    expect(noPr.status).toBe(200);
+    await expect(noPr.json()).resolves.toMatchObject({ accepted: false, reason: "Check run re-run is not associated with a pull request" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("does not re-run a draft pull request", async () => {
+    mocks.getPull.mockResolvedValueOnce({ draft: true, number: 8, state: "open", merged: false, head: { sha: "abc1234" } });
+    const response = await handleGitHubWebhook("check_run", JSON.stringify({
+      ...checkRunPayload,
+      action: "rerequested",
+    }), "delivery-draft-rerun");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Pull request does not require a review" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("does not re-run a closed pull request", async () => {
+    mocks.getPull.mockResolvedValueOnce({ draft: false, number: 8, state: "closed", merged: false, head: { sha: "abc1234" } });
+    const response = await handleGitHubWebhook("check_run", JSON.stringify({
+      ...checkRunPayload,
+      action: "rerequested",
+    }), "delivery-closed-rerun");
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Pull request is closed" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("does not re-run a merged pull request", async () => {
+    mocks.getPull.mockResolvedValueOnce({ draft: false, number: 8, state: "closed", merged: true, head: { sha: "abc1234" } });
+    const response = await handleGitHubWebhook("check_run", JSON.stringify({
+      ...checkRunPayload,
+      action: "requested_action",
+      requested_action: { identifier: "rerun" },
+    }), "delivery-merged-rerun");
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Pull request is merged" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("does not re-run a stale check whose SHA is no longer the pull request head", async () => {
+    mocks.getPull.mockResolvedValueOnce({ draft: false, number: 8, state: "open", merged: false, head: { sha: "new-head" } });
+    const response = await handleGitHubWebhook("check_run", JSON.stringify({
+      ...checkRunPayload,
+      action: "rerequested",
+    }), "delivery-stale-sha");
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Check run SHA is not the current pull request head" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("does not re-run a paused repository", async () => {
+    mocks.watched.mockResolvedValueOnce(false);
+    const response = await handleGitHubWebhook("check_run", JSON.stringify({
+      ...checkRunPayload,
+      action: "rerequested",
+    }), "delivery-paused-rerun");
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Repository is paused in Ternary" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+});
+
+describe("check suite re-run webhook events", () => {
+  const checkSuitePayload = {
+    installation: { id: 7 },
+    repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" },
+    check_suite: {
+      id: 88,
+      head_sha: "abc1234",
+      app: { slug: "ternary-review-agent" },
+      pull_requests: [{ number: 8, head: { sha: "abc1234" } }],
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.watched.mockResolvedValue(true);
+    mocks.enqueueReview.mockResolvedValue({ id: "job-suite-rerun" });
+    mocks.getApp.mockResolvedValue({ slug: "ternary-review-agent" });
+    mocks.createToken.mockResolvedValue("token");
+    mocks.getPull.mockResolvedValue({ draft: false, number: 8, state: "open", merged: false, head: { sha: "abc1234" } });
+    mocks.resolvePolicy.mockResolvedValue({
+      automaticReview: { opened: true, reopened: true, synchronize: true, readyForReview: true },
+      minimumSeverity: "suggestion", model: "openai/gpt-5.6-terra", reviewCommands: [], excludedPaths: [],
+    });
+  });
+
+  it("re-runs Ternary when a check_suite is rerequested", async () => {
+    const response = await handleGitHubWebhook("check_suite", JSON.stringify({
+      ...checkSuitePayload,
+      action: "rerequested",
+    }), "delivery-suite-rerequested");
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ accepted: true, jobId: "job-suite-rerun" });
+    expect(mocks.enqueueReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: "ternary",
+        repo: "agent",
+        pullNumber: 8,
+        installationId: 7,
+        headSha: "abc1234",
+        cloneUrl: "https://github.com/ternary/agent.git",
+        webhookDeliveryId: "delivery-suite-rerequested",
+      }),
+      ["suite-rerun-key"],
+      "delivery-suite-rerequested",
+    );
+  });
+
+  it("does not re-run a draft pull request from a check_suite rerequest", async () => {
+    mocks.getPull.mockResolvedValueOnce({ draft: true, number: 8, state: "open", merged: false, head: { sha: "abc1234" } });
+    const response = await handleGitHubWebhook("check_suite", JSON.stringify({
+      ...checkSuitePayload,
+      action: "rerequested",
+    }), "delivery-suite-draft");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Pull request does not require a review" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("does not re-run a closed pull request from a check_suite rerequest", async () => {
+    mocks.getPull.mockResolvedValueOnce({ draft: false, number: 8, state: "closed", merged: false, head: { sha: "abc1234" } });
+    const response = await handleGitHubWebhook("check_suite", JSON.stringify({
+      ...checkSuitePayload,
+      action: "rerequested",
+    }), "delivery-suite-closed");
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Pull request is closed" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("does not re-run a merged pull request from a check_suite rerequest", async () => {
+    mocks.getPull.mockResolvedValueOnce({ draft: false, number: 8, state: "closed", merged: true, head: { sha: "abc1234" } });
+    const response = await handleGitHubWebhook("check_suite", JSON.stringify({
+      ...checkSuitePayload,
+      action: "rerequested",
+    }), "delivery-suite-merged");
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Pull request is merged" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("does not re-run a stale check_suite whose SHA is no longer the pull request head", async () => {
+    mocks.getPull.mockResolvedValueOnce({ draft: false, number: 8, state: "open", merged: false, head: { sha: "new-head" } });
+    const response = await handleGitHubWebhook("check_suite", JSON.stringify({
+      ...checkSuitePayload,
+      action: "rerequested",
+    }), "delivery-suite-stale-sha");
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Check suite SHA is not the current pull request head" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("ignores check_suite events that are not rerequested and suites from other apps", async () => {
+    const completed = await handleGitHubWebhook("check_suite", JSON.stringify({
+      ...checkSuitePayload,
+      action: "completed",
+    }), "delivery-suite-completed");
+    const otherApp = await handleGitHubWebhook("check_suite", JSON.stringify({
+      ...checkSuitePayload,
+      action: "rerequested",
+      check_suite: { ...checkSuitePayload.check_suite, app: { slug: "not-ternary" } },
+    }), "delivery-suite-other-app");
+
+    expect(completed.status).toBe(200);
+    await expect(completed.json()).resolves.toMatchObject({ accepted: false, reason: "Check suite event does not request a re-run" });
+    expect(otherApp.status).toBe(200);
+    await expect(otherApp.json()).resolves.toMatchObject({ accepted: false, reason: "Check suite is not Ternary" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
   });
 });

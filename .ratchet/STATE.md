@@ -43,19 +43,27 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **Sandbox stops failing non-JS repos (2026-11-03, branch
-  `cursor/sandbox-non-js-repos-c308`, brief PR #68, fix PR #69,
-  D-20261103-0235):** live worker cap is the Pro target **480 s**
-  (`REVIEW_WORKER_MAX_DURATION_SECONDS = PRO_REVIEW_WORKER_MAX_DURATION_SECONDS`).
-  Worker route `maxDuration` literal is 480 (Next 16.3.5 needs a
-  literal; test pins it). Sandbox window **370 s** (480 − 20 − 90).
-  VM timeout **400 s**. `SANDBOX_MIN_BUDGET_MS` 90 s and
-  `COMMAND_TIMEOUT` 120 s unchanged. Setup failures still block;
-  no-root-`package.json` skip unchanged. Other `maxDuration = 300`
-  routes left as enqueue/index/Workspace Review. **#69 Ternary stays
-  red until this head is deployed** — production runs `main`. Do not
-  call that check green. `vercel.json` / dashboard / env untouched.
-  Merge and production deploy are operator-reserved.
+- **TER-50 sandbox outage handling (2026-11-04, branch
+  `cursor/ter-50-sandbox-outage-handling-c8cc`, brief #71, implementation
+  PR #72):** Unavailable, budget-partial, exit 137 / OOM, mid-run
+  command timeout, and mid-command SDK throws are fail-closed and
+  labeled `Sandbox infrastructure failure` (no code findings, no AI).
+  Genuine command failures (test exit 1) keep `Review complete`.
+  Re-run via requested_action, `check_run` rerequested, and
+  `check_suite` rerequested. Re-runs require Ternary's app slug and
+  the current open PR head SHA; draft, closed, and merged PRs are
+  rejected without enqueueing. Check-run idempotency is delivery id
+  plus a check-run-id alias; check-suite idempotency is delivery id
+  only.
+  Infra results sync an empty inline-finding set. Linear tracking
+  rule added to this repo's `AGENTS.md`/`CLAUDE.md`; drop-in templates
+  left alone. GitHub App currently subscribes only to `pull_request`,
+  so re-run webhooks will not fire until the operator adds
+  `check_run` and `check_suite`. Merge/deploy reserved.
+- **Sandbox stops failing non-JS repos (merged main `fb817a7`, #69,
+  D-20261103-0235):** live worker cap is the Pro target **480 s**.
+  Setup/clone/timeout failures block (unlabeled on main — TER-50
+  labels them). `vercel.json` / dashboard / env untouched.
 - **Dependency security bump (2026-09-18, merged main `25e8265`, #66,
   Ternary ✅, deployed and health-verified live):** health
   check found `next` 16.3.0 inside a critical advisory range (two
@@ -262,9 +270,9 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Last handoff
 
-- Updated: 2026-11-03 (review worker cap 480 s; sandbox window 370 s; D-20261103-0235)
+- Updated: 2026-11-04 (TER-50 follow-up: widen infra classes; check_suite rerequested; draft/merged/stale-SHA suite tests)
 - By: agent (Cursor cloud agent)
-- Branch: `cursor/sandbox-non-js-repos-c308` off main `0a64b9f`.
+- Branch: `cursor/ter-50-sandbox-outage-handling-c8cc` off main `fb817a7`.
 - **The one thing a fresh agent should not misread:** §8.9's 100% delivery and
   80% severity agreement are two-repetition numbers on a 12-seed fixture set
   under a brand-new prompt. They are evidence the contract behaves as designed,

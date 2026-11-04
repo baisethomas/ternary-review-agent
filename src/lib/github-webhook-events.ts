@@ -1,12 +1,12 @@
 import "server-only";
 import { isRepositoryWatched } from "./repository-watch";
 import { enqueueAndDispatchReview } from "./review-queue-service";
-import { webhookReviewIdempotencyKeys } from "./review-submission";
+import { checkRunRerunIdempotencyKeys, checkSuiteRerunIdempotencyKeys, webhookReviewIdempotencyKeys } from "./review-submission";
 import { recordPullRequestClosedEvent, recordPullRequestHeadChangedEvent, recordPullRequestMergedEvent, recordPullRequestReopenedEvent } from "./review-event-ledger-service";
 import { dispatchRepositoryIndexTask } from "./repository-index-dispatcher";
 import type { WebhookReviewRequest } from "./types";
 import { ingestGitHubFindingFeedback } from "./github-finding-feedback";
-import { getGitHubApp } from "./github";
+import { createInstallationToken, getGitHubApp, getPullRequest, TERNARY_CHECK_NAME, TERNARY_RERUN_ACTION } from "./github";
 import { resolveReviewPolicyFor } from "./review-policy-service";
 import type { AutomaticReviewEvent } from "./review-policy";
 import { recordWebhookDelivery } from "./webhook-delivery-audit-service";
@@ -45,6 +45,32 @@ type WebhookSender = { login: string; type?: string };
 type ReviewCommentWebhook = { action: string; installation?: { id: number }; repository: FeedbackRepository; sender: WebhookSender; pull_request: { number: number; head: { sha: string } }; comment: { id: number; body?: string | null; in_reply_to_id?: number } };
 type ReviewThreadWebhook = { action: "resolved" | "unresolved"; installation?: { id: number }; repository: FeedbackRepository; sender: WebhookSender; pull_request: { number: number; head: { sha: string } }; thread: { comments?: Array<{ id?: number; body?: string | null }> } };
 type ReactionWebhook = { action: "created" | "deleted"; installation?: { id: number }; repository: FeedbackRepository; sender: { login: string }; reaction: { id: number; content: string }; comment?: { id?: number; body?: string | null; commit_id?: string; pull_request_url?: string } };
+type CheckRunPullRequest = { number: number; head?: { sha?: string } };
+type CheckRunWebhook = {
+  action: string;
+  requested_action?: { identifier?: string };
+  installation?: { id: number };
+  repository: { name: string; owner: { login: string }; clone_url: string };
+  check_run: {
+    id: number;
+    name: string;
+    head_sha: string;
+    app?: { slug?: string };
+    pull_requests?: CheckRunPullRequest[];
+    check_suite?: { pull_requests?: CheckRunPullRequest[] };
+  };
+};
+type CheckSuiteWebhook = {
+  action: string;
+  installation?: { id: number };
+  repository: { name: string; owner: { login: string }; clone_url: string };
+  check_suite: {
+    id: number;
+    head_sha: string;
+    app?: { slug?: string };
+    pull_requests?: CheckRunPullRequest[];
+  };
+};
 type WebhookHandler = (rawBody: string, deliveryId: string) => Promise<Response>;
 
 const automaticReviewEventByAction = {
@@ -185,6 +211,124 @@ const handleReviewThread: WebhookHandler = async (rawBody, deliveryId) => {
   return Response.json(result, { status: result.accepted ? 202 : 200 });
 };
 
+function firstPullNumber(pullRequests: CheckRunPullRequest[] | undefined) {
+  const number = pullRequests?.[0]?.number;
+  return typeof number === "number" ? number : null;
+}
+
+function checkRunPullNumber(checkRun: CheckRunWebhook["check_run"]) {
+  return firstPullNumber(checkRun.pull_requests) ?? firstPullNumber(checkRun.check_suite?.pull_requests);
+}
+
+function isCheckRunRerun(payload: CheckRunWebhook) {
+  if (payload.action === "rerequested") return true;
+  return payload.action === "requested_action" && payload.requested_action?.identifier === TERNARY_RERUN_ACTION.identifier;
+}
+
+async function enqueuePullRerun(options: {
+  deliveryId: string;
+  installationId: number;
+  owner: string;
+  repo: string;
+  cloneUrl: string;
+  pullNumber: number;
+  eventHeadSha: string;
+  staleShaReason: string;
+  idempotencyKeys: (review: WebhookReviewRequest) => string[];
+}) {
+  const fullName = `${options.owner}/${options.repo}`;
+  if (!await isRepositoryWatched(fullName)) {
+    return Response.json({ accepted: false, reason: "Repository is paused in Ternary" }, { status: 202 });
+  }
+  const token = await createInstallationToken(options.installationId);
+  const pull = await getPullRequest(options.owner, options.repo, options.pullNumber, token);
+  if (pull.merged || pull.state === "closed") {
+    const reason = pull.merged ? "Pull request is merged" : "Pull request is closed";
+    return Response.json({ accepted: false, reason }, { status: 202 });
+  }
+  if (pull.draft) {
+    return Response.json({ accepted: false, reason: "Pull request does not require a review" });
+  }
+  if (pull.head.sha !== options.eventHeadSha) {
+    return Response.json({ accepted: false, reason: options.staleShaReason }, { status: 202 });
+  }
+  const policy = await resolveReviewPolicyFor({
+    installationId: options.installationId,
+    owner: options.owner,
+    repo: options.repo,
+  });
+  const review: WebhookReviewRequest = {
+    owner: options.owner,
+    repo: options.repo,
+    pullNumber: options.pullNumber,
+    installationId: options.installationId,
+    headSha: pull.head.sha,
+    cloneUrl: options.cloneUrl,
+    webhookDeliveryId: options.deliveryId,
+    policy,
+  };
+  const job = await enqueueAndDispatchReview(review, options.idempotencyKeys(review), options.deliveryId);
+  return Response.json({ accepted: true, delivery: options.deliveryId, jobId: job.id }, { status: 202 });
+}
+
+const handleCheckRun: WebhookHandler = async (rawBody, deliveryId) => {
+  const payload = JSON.parse(rawBody) as CheckRunWebhook;
+  if (!isCheckRunRerun(payload)) {
+    return Response.json({ accepted: false, reason: "Check run event does not request a re-run" });
+  }
+  const app = await getGitHubApp();
+  if (payload.check_run.name !== TERNARY_CHECK_NAME || payload.check_run.app?.slug !== app.slug) {
+    return Response.json({ accepted: false, reason: "Check run is not Ternary" });
+  }
+  if (!payload.installation?.id) {
+    return Response.json({ accepted: false, reason: "Check run re-run did not include an installation" });
+  }
+  const pullNumber = checkRunPullNumber(payload.check_run);
+  if (!pullNumber) {
+    return Response.json({ accepted: false, reason: "Check run re-run is not associated with a pull request" });
+  }
+  return enqueuePullRerun({
+    deliveryId,
+    installationId: payload.installation.id,
+    owner: payload.repository.owner.login,
+    repo: payload.repository.name,
+    cloneUrl: payload.repository.clone_url,
+    pullNumber,
+    eventHeadSha: payload.check_run.head_sha,
+    staleShaReason: "Check run SHA is not the current pull request head",
+    idempotencyKeys: (review) => checkRunRerunIdempotencyKeys(review, payload.check_run.id),
+  });
+};
+
+const handleCheckSuite: WebhookHandler = async (rawBody, deliveryId) => {
+  const payload = JSON.parse(rawBody) as CheckSuiteWebhook;
+  if (payload.action !== "rerequested") {
+    return Response.json({ accepted: false, reason: "Check suite event does not request a re-run" });
+  }
+  const app = await getGitHubApp();
+  if (payload.check_suite.app?.slug !== app.slug) {
+    return Response.json({ accepted: false, reason: "Check suite is not Ternary" });
+  }
+  if (!payload.installation?.id) {
+    return Response.json({ accepted: false, reason: "Check suite re-run did not include an installation" });
+  }
+  const pullNumber = firstPullNumber(payload.check_suite.pull_requests);
+  if (!pullNumber) {
+    return Response.json({ accepted: false, reason: "Check suite re-run is not associated with a pull request" });
+  }
+  return enqueuePullRerun({
+    deliveryId,
+    installationId: payload.installation.id,
+    owner: payload.repository.owner.login,
+    repo: payload.repository.name,
+    cloneUrl: payload.repository.clone_url,
+    pullNumber,
+    eventHeadSha: payload.check_suite.head_sha,
+    staleShaReason: "Check suite SHA is not the current pull request head",
+    idempotencyKeys: checkSuiteRerunIdempotencyKeys,
+  });
+};
+
 const handleReaction: WebhookHandler = async (rawBody, deliveryId) => {
   const payload = JSON.parse(rawBody) as ReactionWebhook;
   const pullNumber = Number(payload.comment?.pull_request_url?.match(/\/pulls\/(\d+)$/)?.[1]);
@@ -210,6 +354,8 @@ const handlers: Record<string, WebhookHandler> = {
   pull_request_review_comment: handleReviewComment,
   pull_request_review_thread: handleReviewThread,
   reaction: handleReaction,
+  check_run: handleCheckRun,
+  check_suite: handleCheckSuite,
 };
 
 type HandleGitHubWebhookOptions = {

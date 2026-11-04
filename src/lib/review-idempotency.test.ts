@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { tagReviewComment } from "./github";
-import { canonicalReviewIdempotencyKey, isValidInvocationId, manualReviewIdempotencyKey, webhookReviewIdempotencyKeys } from "./review-submission";
+import { canonicalReviewIdempotencyKey, checkRunRerunIdempotencyKeys, checkSuiteRerunIdempotencyKeys, isValidInvocationId, manualReviewIdempotencyKey, webhookReviewIdempotencyKeys } from "./review-submission";
 import type { ReviewRequest } from "./types";
 
 const review: ReviewRequest = {
@@ -43,5 +43,24 @@ describe("review idempotency", () => {
       "review:ternary/agent#12:abc123",
       "github-delivery:delivery-123",
     ]);
+  });
+
+  it("re-runs a check using the GitHub delivery id and the check-run id, not the canonical SHA key", () => {
+    const rerun = checkRunRerunIdempotencyKeys({ ...review, webhookDeliveryId: "delivery-rerun" }, 55);
+    expect(rerun).toEqual([
+      "github-delivery:delivery-rerun",
+      "github-check-rerun:ternary/agent#12:abc123:55",
+    ]);
+    expect(rerun).not.toContain(canonicalReviewIdempotencyKey(review));
+    expect(checkRunRerunIdempotencyKeys({ ...review, webhookDeliveryId: "delivery-retry" }, 55)[1])
+      .toBe(rerun[1]);
+    expect(checkRunRerunIdempotencyKeys({ ...review, webhookDeliveryId: "delivery-later" }, 56)[1])
+      .not.toBe(rerun[1]);
+  });
+
+  it("re-runs a check suite using only the GitHub delivery id", () => {
+    const rerun = checkSuiteRerunIdempotencyKeys({ ...review, webhookDeliveryId: "delivery-suite" });
+    expect(rerun).toEqual(["github-delivery:delivery-suite"]);
+    expect(rerun).not.toContain(canonicalReviewIdempotencyKey(review));
   });
 });
