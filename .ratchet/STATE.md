@@ -51,9 +51,10 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
   Genuine command failures (test exit 1) keep `Review complete`.
   Re-run via requested_action, `check_run` rerequested, and
   `check_suite` rerequested. Re-runs require Ternary's app slug and
-  the current open PR head SHA; closed and merged PRs are rejected
-  without enqueueing. Check-run idempotency is delivery id plus a
-  check-run-id alias; check-suite idempotency is delivery id only.
+  the current open PR head SHA; draft, closed, and merged PRs are
+  rejected without enqueueing. Check-run idempotency is delivery id
+  plus a check-run-id alias; check-suite idempotency is delivery id
+  only.
   Infra results sync an empty inline-finding set. Linear tracking
   rule added to this repo's `AGENTS.md`/`CLAUDE.md`; drop-in templates
   left alone. GitHub App currently subscribes only to `pull_request`,
@@ -269,7 +270,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Last handoff
 
-- Updated: 2026-11-04 (TER-50 follow-up: widen infra classes; check_suite rerequested)
+- Updated: 2026-11-04 (TER-50 follow-up: widen infra classes; check_suite rerequested; draft/merged/stale-SHA suite tests)
 - By: agent (Cursor cloud agent)
 - Branch: `cursor/ter-50-sandbox-outage-handling-c8cc` off main `fb817a7`.
 - **The one thing a fresh agent should not misread:** §8.9's 100% delivery and

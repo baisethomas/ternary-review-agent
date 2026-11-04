@@ -417,6 +417,18 @@ describe("check run re-run webhook events", () => {
     expect(mocks.enqueueReview).not.toHaveBeenCalled();
   });
 
+  it("does not re-run a draft pull request", async () => {
+    mocks.getPull.mockResolvedValueOnce({ draft: true, number: 8, state: "open", merged: false, head: { sha: "abc1234" } });
+    const response = await handleGitHubWebhook("check_run", JSON.stringify({
+      ...checkRunPayload,
+      action: "rerequested",
+    }), "delivery-draft-rerun");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Pull request does not require a review" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
   it("does not re-run a closed pull request", async () => {
     mocks.getPull.mockResolvedValueOnce({ draft: false, number: 8, state: "closed", merged: false, head: { sha: "abc1234" } });
     const response = await handleGitHubWebhook("check_run", JSON.stringify({
@@ -515,6 +527,18 @@ describe("check suite re-run webhook events", () => {
     );
   });
 
+  it("does not re-run a draft pull request from a check_suite rerequest", async () => {
+    mocks.getPull.mockResolvedValueOnce({ draft: true, number: 8, state: "open", merged: false, head: { sha: "abc1234" } });
+    const response = await handleGitHubWebhook("check_suite", JSON.stringify({
+      ...checkSuitePayload,
+      action: "rerequested",
+    }), "delivery-suite-draft");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Pull request does not require a review" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
   it("does not re-run a closed pull request from a check_suite rerequest", async () => {
     mocks.getPull.mockResolvedValueOnce({ draft: false, number: 8, state: "closed", merged: false, head: { sha: "abc1234" } });
     const response = await handleGitHubWebhook("check_suite", JSON.stringify({
@@ -524,6 +548,30 @@ describe("check suite re-run webhook events", () => {
 
     expect(response.status).toBe(202);
     await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Pull request is closed" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("does not re-run a merged pull request from a check_suite rerequest", async () => {
+    mocks.getPull.mockResolvedValueOnce({ draft: false, number: 8, state: "closed", merged: true, head: { sha: "abc1234" } });
+    const response = await handleGitHubWebhook("check_suite", JSON.stringify({
+      ...checkSuitePayload,
+      action: "rerequested",
+    }), "delivery-suite-merged");
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Pull request is merged" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("does not re-run a stale check_suite whose SHA is no longer the pull request head", async () => {
+    mocks.getPull.mockResolvedValueOnce({ draft: false, number: 8, state: "open", merged: false, head: { sha: "new-head" } });
+    const response = await handleGitHubWebhook("check_suite", JSON.stringify({
+      ...checkSuitePayload,
+      action: "rerequested",
+    }), "delivery-suite-stale-sha");
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Check suite SHA is not the current pull request head" });
     expect(mocks.enqueueReview).not.toHaveBeenCalled();
   });
 
