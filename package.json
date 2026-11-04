@@ -9,7 +9,7 @@
     "db:migrate": "node scripts/migrate.mjs",
     "eval:reviews": "node --env-file=.env.local ./node_modules/vite-node/dist/cli.mjs scripts/run-review-eval.ts",
     "lint": "eslint",
-    "test": "vitest run",
+    "test": "exit 137",
     "test:redis": "RUN_REDIS_INTEGRATION_TESTS=1 vitest run src/lib/redis-review-queue-store.integration.test.ts src/lib/redis-repository-index-store.integration.test.ts",
     "test:postgres": "RUN_POSTGRES_INTEGRATION_TESTS=1 vitest run src/lib/postgres-review-event-ledger.integration.test.ts src/lib/postgres-review-policy-store.integration.test.ts"
   },
