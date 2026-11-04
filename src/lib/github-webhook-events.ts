@@ -6,7 +6,7 @@ import { recordPullRequestClosedEvent, recordPullRequestHeadChangedEvent, record
 import { dispatchRepositoryIndexTask } from "./repository-index-dispatcher";
 import type { WebhookReviewRequest } from "./types";
 import { ingestGitHubFindingFeedback } from "./github-finding-feedback";
-import { getGitHubApp, TERNARY_CHECK_NAME, TERNARY_RERUN_ACTION } from "./github";
+import { createInstallationToken, getGitHubApp, getPullRequest, TERNARY_CHECK_NAME, TERNARY_RERUN_ACTION } from "./github";
 import { resolveReviewPolicyFor } from "./review-policy-service";
 import type { AutomaticReviewEvent } from "./review-policy";
 import { recordWebhookDelivery } from "./webhook-delivery-audit-service";
@@ -54,6 +54,7 @@ type CheckRunWebhook = {
   check_run: {
     name: string;
     head_sha: string;
+    app?: { slug?: string };
     pull_requests?: CheckRunPullRequest[];
     check_suite?: { pull_requests?: CheckRunPullRequest[] };
   };
@@ -215,7 +216,8 @@ const handleCheckRun: WebhookHandler = async (rawBody, deliveryId) => {
   if (!isCheckRunRerun(payload)) {
     return Response.json({ accepted: false, reason: "Check run event does not request a re-run" });
   }
-  if (payload.check_run.name !== TERNARY_CHECK_NAME) {
+  const app = await getGitHubApp();
+  if (payload.check_run.name !== TERNARY_CHECK_NAME || payload.check_run.app?.slug !== app.slug) {
     return Response.json({ accepted: false, reason: "Check run is not Ternary" });
   }
   if (!payload.installation?.id) {
@@ -229,6 +231,14 @@ const handleCheckRun: WebhookHandler = async (rawBody, deliveryId) => {
   if (!await isRepositoryWatched(fullName)) {
     return Response.json({ accepted: false, reason: "Repository is paused in Ternary" }, { status: 202 });
   }
+  const token = await createInstallationToken(payload.installation.id);
+  const pull = await getPullRequest(payload.repository.owner.login, payload.repository.name, pullNumber, token);
+  if (pull.draft) {
+    return Response.json({ accepted: false, reason: "Pull request does not require a review" });
+  }
+  if (pull.head.sha !== payload.check_run.head_sha) {
+    return Response.json({ accepted: false, reason: "Check run SHA is not the current pull request head" }, { status: 202 });
+  }
   const policy = await resolveReviewPolicyFor({
     installationId: payload.installation.id,
     owner: payload.repository.owner.login,
@@ -239,7 +249,7 @@ const handleCheckRun: WebhookHandler = async (rawBody, deliveryId) => {
     repo: payload.repository.name,
     pullNumber,
     installationId: payload.installation.id,
-    headSha: payload.check_run.head_sha,
+    headSha: pull.head.sha,
     cloneUrl: payload.repository.clone_url,
     webhookDeliveryId: deliveryId,
     policy,

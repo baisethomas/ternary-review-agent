@@ -44,19 +44,17 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 ## Working on
 
 - **TER-50 sandbox outage handling (2026-11-04, branch
-  `cursor/ter-50-sandbox-outage-handling-c8cc`, brief PR #71):**
-  `status: "unavailable"` sandbox results still fail-closed, now with
-  check title `Sandbox infrastructure failure`, an infra PR comment,
-  and no code findings (AI skipped). Real command failures keep
-  today's `Review complete` title/comment. Check runs gain a
-  `Re-run Ternary` requested_action; webhook handles `check_run`
-  `rerequested` and `requested_action` with delivery-only
-  idempotency (D-20261104-0140). Linear tracking rule (team TER)
-  added to this repo's `AGENTS.md` and `CLAUDE.md`
-  (D-20261104-0145); `ratchet/drop-in/` templates left alone.
-  Linear states/settings not changed. Merge and deploy are
-  operator-reserved. Live Ternary of this PR still runs `main`
-  until deploy.
+  `cursor/ter-50-sandbox-outage-handling-c8cc`, brief PR #71, fix PR
+  #72):** `status: "unavailable"` still fail-closed, labeled
+  `Sandbox infrastructure failure`, no code findings. Command
+  failures keep `Review complete`. Re-run via requested_action +
+  `check_run` rerequested (delivery-only idempotency; in-flight
+  jobs still coalesced). Re-run handler requires Ternary's app
+  slug and the current PR head SHA (Ternary 💬 round 1). Linear
+  tracking rule added to this repo's `AGENTS.md`/`CLAUDE.md`;
+  drop-in templates left alone. GitHub App currently subscribes
+  only to `pull_request`, so the re-run webhook will not fire
+  until the operator adds `check_run`. Merge/deploy reserved.
 - **Sandbox stops failing non-JS repos (merged main `fb817a7`, #69,
   D-20261103-0235):** live worker cap is the Pro target **480 s**.
   Setup/clone/timeout failures block (unlabeled on main — TER-50
