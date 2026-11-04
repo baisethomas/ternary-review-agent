@@ -116,7 +116,8 @@ describe("OpenRouter review provider", () => {
     await expect(generateOpenRouterReview("diff", partial, "context")).resolves.toMatchObject({
       verdict: "request_changes",
       authoritativeFindings: false,
-      summary: "One or more sandbox checks failed.",
+      findings: [],
+      summary: expect.stringMatching(/infrastructure failure.*sandbox time budget/),
     });
   });
 

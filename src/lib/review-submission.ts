@@ -32,6 +32,10 @@ export function checkRunRerunIdempotencyKeys(request: WebhookReviewRequest, chec
   ];
 }
 
+export function checkSuiteRerunIdempotencyKeys(request: WebhookReviewRequest) {
+  return [`github-delivery:${request.webhookDeliveryId}`];
+}
+
 export async function submitReview(
   queue: ReviewQueue,
   dispatch: DispatchReviewWorker,

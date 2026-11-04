@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { tagReviewComment } from "./github";
-import { canonicalReviewIdempotencyKey, checkRunRerunIdempotencyKeys, isValidInvocationId, manualReviewIdempotencyKey, webhookReviewIdempotencyKeys } from "./review-submission";
+import { canonicalReviewIdempotencyKey, checkRunRerunIdempotencyKeys, checkSuiteRerunIdempotencyKeys, isValidInvocationId, manualReviewIdempotencyKey, webhookReviewIdempotencyKeys } from "./review-submission";
 import type { ReviewRequest } from "./types";
 
 const review: ReviewRequest = {
@@ -56,5 +56,11 @@ describe("review idempotency", () => {
       .toBe(rerun[1]);
     expect(checkRunRerunIdempotencyKeys({ ...review, webhookDeliveryId: "delivery-later" }, 56)[1])
       .not.toBe(rerun[1]);
+  });
+
+  it("re-runs a check suite using only the GitHub delivery id", () => {
+    const rerun = checkSuiteRerunIdempotencyKeys({ ...review, webhookDeliveryId: "delivery-suite" });
+    expect(rerun).toEqual(["github-delivery:delivery-suite"]);
+    expect(rerun).not.toContain(canonicalReviewIdempotencyKey(review));
   });
 });

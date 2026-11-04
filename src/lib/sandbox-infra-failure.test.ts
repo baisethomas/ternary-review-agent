@@ -25,26 +25,86 @@ const codeFailure: SandboxResult = {
   sandboxId: "sandbox-1",
 };
 
+const commandTimeout: SandboxResult = {
+  ok: false,
+  commands: [
+    { command: "install dependencies", exitCode: 0, output: "" },
+    { command: "lint", exitCode: 137, output: "" },
+  ],
+  durationMs: 120_000,
+  sandboxId: "sandbox-1",
+};
+
+const oomKill: SandboxResult = {
+  ok: false,
+  commands: [{ command: "install dependencies", exitCode: 137, output: "Killed" }],
+  durationMs: 8_000,
+  sandboxId: "sandbox-1",
+};
+
+const budgetPartial: SandboxResult = {
+  ok: false,
+  status: "partial",
+  commands: [
+    { command: "install dependencies", exitCode: 0, output: "" },
+    { command: "lint", exitCode: 0, output: "" },
+  ],
+  skippedCommands: ["typecheck", "test"],
+  skippedReason: "sandbox time budget",
+  durationMs: 100,
+  sandboxId: "sandbox-1",
+};
+
+const sdkThrow: SandboxResult = {
+  ok: false,
+  status: "partial",
+  commands: [{ command: "install dependencies", exitCode: 1, output: "sandbox command aborted" }],
+  skippedCommands: ["lint", "typecheck", "test", "build"],
+  skippedReason: "sandbox command failed",
+  durationMs: 20,
+  sandboxId: "sandbox-1",
+};
+
+function expectInfra(sandbox: SandboxResult) {
+  expect(isInfraSandboxFailure(sandbox)).toBe(true);
+  const result = infraReviewResult(sandbox);
+  expect(result.verdict).toBe("request_changes");
+  expect(result.findings).toEqual([]);
+  expect(result.authoritativeFindings).toBe(false);
+  expect(checkRunTitleFor(result)).toBe(INFRA_CHECK_TITLE);
+  expect(infraReviewSummary(sandbox)).toContain("infrastructure failure");
+}
+
 describe("sandbox infra vs code failure labeling", () => {
   it("treats unavailable sandboxes as infra failures", () => {
-    expect(isInfraSandboxFailure(unavailable)).toBe(true);
+    expectInfra(unavailable);
     expect(isInfraSandboxFailure({ ok: false, status: "unavailable" })).toBe(true);
-    expect(infraReviewSummary(unavailable)).toContain("infrastructure failure");
     expect(infraReviewSummary(unavailable)).toContain("clone timed out");
     expect(infraReviewSummary(unavailable)).not.toMatch(/sandbox checks failed/i);
-    const result = infraReviewResult(unavailable);
-    expect(result.verdict).toBe("request_changes");
-    expect(result.findings).toEqual([]);
-    expect(result.authoritativeFindings).toBe(false);
-    expect(checkRunTitleFor(result)).toBe(INFRA_CHECK_TITLE);
   });
 
-  it("does not treat command failures or skipped steps as infra", () => {
+  it("labels a mid-run command timeout as infra", () => {
+    expectInfra(commandTimeout);
+    expect(infraReviewSummary(commandTimeout)).toContain("`lint` was killed (exit 137)");
+  });
+
+  it("labels an exit 137 OOM kill as infra", () => {
+    expectInfra(oomKill);
+    expect(infraReviewSummary(oomKill)).toContain("`install dependencies` was killed (exit 137)");
+  });
+
+  it("labels a budget partial result as infra", () => {
+    expectInfra(budgetPartial);
+    expect(infraReviewSummary(budgetPartial)).toContain("sandbox time budget");
+  });
+
+  it("labels an SDK throw in the middle of a command as infra", () => {
+    expectInfra(sdkThrow);
+    expect(infraReviewSummary(sdkThrow)).toContain("sandbox command failed");
+  });
+
+  it("does not treat a genuine test failure as infra", () => {
     expect(isInfraSandboxFailure(codeFailure)).toBe(false);
-    expect(isInfraSandboxFailure({
-      ok: false,
-      status: "partial",
-    })).toBe(false);
     expect(isInfraSandboxFailure({ ok: true, status: "unavailable" })).toBe(false);
     expect(checkRunTitleFor({
       verdict: "request_changes",

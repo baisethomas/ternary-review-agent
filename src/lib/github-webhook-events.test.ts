@@ -29,6 +29,7 @@ vi.mock("./review-event-ledger-service", () => ({
 vi.mock("./review-submission", () => ({
   webhookReviewIdempotencyKeys: vi.fn(() => ["canonical-key"]),
   checkRunRerunIdempotencyKeys: vi.fn(() => ["rerun-key"]),
+  checkSuiteRerunIdempotencyKeys: vi.fn(() => ["suite-rerun-key"]),
 }));
 vi.mock("./github-finding-feedback", () => ({ ingestGitHubFindingFeedback: mocks.ingestFeedback }));
 vi.mock("./github", () => ({
@@ -462,6 +463,85 @@ describe("check run re-run webhook events", () => {
 
     expect(response.status).toBe(202);
     await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Repository is paused in Ternary" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+});
+
+describe("check suite re-run webhook events", () => {
+  const checkSuitePayload = {
+    installation: { id: 7 },
+    repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" },
+    check_suite: {
+      id: 88,
+      head_sha: "abc1234",
+      app: { slug: "ternary-review-agent" },
+      pull_requests: [{ number: 8, head: { sha: "abc1234" } }],
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.watched.mockResolvedValue(true);
+    mocks.enqueueReview.mockResolvedValue({ id: "job-suite-rerun" });
+    mocks.getApp.mockResolvedValue({ slug: "ternary-review-agent" });
+    mocks.createToken.mockResolvedValue("token");
+    mocks.getPull.mockResolvedValue({ draft: false, number: 8, state: "open", merged: false, head: { sha: "abc1234" } });
+    mocks.resolvePolicy.mockResolvedValue({
+      automaticReview: { opened: true, reopened: true, synchronize: true, readyForReview: true },
+      minimumSeverity: "suggestion", model: "openai/gpt-5.6-terra", reviewCommands: [], excludedPaths: [],
+    });
+  });
+
+  it("re-runs Ternary when a check_suite is rerequested", async () => {
+    const response = await handleGitHubWebhook("check_suite", JSON.stringify({
+      ...checkSuitePayload,
+      action: "rerequested",
+    }), "delivery-suite-rerequested");
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ accepted: true, jobId: "job-suite-rerun" });
+    expect(mocks.enqueueReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: "ternary",
+        repo: "agent",
+        pullNumber: 8,
+        installationId: 7,
+        headSha: "abc1234",
+        cloneUrl: "https://github.com/ternary/agent.git",
+        webhookDeliveryId: "delivery-suite-rerequested",
+      }),
+      ["suite-rerun-key"],
+      "delivery-suite-rerequested",
+    );
+  });
+
+  it("does not re-run a closed pull request from a check_suite rerequest", async () => {
+    mocks.getPull.mockResolvedValueOnce({ draft: false, number: 8, state: "closed", merged: false, head: { sha: "abc1234" } });
+    const response = await handleGitHubWebhook("check_suite", JSON.stringify({
+      ...checkSuitePayload,
+      action: "rerequested",
+    }), "delivery-suite-closed");
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Pull request is closed" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("ignores check_suite events that are not rerequested and suites from other apps", async () => {
+    const completed = await handleGitHubWebhook("check_suite", JSON.stringify({
+      ...checkSuitePayload,
+      action: "completed",
+    }), "delivery-suite-completed");
+    const otherApp = await handleGitHubWebhook("check_suite", JSON.stringify({
+      ...checkSuitePayload,
+      action: "rerequested",
+      check_suite: { ...checkSuitePayload.check_suite, app: { slug: "not-ternary" } },
+    }), "delivery-suite-other-app");
+
+    expect(completed.status).toBe(200);
+    await expect(completed.json()).resolves.toMatchObject({ accepted: false, reason: "Check suite event does not request a re-run" });
+    expect(otherApp.status).toBe(200);
+    await expect(otherApp.json()).resolves.toMatchObject({ accepted: false, reason: "Check suite is not Ternary" });
     expect(mocks.enqueueReview).not.toHaveBeenCalled();
   });
 });

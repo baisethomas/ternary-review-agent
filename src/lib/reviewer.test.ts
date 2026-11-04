@@ -261,6 +261,18 @@ describe("runReview", () => {
     expect(markdown).not.toContain("❌");
   });
 
+  function expectInfraLabeledFailure() {
+    expect(mocks.generateRoutedReview).not.toHaveBeenCalled();
+    const [, , , , conclusion, title, markdown] = mocks.finishCheckRun.mock.calls[0] ?? [];
+    expect(conclusion).toBe("failure");
+    expect(title).toBe("Sandbox infrastructure failure");
+    expect(markdown).toMatch(/infrastructure failure/i);
+    expect(markdown).toContain("No code findings");
+    expect(markdown).not.toContain("No material findings.");
+    expect(markdown).not.toMatch(/### \d+\./);
+    return markdown as string;
+  }
+
   it("fails the check run when needed sandbox steps were skipped for time budget", async () => {
     const result = await publishReviewOf({
       ok: false,
@@ -276,32 +288,55 @@ describe("runReview", () => {
     });
 
     expect(result.verdict).toBe("request_changes");
-    const [, , , , conclusion, title, markdown] = mocks.finishCheckRun.mock.calls[0];
-    expect(conclusion).toBe("failure");
-    expect(title).toBe("Review complete");
+    expect(result.findings).toEqual([]);
+    const markdown = expectInfraLabeledFailure();
     expect(markdown).toContain("⚠️ `typecheck` skipped (sandbox time budget)");
     expect(markdown).toContain("⚠️ `test` skipped (sandbox time budget)");
   });
 
-  it("fails the check run when a test hangs until the time limit", async () => {
+  it("fails the check run when a command times out partway through a run", async () => {
     const result = await publishReviewOf({
       ok: false,
       commands: [
         { command: "install dependencies", exitCode: 0, output: "" },
-        { command: "lint", exitCode: 0, output: "" },
-        { command: "typecheck", exitCode: 0, output: "" },
-        { command: "test", exitCode: 137, output: "" },
+        { command: "lint", exitCode: 137, output: "" },
       ],
-      durationMs: 100,
+      durationMs: 120_000,
       sandboxId: "sandbox-1",
     });
 
     expect(result.verdict).toBe("request_changes");
-    const [, , , , conclusion, title, markdown] = mocks.finishCheckRun.mock.calls[0];
-    expect(conclusion).toBe("failure");
-    expect(title).toBe("Review complete");
-    expect(markdown).toContain("❌ `test`");
-    expect(markdown).not.toContain("inconclusive");
+    expect(result.findings).toEqual([]);
+    expectInfraLabeledFailure();
+  });
+
+  it("fails the check run when a command is OOM-killed with exit 137", async () => {
+    const result = await publishReviewOf({
+      ok: false,
+      commands: [{ command: "install dependencies", exitCode: 137, output: "Killed" }],
+      durationMs: 8_000,
+      sandboxId: "sandbox-1",
+    });
+
+    expect(result.verdict).toBe("request_changes");
+    expect(result.findings).toEqual([]);
+    expectInfraLabeledFailure();
+  });
+
+  it("fails the check run when the sandbox SDK throws in the middle of a command", async () => {
+    const result = await publishReviewOf({
+      ok: false,
+      status: "partial",
+      commands: [{ command: "install dependencies", exitCode: 1, output: "sandbox command aborted" }],
+      skippedCommands: ["lint", "typecheck", "test", "build"],
+      skippedReason: "sandbox command failed",
+      durationMs: 20,
+      sandboxId: "sandbox-1",
+    });
+
+    expect(result.verdict).toBe("request_changes");
+    expect(result.findings).toEqual([]);
+    expectInfraLabeledFailure();
   });
 
   it("still fails the check run when a JavaScript repository's tests genuinely fail", async () => {
