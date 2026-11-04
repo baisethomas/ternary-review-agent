@@ -79,7 +79,25 @@ describe("OpenRouter review provider", () => {
     await expect(generateOpenRouterReview("diff", unavailable, "context")).resolves.toMatchObject({
       verdict: "request_changes",
       authoritativeFindings: false,
+      summary: expect.stringMatching(/infrastructure failure.*quota exhausted/),
+      findings: [],
+    });
+  });
+
+  it("fallback: failed sandbox commands still emit the sandbox-checks-failed finding", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "");
+    const failed = {
+      ok: false,
+      commands: [{ command: "test", exitCode: 1, output: "1 failed" }],
+      durationMs: 10,
+      sandboxId: "sandbox-1",
+    };
+
+    await expect(generateOpenRouterReview("diff", failed, "context")).resolves.toMatchObject({
+      verdict: "request_changes",
+      authoritativeFindings: false,
       summary: "One or more sandbox checks failed.",
+      findings: [expect.objectContaining({ title: "Sandbox checks failed", findingKey: "sandbox-checks-failed" })],
     });
   });
 

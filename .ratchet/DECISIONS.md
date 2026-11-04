@@ -231,3 +231,27 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 - **Consequences:** #69's own Ternary check stays red until this head is deployed — production still runs `main`. `vercel.json` plan settings and the Vercel dashboard were not changed.
 - **Revisit when:** the Pro function ceiling changes, or a review still cannot finish inside 480 s.
 - **Approved by:** Baise Thomas (owner), via explicit round-5 direction on #69
+
+### D-20261104-0140-sandbox-infra-labeled-rerun — Infra sandbox failures are labeled and re-runnable, still fail-closed
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-04
+- **Decision:** A sandbox result with `status: "unavailable"` (setup, clone, create, probe, network-policy, thin budget) still concludes check **failure**. The check title is `Sandbox infrastructure failure`; the PR comment states this is an infrastructure failure, not a code failure; findings are empty; the AI review is not invoked. Command failures and partial skipped-step failures keep today's `Review complete` title, summary, and comment. Completed check runs include a `Re-run Ternary` `requested_action`. The GitHub webhook handles `check_run` `requested_action` (identifier `rerun`) and `check_run` `rerequested`, enqueueing with `github-delivery:` idempotency only (not the canonical SHA key) so a recovered sandbox can be retried without a new push. Linear tracking (team TER) is added to this repo's `AGENTS.md` and `CLAUDE.md`; `ratchet/drop-in/` copies are Ratchet templates for other repos and were left unchanged.
+- **Why:** TER-50 / brief `briefs/2026-11-03-sandbox-outage-handling.md`. #69 made these failures block every PR, which is correct but unlabeled and unrecoverable without a push.
+- **Rejected / alternatives:** treating unavailable as success (reopens the fail-open hole); putting the infra reason only in the collapsed Sandbox checks section (today's bug); using the canonical SHA idempotency key for re-runs (a completed review of this head would no-op); editing `ratchet/drop-in/AGENTS.md` and `CLAUDE.md` (those are FILL-ME templates synced from Ratchet, not Ternary's operating copies).
+- **Consequences:** Production Ternary of this PR still runs `main` until deploy, so a live self-review cannot exercise the new infra label or re-run button until this head is deployed. The GitHub App must already subscribe to `check_run` webhooks for rerequested/requested_action to arrive; this change does not alter GitHub App settings.
+- **Revisit when:** GitHub App `check_run` subscription is confirmed live, or `In Review`/`Verified` Linear states are added.
+- **Approved by:** agent, under operator brief TER-50 (PR #71)
+
+### D-20261104-0145-linear-tracking-rule — Linear (team TER) is the work tracker, with claim and handoff rules
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-04
+- **Decision:** Agents follow the Linear tracking section in `AGENTS.md` and `CLAUDE.md` (workspace loomlogiclabs, team TER): claim before start, include the issue ID in branch and PR names/titles, file follow-ups as linked Linear issues, and hand off status builder → verifier → Baise. Until Baise adds `In Review` and `Verified` workflow states, keep `In Progress` and record those labels in an issue comment. Do not create Linear states.
+- **Why:** TER-50 brief required the rule in the same PR as sandbox outage handling, with revised multi-agent claim/handoff text.
+- **Rejected / alternatives:** putting the rule only in `AGENTS.md` (brief required CLAUDE.md too); copying it into `ratchet/drop-in/` (templates for other repos).
+- **Consequences:** Claiming and state transitions remain operator-gated on this ticket (`Don't change Linear states or settings yourself`).
+- **Revisit when:** Baise adds `In Review` and `Verified` states.
+- **Approved by:** agent, under operator brief TER-50 (PR #71)

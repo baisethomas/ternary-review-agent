@@ -19,6 +19,11 @@ export function webhookReviewIdempotencyKeys(request: WebhookReviewRequest) {
   return [canonicalReviewIdempotencyKey(request), `github-delivery:${request.webhookDeliveryId}`];
 }
 
+/** Re-runs must not reuse the canonical SHA key, or a completed review of this head would no-op. */
+export function checkRunRerunIdempotencyKeys(request: WebhookReviewRequest) {
+  return [`github-delivery:${request.webhookDeliveryId}`];
+}
+
 export async function submitReview(
   queue: ReviewQueue,
   dispatch: DispatchReviewWorker,

@@ -224,9 +224,18 @@ export function getRepository(owner: string, repo: string, token: string) {
   );
 }
 
+export const TERNARY_CHECK_NAME = "Ternary review";
+
+/** GitHub check-run requested_action: label ≤20, description ≤40, identifier ≤20. */
+export const TERNARY_RERUN_ACTION = {
+  label: "Re-run Ternary",
+  description: "Retry this review without a new push",
+  identifier: "rerun",
+} as const;
+
 export function listTernaryCheckRuns(owner: string, repo: string, headSha: string, token: string) {
   return githubFetch<{ total_count: number; check_runs: GitHubCheckRun[] }>(
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(headSha)}/check-runs?check_name=${encodeURIComponent("Ternary review")}&per_page=20`,
+    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(headSha)}/check-runs?check_name=${encodeURIComponent(TERNARY_CHECK_NAME)}&per_page=20`,
     token,
   );
 }
@@ -276,7 +285,7 @@ export async function createCheckRun(owner: string, repo: string, headSha: strin
 async function createCheckRunForJob(owner: string, repo: string, headSha: string, token: string, externalId?: string) {
   return githubFetch<{ id: number }>(`/repos/${owner}/${repo}/check-runs`, token, {
     method: "POST",
-    body: JSON.stringify({ name: "Ternary review", head_sha: headSha, status: "in_progress", external_id: externalId }),
+    body: JSON.stringify({ name: TERNARY_CHECK_NAME, head_sha: headSha, status: "in_progress", external_id: externalId }),
   });
 }
 
@@ -292,7 +301,13 @@ export async function getOrCreateCheckRun(owner: string, repo: string, headSha: 
 export async function finishCheckRun(owner: string, repo: string, checkId: number, token: string, conclusion: "success" | "failure" | "neutral", title: string, summary: string, details?: string) {
   return githubFetch(`/repos/${owner}/${repo}/check-runs/${checkId}`, token, {
     method: "PATCH",
-    body: JSON.stringify({ status: "completed", conclusion, completed_at: new Date().toISOString(), output: { title, summary: summary.slice(0, 65000), text: details?.slice(0, 65000) } }),
+    body: JSON.stringify({
+      status: "completed",
+      conclusion,
+      completed_at: new Date().toISOString(),
+      output: { title, summary: summary.slice(0, 65000), text: details?.slice(0, 65000) },
+      actions: [TERNARY_RERUN_ACTION],
+    }),
   });
 }
 

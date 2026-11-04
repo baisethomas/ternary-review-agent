@@ -57,9 +57,14 @@ const request = {
   cloneUrl: "https://github.com/ternary/agent.git",
 };
 
-function expectCheckFailed() {
-  const [, , , , conclusion] = mocks.finishCheckRun.mock.calls[0] ?? [];
+function expectInfraCheckFailed() {
+  const [, , , , conclusion, title, markdown] = mocks.finishCheckRun.mock.calls[0] ?? [];
   expect(conclusion).toBe("failure");
+  expect(title).toBe("Sandbox infrastructure failure");
+  expect(markdown).toMatch(/infrastructure failure/i);
+  expect(markdown).toContain("No code findings");
+  expect(markdown).not.toContain("No material findings.");
+  expect(markdown).not.toMatch(/### \d+\./);
 }
 
 describe("runReview maps sandbox setup failures through the real sandbox module", () => {
@@ -92,7 +97,9 @@ describe("runReview maps sandbox setup failures through the real sandbox module"
     expect(result.sandbox.status).toBe("unavailable");
     expect(result.sandbox.unavailableReason).toContain("clone timed out");
     expect(result.verdict).toBe("request_changes");
-    expectCheckFailed();
+    expect(result.findings).toEqual([]);
+    expect(mocks.generateRoutedReview).not.toHaveBeenCalled();
+    expectInfraCheckFailed();
   });
 
   it("blocks when remaining sandbox budget is below SANDBOX_MIN_BUDGET_MS", async () => {
@@ -106,7 +113,8 @@ describe("runReview maps sandbox setup failures through the real sandbox module"
     expect(result.sandbox.status).toBe("unavailable");
     expect(result.sandbox.unavailableReason).toContain("skipped to protect the AI review time budget");
     expect(result.verdict).toBe("request_changes");
-    expectCheckFailed();
+    expect(result.findings).toEqual([]);
+    expectInfraCheckFailed();
   });
 
   it("blocks when the package.json probe throws", async () => {
@@ -126,7 +134,8 @@ describe("runReview maps sandbox setup failures through the real sandbox module"
     expect(result.sandbox.status).toBe("unavailable");
     expect(result.sandbox.unavailableReason).toContain("package.json probe failed");
     expect(result.verdict).toBe("request_changes");
-    expectCheckFailed();
+    expect(result.findings).toEqual([]);
+    expectInfraCheckFailed();
   });
 
   it("blocks when updateNetworkPolicy fails", async () => {
@@ -157,6 +166,7 @@ describe("runReview maps sandbox setup failures through the real sandbox module"
     expect(result.sandbox.status).toBe("unavailable");
     expect(result.sandbox.unavailableReason).toContain("network policy update failed");
     expect(result.verdict).toBe("request_changes");
-    expectCheckFailed();
+    expect(result.findings).toEqual([]);
+    expectInfraCheckFailed();
   });
 });

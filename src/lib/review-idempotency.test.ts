@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { tagReviewComment } from "./github";
-import { canonicalReviewIdempotencyKey, isValidInvocationId, manualReviewIdempotencyKey, webhookReviewIdempotencyKeys } from "./review-submission";
+import { canonicalReviewIdempotencyKey, checkRunRerunIdempotencyKeys, isValidInvocationId, manualReviewIdempotencyKey, webhookReviewIdempotencyKeys } from "./review-submission";
 import type { ReviewRequest } from "./types";
 
 const review: ReviewRequest = {
@@ -43,5 +43,11 @@ describe("review idempotency", () => {
       "review:ternary/agent#12:abc123",
       "github-delivery:delivery-123",
     ]);
+  });
+
+  it("re-runs a check using only the GitHub delivery id so a completed head can be reviewed again", () => {
+    const rerun = checkRunRerunIdempotencyKeys({ ...review, webhookDeliveryId: "delivery-rerun" });
+    expect(rerun).toEqual(["github-delivery:delivery-rerun"]);
+    expect(rerun).not.toContain(canonicalReviewIdempotencyKey(review));
   });
 });

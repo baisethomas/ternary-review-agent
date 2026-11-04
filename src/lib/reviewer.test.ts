@@ -166,7 +166,7 @@ describe("runReview", () => {
       expect.objectContaining({ deadlineAt: expect.any(Number) }),
     );
     expect(mocks.finishCheckRun).toHaveBeenCalledWith(
-      "ternary", "agent", 99, "token", "failure", "Review complete", expect.any(String), expect.any(String),
+      "ternary", "agent", 99, "token", "failure", "Review complete", expect.stringContaining("Authorization removed"), expect.any(String),
     );
     expect(result.verdict).toBe("request_changes");
   });
@@ -190,24 +190,34 @@ describe("runReview", () => {
     expect(result.verdict).toBe("request_changes");
     expect(result.sandbox.status).toBe("unavailable");
     expect(result.sandbox.ok).toBe(false);
-    expect(mocks.generateRoutedReview).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({ status: "unavailable", ok: false }),
-      expect.any(String),
-      expect.anything(),
-      expect.anything(),
+    expect(result.findings).toEqual([]);
+    expect(mocks.generateRoutedReview).not.toHaveBeenCalled();
+    expect(mocks.syncFindingReviewComments).not.toHaveBeenCalled();
+    expect(mocks.upsertPullRequestComment).toHaveBeenCalledWith(
+      "ternary",
+      "agent",
+      8,
+      "token",
+      expect.stringMatching(/infrastructure failure[\s\S]*No code findings/),
+      undefined,
     );
-    expect(mocks.upsertPullRequestComment).toHaveBeenCalled();
+    const comment = mocks.upsertPullRequestComment.mock.calls[0]?.[4] as string;
+    expect(comment).not.toContain("No material findings.");
+    expect(comment).not.toMatch(/### \d+\./);
+    expect(comment).not.toContain("Sandbox checks failed");
     expect(mocks.finishCheckRun).toHaveBeenCalledWith(
       "ternary",
       "agent",
       99,
       "token",
       "failure",
-      "Review complete",
-      expect.stringContaining("Sandbox checks did not run"),
+      "Sandbox infrastructure failure",
+      expect.stringContaining("infrastructure failure"),
       expect.any(String),
     );
+    const [, , , , , title, summary] = mocks.finishCheckRun.mock.calls[0];
+    expect(title).toBe("Sandbox infrastructure failure");
+    expect(summary).toBe(comment);
   });
 
   function publishReviewOf(sandbox: Record<string, unknown>) {
@@ -258,8 +268,9 @@ describe("runReview", () => {
     });
 
     expect(result.verdict).toBe("request_changes");
-    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
+    const [, , , , conclusion, title, markdown] = mocks.finishCheckRun.mock.calls[0];
     expect(conclusion).toBe("failure");
+    expect(title).toBe("Review complete");
     expect(markdown).toContain("⚠️ `typecheck` skipped (sandbox time budget)");
     expect(markdown).toContain("⚠️ `test` skipped (sandbox time budget)");
   });
@@ -278,8 +289,9 @@ describe("runReview", () => {
     });
 
     expect(result.verdict).toBe("request_changes");
-    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
+    const [, , , , conclusion, title, markdown] = mocks.finishCheckRun.mock.calls[0];
     expect(conclusion).toBe("failure");
+    expect(title).toBe("Review complete");
     expect(markdown).toContain("❌ `test`");
     expect(markdown).not.toContain("inconclusive");
   });
@@ -298,8 +310,15 @@ describe("runReview", () => {
     });
 
     expect(result.verdict).toBe("request_changes");
-    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
+    const [, , , , conclusion, title, markdown] = mocks.finishCheckRun.mock.calls[0];
     expect(conclusion).toBe("failure");
+    expect(title).toBe("Review complete");
+    expect(markdown).toContain("## ⛔ Ternary review");
+    expect(markdown).toContain("No material findings.");
     expect(markdown).toContain("❌ `test`");
+    expect(markdown).not.toMatch(/infrastructure failure/i);
+    expect(mocks.upsertPullRequestComment).toHaveBeenCalledWith(
+      "ternary", "agent", 8, "token", markdown, undefined,
+    );
   });
 });

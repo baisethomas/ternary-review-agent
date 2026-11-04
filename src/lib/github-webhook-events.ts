@@ -1,12 +1,12 @@
 import "server-only";
 import { isRepositoryWatched } from "./repository-watch";
 import { enqueueAndDispatchReview } from "./review-queue-service";
-import { webhookReviewIdempotencyKeys } from "./review-submission";
+import { checkRunRerunIdempotencyKeys, webhookReviewIdempotencyKeys } from "./review-submission";
 import { recordPullRequestClosedEvent, recordPullRequestHeadChangedEvent, recordPullRequestMergedEvent, recordPullRequestReopenedEvent } from "./review-event-ledger-service";
 import { dispatchRepositoryIndexTask } from "./repository-index-dispatcher";
 import type { WebhookReviewRequest } from "./types";
 import { ingestGitHubFindingFeedback } from "./github-finding-feedback";
-import { getGitHubApp } from "./github";
+import { getGitHubApp, TERNARY_CHECK_NAME, TERNARY_RERUN_ACTION } from "./github";
 import { resolveReviewPolicyFor } from "./review-policy-service";
 import type { AutomaticReviewEvent } from "./review-policy";
 import { recordWebhookDelivery } from "./webhook-delivery-audit-service";
@@ -45,6 +45,19 @@ type WebhookSender = { login: string; type?: string };
 type ReviewCommentWebhook = { action: string; installation?: { id: number }; repository: FeedbackRepository; sender: WebhookSender; pull_request: { number: number; head: { sha: string } }; comment: { id: number; body?: string | null; in_reply_to_id?: number } };
 type ReviewThreadWebhook = { action: "resolved" | "unresolved"; installation?: { id: number }; repository: FeedbackRepository; sender: WebhookSender; pull_request: { number: number; head: { sha: string } }; thread: { comments?: Array<{ id?: number; body?: string | null }> } };
 type ReactionWebhook = { action: "created" | "deleted"; installation?: { id: number }; repository: FeedbackRepository; sender: { login: string }; reaction: { id: number; content: string }; comment?: { id?: number; body?: string | null; commit_id?: string; pull_request_url?: string } };
+type CheckRunPullRequest = { number: number; head?: { sha?: string } };
+type CheckRunWebhook = {
+  action: string;
+  requested_action?: { identifier?: string };
+  installation?: { id: number };
+  repository: { name: string; owner: { login: string }; clone_url: string };
+  check_run: {
+    name: string;
+    head_sha: string;
+    pull_requests?: CheckRunPullRequest[];
+    check_suite?: { pull_requests?: CheckRunPullRequest[] };
+  };
+};
 type WebhookHandler = (rawBody: string, deliveryId: string) => Promise<Response>;
 
 const automaticReviewEventByAction = {
@@ -185,6 +198,56 @@ const handleReviewThread: WebhookHandler = async (rawBody, deliveryId) => {
   return Response.json(result, { status: result.accepted ? 202 : 200 });
 };
 
+function checkRunPullNumber(checkRun: CheckRunWebhook["check_run"]) {
+  const fromRun = checkRun.pull_requests?.[0]?.number;
+  if (typeof fromRun === "number") return fromRun;
+  const fromSuite = checkRun.check_suite?.pull_requests?.[0]?.number;
+  return typeof fromSuite === "number" ? fromSuite : null;
+}
+
+function isCheckRunRerun(payload: CheckRunWebhook) {
+  if (payload.action === "rerequested") return true;
+  return payload.action === "requested_action" && payload.requested_action?.identifier === TERNARY_RERUN_ACTION.identifier;
+}
+
+const handleCheckRun: WebhookHandler = async (rawBody, deliveryId) => {
+  const payload = JSON.parse(rawBody) as CheckRunWebhook;
+  if (!isCheckRunRerun(payload)) {
+    return Response.json({ accepted: false, reason: "Check run event does not request a re-run" });
+  }
+  if (payload.check_run.name !== TERNARY_CHECK_NAME) {
+    return Response.json({ accepted: false, reason: "Check run is not Ternary" });
+  }
+  if (!payload.installation?.id) {
+    return Response.json({ accepted: false, reason: "Check run re-run did not include an installation" });
+  }
+  const pullNumber = checkRunPullNumber(payload.check_run);
+  if (!pullNumber) {
+    return Response.json({ accepted: false, reason: "Check run re-run is not associated with a pull request" });
+  }
+  const fullName = `${payload.repository.owner.login}/${payload.repository.name}`;
+  if (!await isRepositoryWatched(fullName)) {
+    return Response.json({ accepted: false, reason: "Repository is paused in Ternary" }, { status: 202 });
+  }
+  const policy = await resolveReviewPolicyFor({
+    installationId: payload.installation.id,
+    owner: payload.repository.owner.login,
+    repo: payload.repository.name,
+  });
+  const review: WebhookReviewRequest = {
+    owner: payload.repository.owner.login,
+    repo: payload.repository.name,
+    pullNumber,
+    installationId: payload.installation.id,
+    headSha: payload.check_run.head_sha,
+    cloneUrl: payload.repository.clone_url,
+    webhookDeliveryId: deliveryId,
+    policy,
+  };
+  const job = await enqueueAndDispatchReview(review, checkRunRerunIdempotencyKeys(review), deliveryId);
+  return Response.json({ accepted: true, delivery: deliveryId, jobId: job.id }, { status: 202 });
+};
+
 const handleReaction: WebhookHandler = async (rawBody, deliveryId) => {
   const payload = JSON.parse(rawBody) as ReactionWebhook;
   const pullNumber = Number(payload.comment?.pull_request_url?.match(/\/pulls\/(\d+)$/)?.[1]);
@@ -210,6 +273,7 @@ const handlers: Record<string, WebhookHandler> = {
   pull_request_review_comment: handleReviewComment,
   pull_request_review_thread: handleReviewThread,
   reaction: handleReaction,
+  check_run: handleCheckRun,
 };
 
 type HandleGitHubWebhookOptions = {
