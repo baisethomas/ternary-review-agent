@@ -48,10 +48,12 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
   #72):** `status: "unavailable"` still fail-closed, labeled
   `Sandbox infrastructure failure`, no code findings. Command
   failures keep `Review complete`. Re-run via requested_action +
-  `check_run` rerequested (delivery-only idempotency; in-flight
-  jobs still coalesced). Re-run handler requires Ternary's app
-  slug and the current PR head SHA (Ternary 💬 round 1). Linear
-  tracking rule added to this repo's `AGENTS.md`/`CLAUDE.md`;
+  `check_run` rerequested. Re-runs require Ternary's app slug and
+  the current open PR head SHA; closed and merged PRs are rejected
+  without enqueueing. Idempotency is the GitHub delivery id plus a
+  check-run-id alias (not the canonical SHA key); in-flight jobs
+  still coalesced. Infra results sync an empty inline-finding set.
+  Linear tracking rule added to this repo's `AGENTS.md`/`CLAUDE.md`;
   drop-in templates left alone. GitHub App currently subscribes
   only to `pull_request`, so the re-run webhook will not fire
   until the operator adds `check_run`. Merge/deploy reserved.
@@ -265,7 +267,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Last handoff
 
-- Updated: 2026-11-04 (TER-50 infra-labeled sandbox failure + re-run; Linear tracking rule)
+- Updated: 2026-11-04 (TER-50 follow-up: reject closed/merged re-runs; check-run idempotency alias; empty-set infra sync)
 - By: agent (Cursor cloud agent)
 - Branch: `cursor/ter-50-sandbox-outage-handling-c8cc` off main `fb817a7`.
 - **The one thing a fresh agent should not misread:** §8.9's 100% delivery and

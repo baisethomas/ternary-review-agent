@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   ingestFeedback: vi.fn(async () => ({ accepted: true, findingId: "finding-auth" })),
   getApp: vi.fn(async () => ({ slug: "ternary-review-agent" })),
   createToken: vi.fn(async () => "token"),
-  getPull: vi.fn(async () => ({ draft: false, number: 8, head: { sha: "abc1234" } })),
+  getPull: vi.fn(async () => ({ draft: false, number: 8, state: "open", merged: false, head: { sha: "abc1234" } })),
   resolvePolicy: vi.fn(),
   recordDelivery: vi.fn(async () => null),
 }));
@@ -290,6 +290,7 @@ describe("check run re-run webhook events", () => {
     installation: { id: 7 },
     repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" },
     check_run: {
+      id: 55,
       name: "Ternary review",
       head_sha: "abc1234",
       app: { slug: "ternary-review-agent" },
@@ -303,7 +304,7 @@ describe("check run re-run webhook events", () => {
     mocks.enqueueReview.mockResolvedValue({ id: "job-rerun" });
     mocks.getApp.mockResolvedValue({ slug: "ternary-review-agent" });
     mocks.createToken.mockResolvedValue("token");
-    mocks.getPull.mockResolvedValue({ draft: false, number: 8, head: { sha: "abc1234" } });
+    mocks.getPull.mockResolvedValue({ draft: false, number: 8, state: "open", merged: false, head: { sha: "abc1234" } });
     mocks.resolvePolicy.mockResolvedValue({
       automaticReview: { opened: true, reopened: true, synchronize: true, readyForReview: true },
       minimumSeverity: "suggestion", model: "openai/gpt-5.6-terra", reviewCommands: [], excludedPaths: [],
@@ -354,6 +355,7 @@ describe("check run re-run webhook events", () => {
       installation: { id: 7 },
       repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" },
       check_run: {
+        id: 55,
         name: "Ternary review",
         head_sha: "abc1234",
         app: { slug: "ternary-review-agent" },
@@ -402,7 +404,7 @@ describe("check run re-run webhook events", () => {
       action: "rerequested",
       installation: { id: 7 },
       repository: { name: "agent", owner: { login: "ternary" }, clone_url: "https://github.com/ternary/agent.git" },
-      check_run: { name: "Ternary review", head_sha: "abc1234", app: { slug: "ternary-review-agent" }, pull_requests: [] },
+      check_run: { id: 55, name: "Ternary review", head_sha: "abc1234", app: { slug: "ternary-review-agent" }, pull_requests: [] },
     }), "delivery-no-pr");
 
     expect(otherName.status).toBe(200);
@@ -414,8 +416,33 @@ describe("check run re-run webhook events", () => {
     expect(mocks.enqueueReview).not.toHaveBeenCalled();
   });
 
+  it("does not re-run a closed pull request", async () => {
+    mocks.getPull.mockResolvedValueOnce({ draft: false, number: 8, state: "closed", merged: false, head: { sha: "abc1234" } });
+    const response = await handleGitHubWebhook("check_run", JSON.stringify({
+      ...checkRunPayload,
+      action: "rerequested",
+    }), "delivery-closed-rerun");
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Pull request is closed" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("does not re-run a merged pull request", async () => {
+    mocks.getPull.mockResolvedValueOnce({ draft: false, number: 8, state: "closed", merged: true, head: { sha: "abc1234" } });
+    const response = await handleGitHubWebhook("check_run", JSON.stringify({
+      ...checkRunPayload,
+      action: "requested_action",
+      requested_action: { identifier: "rerun" },
+    }), "delivery-merged-rerun");
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ accepted: false, reason: "Pull request is merged" });
+    expect(mocks.enqueueReview).not.toHaveBeenCalled();
+  });
+
   it("does not re-run a stale check whose SHA is no longer the pull request head", async () => {
-    mocks.getPull.mockResolvedValueOnce({ draft: false, number: 8, head: { sha: "new-head" } });
+    mocks.getPull.mockResolvedValueOnce({ draft: false, number: 8, state: "open", merged: false, head: { sha: "new-head" } });
     const response = await handleGitHubWebhook("check_run", JSON.stringify({
       ...checkRunPayload,
       action: "rerequested",

@@ -45,9 +45,16 @@ describe("review idempotency", () => {
     ]);
   });
 
-  it("re-runs a check using only the GitHub delivery id so a completed head can be reviewed again", () => {
-    const rerun = checkRunRerunIdempotencyKeys({ ...review, webhookDeliveryId: "delivery-rerun" });
-    expect(rerun).toEqual(["github-delivery:delivery-rerun"]);
+  it("re-runs a check using the GitHub delivery id and the check-run id, not the canonical SHA key", () => {
+    const rerun = checkRunRerunIdempotencyKeys({ ...review, webhookDeliveryId: "delivery-rerun" }, 55);
+    expect(rerun).toEqual([
+      "github-delivery:delivery-rerun",
+      "github-check-rerun:ternary/agent#12:abc123:55",
+    ]);
     expect(rerun).not.toContain(canonicalReviewIdempotencyKey(review));
+    expect(checkRunRerunIdempotencyKeys({ ...review, webhookDeliveryId: "delivery-retry" }, 55)[1])
+      .toBe(rerun[1]);
+    expect(checkRunRerunIdempotencyKeys({ ...review, webhookDeliveryId: "delivery-later" }, 56)[1])
+      .not.toBe(rerun[1]);
   });
 });

@@ -255,3 +255,15 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 - **Consequences:** Claiming and state transitions remain operator-gated on this ticket (`Don't change Linear states or settings yourself`).
 - **Revisit when:** Baise adds `In Review` and `Verified` states.
 - **Approved by:** agent, under operator brief TER-50 (PR #71)
+
+### D-20261104-0200-rerun-closed-guard-and-check-run-alias — Re-runs reject closed/merged PRs; idempotency adds a check-run alias
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-04
+- **Decision:** A `check_run` re-run (`rerequested` or `requested_action` `rerun`) is rejected with `accepted: false` when the associated pull request is merged or closed; no job is enqueued. Re-run idempotency keys are the GitHub delivery id plus `github-check-rerun:<owner>/<repo>#<pull>:<sha>:<checkRunId>` — still not the canonical SHA key. An infrastructure sandbox result syncs an empty inline-finding set so a same-SHA re-run does not leave stale review comments next to "No code findings."
+- **Why:** Operator follow-up on PR #72. Closed/merged was a live Ternary warning. Delivery-only keys let GitHub redeliveries of the same click enqueue a second job after a timeout; the check-run alias drops those without blocking a later re-run of a different completed check on the same head. Empty-set sync makes the infra comment's "No code findings" match GitHub inline state.
+- **Rejected / alternatives:** using the canonical SHA key (would no-op a recovered-sandbox retry of a completed head); wiping findings from the ledger (infra results stay `authoritativeFindings: false`).
+- **Consequences:** Clicking Re-run twice on the *same* completed check run coalesces for the idempotency TTL (7 days); click the newer check run instead. Linear tracking and `ratchet/drop-in/` copies are unchanged.
+- **Revisit when:** GitHub App `check_run` subscription is confirmed live.
+- **Approved by:** agent, under operator follow-up on TER-50 / PR #72

@@ -52,6 +52,7 @@ type CheckRunWebhook = {
   installation?: { id: number };
   repository: { name: string; owner: { login: string }; clone_url: string };
   check_run: {
+    id: number;
     name: string;
     head_sha: string;
     app?: { slug?: string };
@@ -233,6 +234,10 @@ const handleCheckRun: WebhookHandler = async (rawBody, deliveryId) => {
   }
   const token = await createInstallationToken(payload.installation.id);
   const pull = await getPullRequest(payload.repository.owner.login, payload.repository.name, pullNumber, token);
+  if (pull.merged || pull.state === "closed") {
+    const reason = pull.merged ? "Pull request is merged" : "Pull request is closed";
+    return Response.json({ accepted: false, reason }, { status: 202 });
+  }
   if (pull.draft) {
     return Response.json({ accepted: false, reason: "Pull request does not require a review" });
   }
@@ -254,7 +259,7 @@ const handleCheckRun: WebhookHandler = async (rawBody, deliveryId) => {
     webhookDeliveryId: deliveryId,
     policy,
   };
-  const job = await enqueueAndDispatchReview(review, checkRunRerunIdempotencyKeys(review), deliveryId);
+  const job = await enqueueAndDispatchReview(review, checkRunRerunIdempotencyKeys(review, payload.check_run.id), deliveryId);
   return Response.json({ accepted: true, delivery: deliveryId, jobId: job.id }, { status: 202 });
 };
 

@@ -102,13 +102,17 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
     await lease?.assertActive();
     await upsertPullRequestComment(request.owner, request.repo, request.pullNumber, token, markdown, request.id);
     await lease?.assertActive();
-    if (result.authoritativeFindings !== false) {
+    if (result.authoritativeFindings !== false || isInfraSandboxFailure(result.sandbox)) {
       // Stop syncing inline comments shortly before the platform kill; the summary comment above already carries every finding.
+      // Infra results have no code findings: sync the empty set so a same-SHA re-run does not leave stale inline comments.
       const publishDeadlineAt = invocationStartedAt + WORKER_INVOCATION_BUDGET_MS - 10_000;
-      await syncFindingReviewComments(request.owner, request.repo, request.pullNumber, request.headSha, token, result.findings.filter((finding) => finding.file).map((finding) => {
-        const findingId = findingIdentity(request, finding);
-        return { findingId, body: formatFindingComment(finding, findingId), path: finding.file, line: finding.line };
-      }), { deadlineAt: publishDeadlineAt });
+      const inlineFindings = isInfraSandboxFailure(result.sandbox)
+        ? []
+        : result.findings.filter((finding) => finding.file).map((finding) => {
+          const findingId = findingIdentity(request, finding);
+          return { findingId, body: formatFindingComment(finding, findingId), path: finding.file, line: finding.line };
+        });
+      await syncFindingReviewComments(request.owner, request.repo, request.pullNumber, request.headSha, token, inlineFindings, { deadlineAt: publishDeadlineAt });
     }
     await lease?.assertActive();
     await finishCheckRun(request.owner, request.repo, check.id, token, result.verdict === "approve" ? "success" : result.verdict === "request_changes" ? "failure" : "neutral", checkRunTitleFor(result), markdown, JSON.stringify(result));

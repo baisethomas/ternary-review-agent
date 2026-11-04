@@ -192,7 +192,15 @@ describe("runReview", () => {
     expect(result.sandbox.ok).toBe(false);
     expect(result.findings).toEqual([]);
     expect(mocks.generateRoutedReview).not.toHaveBeenCalled();
-    expect(mocks.syncFindingReviewComments).not.toHaveBeenCalled();
+    expect(mocks.syncFindingReviewComments).toHaveBeenCalledWith(
+      "ternary",
+      "agent",
+      8,
+      "abc1234",
+      "token",
+      [],
+      expect.objectContaining({ deadlineAt: expect.any(Number) }),
+    );
     expect(mocks.upsertPullRequestComment).toHaveBeenCalledWith(
       "ternary",
       "agent",

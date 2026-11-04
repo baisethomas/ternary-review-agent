@@ -146,6 +146,8 @@ export type GitHubPullRequest = {
   title: string;
   html_url: string;
   draft: boolean;
+  state: "open" | "closed";
+  merged: boolean;
   updated_at: string;
   additions: number;
   deletions: number;
