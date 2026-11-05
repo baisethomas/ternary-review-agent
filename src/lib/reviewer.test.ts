@@ -47,6 +47,7 @@ vi.mock("./review-route-service", () => ({
 }));
 
 import { runReview } from "./reviewer";
+import { VENDORED_RATCHET_SKIP_NOTE } from "./vendored-ratchet";
 
 const request = {
   owner: "ternary",
@@ -363,5 +364,170 @@ describe("runReview", () => {
     expect(mocks.upsertPullRequestComment).toHaveBeenCalledWith(
       "ternary", "agent", 8, "token", markdown, undefined,
     );
+  });
+
+  function fileDiff(path: string, body: string) {
+    return `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-old\n${body}\n`;
+  }
+
+  const vendoredInstallDiff = [
+    fileDiff(".agents/skills/ratchet-handoff/scripts/runlog.sh", "+vendored"),
+    fileDiff(".agents/skills/ratchet-bugfix/scripts/rrr.sh", "+vendored"),
+    fileDiff(".claude/hooks/check-on-stop.sh", "+vendored"),
+  ].join("");
+
+  const mixedInstallDiff = [
+    vendoredInstallDiff,
+    fileDiff("src/app.ts", "+project source"),
+    fileDiff(".ratchet/STATE.md", "+project memory"),
+    fileDiff(".ratchet/DECISIONS.md", "+project memory"),
+    fileDiff(".ratchet/guard-destructive.rules", "+project memory"),
+  ].join("");
+
+  function publishSuccessfulSandbox() {
+    mocks.runInSandbox.mockResolvedValue({ ok: true, commands: [], durationMs: 100, sandboxId: "sandbox-1" });
+    mocks.getRepositoryReviewContext.mockResolvedValue({ text: "ctx", status: "ok", chunks: [], indexedCommitSha: null, latencyMs: 1 });
+    mocks.upsertPullRequestComment.mockResolvedValue(undefined);
+    mocks.syncFindingReviewComments.mockResolvedValue(undefined);
+    mocks.generateRoutedReview.mockResolvedValue({
+      verdict: "approve",
+      summary: "ok",
+      findings: [],
+      sandbox: { ok: true, commands: [], durationMs: 100, sandboxId: "sandbox-1" },
+      authoritativeFindings: true,
+    });
+  }
+
+  it("sends only project source and .ratchet files when a downstream PR also touches vendored Ratchet files", async () => {
+    publishSuccessfulSandbox();
+    mocks.getPullRequestDiff.mockResolvedValue(mixedInstallDiff);
+
+    await runReview({ ...request, owner: "loomlogiclabs", repo: "agent-environment" });
+
+    expect(mocks.generateRoutedReview).toHaveBeenCalled();
+    const [reviewedDiff] = mocks.generateRoutedReview.mock.calls[0];
+    expect(reviewedDiff).toContain("src/app.ts");
+    expect(reviewedDiff).toContain(".ratchet/STATE.md");
+    expect(reviewedDiff).toContain(".ratchet/DECISIONS.md");
+    expect(reviewedDiff).toContain(".ratchet/guard-destructive.rules");
+    expect(reviewedDiff).not.toContain("runlog.sh");
+    expect(reviewedDiff).not.toContain("rrr.sh");
+    expect(reviewedDiff).not.toContain("check-on-stop.sh");
+    expect(reviewedDiff).not.toContain("+vendored");
+    const [, , , , , , markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(markdown.toLowerCase()).toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
+  });
+
+  it("publishes a finding on a vendored destination when the hunk was kept because the source is a project file", async () => {
+    publishSuccessfulSandbox();
+    const rename = `diff --git a/src/auth.ts b/.claude/hooks/check-on-stop.sh
+similarity index 80%
+rename from src/auth.ts
+rename to .claude/hooks/check-on-stop.sh
+--- a/src/auth.ts
++++ b/.claude/hooks/check-on-stop.sh
+@@ -1 +1 @@
+-export const check = true
++#!/bin/sh
+`;
+    mocks.getPullRequestDiff.mockResolvedValue(rename);
+    mocks.generateRoutedReview.mockResolvedValue({
+      verdict: "request_changes",
+      summary: "Hidden hook rewrite",
+      findings: [{
+        severity: "blocking" as const,
+        file: ".claude/hooks/check-on-stop.sh",
+        line: 1,
+        title: "Executable hook rewrite",
+        explanation: "Project file renamed onto a skipped hook path",
+      }],
+      sandbox: { ok: true, commands: [], durationMs: 100, sandboxId: "sandbox-1" },
+      authoritativeFindings: true,
+    });
+
+    const result = await runReview({ ...request, owner: "loomlogiclabs", repo: "agent-environment" });
+
+    expect(mocks.generateRoutedReview.mock.calls[0][0]).toContain("src/auth.ts");
+    expect(result.findings).toEqual([expect.objectContaining({
+      file: ".claude/hooks/check-on-stop.sh",
+      title: "Executable hook rewrite",
+    })]);
+    expect(result.verdict).toBe("request_changes");
+    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("failure");
+    expect(markdown).toContain("Executable hook rewrite");
+  });
+
+  it("reviews vendored Ratchet files when the repository is baisethomas/Ratchet", async () => {
+    publishSuccessfulSandbox();
+    mocks.getPullRequestDiff.mockResolvedValue(mixedInstallDiff);
+
+    await runReview({ ...request, owner: "baisethomas", repo: "Ratchet" });
+
+    const [reviewedDiff] = mocks.generateRoutedReview.mock.calls[0];
+    expect(reviewedDiff).toContain("runlog.sh");
+    expect(reviewedDiff).toContain("rrr.sh");
+    expect(reviewedDiff).toContain("check-on-stop.sh");
+    expect(reviewedDiff).toContain("src/app.ts");
+    const [, , , , , , markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(markdown.toLowerCase()).not.toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
+  });
+
+  it("approves a downstream PR that only touches vendored Ratchet files, with a skip note", async () => {
+    publishSuccessfulSandbox();
+    mocks.getPullRequestDiff.mockResolvedValue(vendoredInstallDiff);
+
+    const result = await runReview({ ...request, owner: "loomlogiclabs", repo: "agent-environment" });
+
+    expect(mocks.generateRoutedReview).not.toHaveBeenCalled();
+    expect(result.verdict).toBe("approve");
+    expect(result.findings).toEqual([]);
+    const [, , , , conclusion, title, markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("success");
+    expect(title).toBe("Review complete");
+    expect(markdown.toLowerCase()).toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
+  });
+
+  it("labels a vendored-only downstream PR as infra failure when the sandbox is unavailable", async () => {
+    publishSuccessfulSandbox();
+    mocks.getPullRequestDiff.mockResolvedValue(vendoredInstallDiff);
+    mocks.runInSandbox.mockRejectedValue(new Error("Sandbox creation is paused: monthly quota exhausted"));
+
+    const result = await runReview({ ...request, owner: "loomlogiclabs", repo: "agent-environment" });
+
+    expect(mocks.generateRoutedReview).not.toHaveBeenCalled();
+    expect(result.verdict).toBe("request_changes");
+    expect(result.findings).toEqual([]);
+    const [, , , , conclusion, title, markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("failure");
+    expect(title).toBe("Sandbox infrastructure failure");
+    expect(markdown).toMatch(/infrastructure failure/i);
+    expect(markdown).not.toContain(VENDORED_RATCHET_SKIP_NOTE);
+  });
+
+  it("still fails a vendored-only downstream PR when a sandbox command genuinely fails", async () => {
+    publishSuccessfulSandbox();
+    mocks.getPullRequestDiff.mockResolvedValue(vendoredInstallDiff);
+    mocks.runInSandbox.mockResolvedValue({
+      ok: false,
+      commands: [
+        { command: "install dependencies", exitCode: 0, output: "" },
+        { command: "test", exitCode: 1, output: "1 failed" },
+      ],
+      durationMs: 100,
+      sandboxId: "sandbox-1",
+    });
+
+    const result = await runReview({ ...request, owner: "loomlogiclabs", repo: "agent-environment" });
+
+    expect(mocks.generateRoutedReview).not.toHaveBeenCalled();
+    expect(result.verdict).toBe("request_changes");
+    expect(result.findings).toEqual([]);
+    const [, , , , conclusion, title, markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("failure");
+    expect(title).toBe("Review complete");
+    expect(markdown).toContain("❌ `test`");
+    expect(markdown).not.toMatch(/infrastructure failure/i);
+    expect(markdown.toLowerCase()).toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
   });
 });

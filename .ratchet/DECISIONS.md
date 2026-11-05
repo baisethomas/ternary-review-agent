@@ -279,3 +279,51 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 - **Consequences:** A script that `exit 137` on purpose is now labeled infra. GitHub App still needs `check_run` and `check_suite` events for the re-run path to fire live. `ratchet/drop-in/` unchanged.
 - **Revisit when:** GitHub App `check_run` / `check_suite` subscriptions are confirmed live.
 - **Approved by:** agent, under operator follow-up on TER-50 / PR #72
+
+### D-20261105-0255-skip-vendored-ratchet-downstream — Skip install.sh/upgrade.sh Ratchet files in downstream reviews only
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-05
+- **Decision:** On the GitHub PR review path, after policy `excludedPaths`, Ternary drops Ratchet-owned hook, skill, and script files from the model diff in every repository except `baisethomas/Ratchet` (case-insensitive). The list is the destinations those scripts actually write: the five `.claude/hooks/*.sh` files named in install.sh:73-74 / copied by install.sh:167 and upgrade.sh:320; `.agents/skills/CREDITS.md` and `.agents/skills/ratchet-*/**` from install.sh:159 / upgrade.sh:320; and `.claude/skills/ratchet-*/**` from the install.sh:175 skill links. `.ratchet/STATE.md`, `.ratchet/DECISIONS.md`, and `.ratchet/guard-destructive.rules` stay in review (install.sh:23-25, 122-124, 153-157; upgrade.sh:20, 312-318 classify them `memory` and refuse to write them). A downstream PR whose remaining diff is empty after this filter does not call the model; it approves (or still fails if the sandbox failed) with the note `vendored Ratchet files skipped`. Sandbox, routing, policy, and the AI path for every other file are unchanged.
+- **Why:** Downstream Ratchet install/upgrade PRs were failing on upstream findings (e.g. runlog.sh:122, rrr.sh:140 on loomlogic-agent-environment #4). Those files are reviewed when Ternary reviews baisethomas/Ratchet itself.
+- **Rejected / alternatives:** Skipping all of `.claude/hooks/**` and `.agents/skills/**` (a downstream author could hide arbitrary code there); skipping `AGENTS.md` / `CLAUDE.md` / `CODEX.md` (those are filled-in project contracts, not the motivating scripts); treating this as a default `excludedPaths` policy the dashboard can clear (would let an org turn the skip off or hide other paths); applying the skip inside baisethomas/Ratchet (brief forbids it).
+- **Consequences:** A new Ratchet hook file that is not one of the five named scripts is still reviewed until this list is updated. A downstream author can hide code only by placing it in one of those exact hook filenames or under `.agents/skills/ratchet-*` / `.claude/skills/ratchet-*`. Live confirmation on loomlogic-agent-environment #4 waits for deploy.
+- **Revisit when:** Ratchet adds hook files outside the five named scripts, or a downstream author is observed hiding code under a skipped prefix.
+- **Approved by:** agent, under operator brief (brief PR #75)
+
+### D-20261105-0305-vendored-filter-source-aware — Keep a hunk if any of its paths is not vendored
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-05
+- **Decision:** `filterVendoredRatchetDiff` keeps a diff section when any of its source or destination paths (header `a/`/`b/`, `--- a/`, `+++ b/`; never `/dev/null`) is outside the vendored allowlist. Shared `filterReviewDiff` stays destination-only for dashboard `excludedPaths`. A vendored-only remaining diff still skips the model, but an infrastructure sandbox failure (`isInfraSandboxFailure`) keeps the existing infra label and does not become a skip-approve.
+- **Why:** Ternary on #76 found that destination-only skip hid a rename of a project file into a vendored hook path. The brief's hide-resistant preference is met for this class; path-only skip of already-vendored files remains Residue.
+- **Rejected / alternatives:** changing `filterReviewDiff` itself (would alter every policy exclusion); refusing to skip any new file at a vendored destination (would review every Ratchet install/upgrade write).
+- **Consequences:** A downstream author can no longer hide a project file by renaming it onto a skipped hook/skill path. Pure adds/edits of the five named hooks and `ratchet-*` skills remain skipped downstream.
+- **Revisit when:** a hide via copy-then-delete (two hunks) is observed in the wild.
+- **Approved by:** agent, under operator brief (brief PR #75) and in-scope Ternary finding on #76
+
+### D-20261105-1636-vendored-skip-note-on-mixed — Disclose vendored skips on mixed PRs too
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-05
+- **Decision:** Whenever `filterVendoredRatchetDiff` drops any section, the published review summary includes `vendored Ratchet files skipped`, including mixed PRs that still call the model. Infra-labeled sandbox failures still omit that note. Path-only skip of the named install.sh/upgrade.sh destinations stays Residue: content-hash or fail-closed on those paths would review or fail the motivating install/upgrade PRs, which the brief forbids.
+- **Why:** Ternary on #76 head `cec2624` (job `ff27a6c0-e641-4412-bc06-87c18f640ba2`) found mixed PRs omitted skipped files with no notice.
+- **Rejected / alternatives:** pinning upstream blob hashes (install/upgrade writes a newer Ratchet version than any pin); fail-closed `request_changes` on every touch of those paths (re-fails loomlogic-agent-environment #4).
+- **Consequences:** Maintainers see the skip on mixed reviews. Overwriting a named hook or `ratchet-*` skill still skips the model for that file; the check now says so.
+- **Revisit when:** a hide via two independent hunks (add at vendored path + delete of a different project file, with no copy/rename header) is observed.
+- **Approved by:** agent, under operator brief (brief PR #75) and in-scope Ternary finding on #76
+
+### D-20261105-1642-keep-findings-on-kept-vendored-destinations — Do not post-filter findings by vendored path
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-05
+- **Decision:** `applyReviewPolicyToResult` uses the dashboard policy `excludedPaths` only. It does not also exclude `VENDORED_RATCHET_PATHS`. The model already receives only kept hunks; a finding on a vendored destination that was kept because the source was a project file must be published.
+- **Why:** Ternary on #76 head `3fd3695` (job `4a0cdf9e-843b-4c96-8415-db0bac34cfb4`) found that adding vendored paths to the post-filter dropped rename/copy destination findings, undoing D-20261105-0305.
+- **Rejected / alternatives:** filtering findings to paths from dropped sections only (more precise, extra bookkeeping the model diff already encodes).
+- **Consequences:** A hallucinated finding on a skipped vendored file could publish. Prefer that over silently dropping a finding on a kept rename.
+- **Revisit when:** leftover-finding noise on skipped hooks is observed live.
+- **Approved by:** agent, under operator brief (brief PR #75) and in-scope Ternary finding on #76
