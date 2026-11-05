@@ -107,4 +107,16 @@ describe("filterVendoredRatchetDiff", () => {
     expect(result.findings).toEqual([]);
     expect(result.summary.toLowerCase()).toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
   });
+
+  it("does not approve a vendored-only skip when the sandbox command failed", () => {
+    const result = vendoredRatchetSkipResult({
+      ok: false,
+      commands: [{ command: "test", exitCode: 1, output: "1 failed" }],
+      durationMs: 10,
+      sandboxId: "sandbox",
+    });
+    expect(result.verdict).toBe("request_changes");
+    expect(result.findings).toEqual([]);
+    expect(result.summary.toLowerCase()).toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
+  });
 });

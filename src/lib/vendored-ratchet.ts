@@ -54,7 +54,7 @@ export function isReviewableDiff(diff: string) {
 
 export function vendoredRatchetSkipResult(sandbox: SandboxResult): ReviewResult {
   return {
-    verdict: "approve",
+    verdict: sandbox.ok ? "approve" : "request_changes",
     summary: `Vendored Ratchet files skipped. No project-owned files remained for review.`,
     findings: [],
     sandbox,
