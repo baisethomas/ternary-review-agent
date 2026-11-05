@@ -1,4 +1,4 @@
-import { filterReviewDiff, isReviewPathExcluded } from "./review-policy-execution";
+import { isReviewPathExcluded } from "./review-policy-execution";
 import type { ReviewResult, SandboxResult } from "./types";
 
 /**
@@ -44,8 +44,29 @@ export function vendoredRatchetExcludedPaths(owner: string, repo: string): reado
   return isRatchetUpstreamRepository(owner, repo) ? [] : VENDORED_RATCHET_PATHS;
 }
 
+function diffSectionPaths(section: string) {
+  const paths = new Set<string>();
+  const destination = section.match(/^\+\+\+ b\/(.+)$/m)?.[1];
+  const source = section.match(/^--- a\/(.+)$/m)?.[1];
+  const quotedHeader = section.match(/^diff --git "a\/(.+)" "b\/(.+)"$/m);
+  const plainHeader = section.match(/^diff --git a\/(.+) b\/(.+)$/m);
+  for (const raw of [destination, source, quotedHeader?.[1], quotedHeader?.[2], plainHeader?.[1], plainHeader?.[2]]) {
+    if (!raw || raw === "/dev/null") continue;
+    paths.add(raw.replace(/^"|"$/g, "").replace(/^\.\//, ""));
+  }
+  return [...paths];
+}
+
 export function filterVendoredRatchetDiff(diff: string, owner: string, repo: string) {
-  return filterReviewDiff(diff, [...vendoredRatchetExcludedPaths(owner, repo)]);
+  if (isRatchetUpstreamRepository(owner, repo)) return diff;
+  return diff
+    .split(/(?=^diff --git )/m)
+    .filter((section) => {
+      const paths = diffSectionPaths(section);
+      if (!paths.length) return true;
+      return paths.some((path) => !isVendoredRatchetPath(path));
+    })
+    .join("");
 }
 
 export function isReviewableDiff(diff: string) {

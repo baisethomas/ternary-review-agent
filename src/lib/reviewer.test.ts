@@ -444,6 +444,23 @@ describe("runReview", () => {
     expect(markdown.toLowerCase()).toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
   });
 
+  it("labels a vendored-only downstream PR as infra failure when the sandbox is unavailable", async () => {
+    publishSuccessfulSandbox();
+    mocks.getPullRequestDiff.mockResolvedValue(vendoredInstallDiff);
+    mocks.runInSandbox.mockRejectedValue(new Error("Sandbox creation is paused: monthly quota exhausted"));
+
+    const result = await runReview({ ...request, owner: "loomlogiclabs", repo: "agent-environment" });
+
+    expect(mocks.generateRoutedReview).not.toHaveBeenCalled();
+    expect(result.verdict).toBe("request_changes");
+    expect(result.findings).toEqual([]);
+    const [, , , , conclusion, title, markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("failure");
+    expect(title).toBe("Sandbox infrastructure failure");
+    expect(markdown).toMatch(/infrastructure failure/i);
+    expect(markdown).not.toContain(VENDORED_RATCHET_SKIP_NOTE);
+  });
+
   it("still fails a vendored-only downstream PR when a sandbox command genuinely fails", async () => {
     publishSuccessfulSandbox();
     mocks.getPullRequestDiff.mockResolvedValue(vendoredInstallDiff);

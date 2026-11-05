@@ -90,6 +90,22 @@ describe("filterVendoredRatchetDiff", () => {
     }
   });
 
+  it("keeps a rename whose source is a project file even when the destination is a vendored path", () => {
+    const rename = `diff --git a/src/auth.ts b/.claude/hooks/check-on-stop.sh
+similarity index 80%
+rename from src/auth.ts
+rename to .claude/hooks/check-on-stop.sh
+--- a/src/auth.ts
++++ b/.claude/hooks/check-on-stop.sh
+@@ -1 +1 @@
+-export const check = true
++#!/bin/sh
+`;
+    const filtered = filterVendoredRatchetDiff(rename, "acme", "downstream");
+    expect(filtered).toContain("src/auth.ts");
+    expect(filtered).toContain("rename from src/auth.ts");
+  });
+
   it("leaves a vendored-only downstream diff empty so the reviewer can return a skip note instead of an error", () => {
     const vendoredOnly = vendoredPaths.map((path) => fileDiff(path, "+vendored")).join("");
     const filtered = filterVendoredRatchetDiff(vendoredOnly, "acme", "downstream");

@@ -291,3 +291,15 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 - **Consequences:** A new Ratchet hook file that is not one of the five named scripts is still reviewed until this list is updated. A downstream author can hide code only by placing it in one of those exact hook filenames or under `.agents/skills/ratchet-*` / `.claude/skills/ratchet-*`. Live confirmation on loomlogic-agent-environment #4 waits for deploy.
 - **Revisit when:** Ratchet adds hook files outside the five named scripts, or a downstream author is observed hiding code under a skipped prefix.
 - **Approved by:** agent, under operator brief (brief PR #75)
+
+### D-20261105-0305-vendored-filter-source-aware — Keep a hunk if any of its paths is not vendored
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-05
+- **Decision:** `filterVendoredRatchetDiff` keeps a diff section when any of its source or destination paths (header `a/`/`b/`, `--- a/`, `+++ b/`; never `/dev/null`) is outside the vendored allowlist. Shared `filterReviewDiff` stays destination-only for dashboard `excludedPaths`. A vendored-only remaining diff still skips the model, but an infrastructure sandbox failure (`isInfraSandboxFailure`) keeps the existing infra label and does not become a skip-approve.
+- **Why:** Ternary on #76 found that destination-only skip hid a rename of a project file into a vendored hook path. The brief's hide-resistant preference is met for this class; path-only skip of already-vendored files remains Residue.
+- **Rejected / alternatives:** changing `filterReviewDiff` itself (would alter every policy exclusion); refusing to skip any new file at a vendored destination (would review every Ratchet install/upgrade write).
+- **Consequences:** A downstream author can no longer hide a project file by renaming it onto a skipped hook/skill path. Pure adds/edits of the five named hooks and `ratchet-*` skills remain skipped downstream.
+- **Revisit when:** a hide via copy-then-delete (two hunks) is observed in the wild.
+- **Approved by:** agent, under operator brief (brief PR #75) and in-scope Ternary finding on #76
