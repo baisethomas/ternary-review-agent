@@ -43,7 +43,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **LOO-237 skip vendored Ratchet files (2026-11-05, branch
+- **LOO-237 skip vendored Ratchet files (2026-11-05, [open PR #76], branch
   `cursor/loo-237-skip-vendored-ratchet-8240`, brief #75):** Downstream
   GitHub PR reviews omit Ratchet-owned hooks, skills, and scripts
   written by install.sh / upgrade.sh. `.ratchet/STATE.md`,
