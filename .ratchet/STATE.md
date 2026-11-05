@@ -52,9 +52,11 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
   vendored-only downstream PR approves with
   `vendored Ratchet files skipped` and does not call the model.
   A rename whose source is a project file stays in review even
-  when the destination is a vendored path. Sandbox and every
-  other review path are unchanged. Merge/deploy reserved. Live
-  replay of loomlogic-agent-environment #4 is Verifier-after-deploy.
+  when the destination is a vendored path. Mixed diffs that drop
+  vendored sections include the skip note in the check summary.
+  Sandbox and every other review path are unchanged.
+  Merge/deploy reserved. Live replay of
+  loomlogic-agent-environment #4 is Verifier-after-deploy.
 - **TER-50 sandbox outage handling (merged main `f060c26`, #72):**
   Infra sandbox failures stay fail-closed and labeled
   `Sandbox infrastructure failure`. GitHub App still needs
@@ -269,7 +271,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Last handoff
 
-- Updated: 2026-11-05 (LOO-237: rename-aware vendored filter + infra skip test)
+- Updated: 2026-11-05 (LOO-237: mixed-PR skip note after Ternary on cec2624)
 - By: agent (Cursor cloud agent)
 - Branch: `cursor/loo-237-skip-vendored-ratchet-8240` off main `f060c26`.
 - **The one thing a fresh agent should not misread:** this skip is a

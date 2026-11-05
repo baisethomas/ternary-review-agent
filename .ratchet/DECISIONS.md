@@ -303,3 +303,15 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 - **Consequences:** A downstream author can no longer hide a project file by renaming it onto a skipped hook/skill path. Pure adds/edits of the five named hooks and `ratchet-*` skills remain skipped downstream.
 - **Revisit when:** a hide via copy-then-delete (two hunks) is observed in the wild.
 - **Approved by:** agent, under operator brief (brief PR #75) and in-scope Ternary finding on #76
+
+### D-20261105-1636-vendored-skip-note-on-mixed — Disclose vendored skips on mixed PRs too
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-05
+- **Decision:** Whenever `filterVendoredRatchetDiff` drops any section, the published review summary includes `vendored Ratchet files skipped`, including mixed PRs that still call the model. Infra-labeled sandbox failures still omit that note. Path-only skip of the named install.sh/upgrade.sh destinations stays Residue: content-hash or fail-closed on those paths would review or fail the motivating install/upgrade PRs, which the brief forbids.
+- **Why:** Ternary on #76 head `cec2624` (job `ff27a6c0-e641-4412-bc06-87c18f640ba2`) found mixed PRs omitted skipped files with no notice.
+- **Rejected / alternatives:** pinning upstream blob hashes (install/upgrade writes a newer Ratchet version than any pin); fail-closed `request_changes` on every touch of those paths (re-fails loomlogic-agent-environment #4).
+- **Consequences:** Maintainers see the skip on mixed reviews. Overwriting a named hook or `ratchet-*` skill still skips the model for that file; the check now says so.
+- **Revisit when:** a hide via two independent hunks (add at vendored path + delete of a different project file, with no copy/rename header) is observed.
+- **Approved by:** agent, under operator brief (brief PR #75) and in-scope Ternary finding on #76

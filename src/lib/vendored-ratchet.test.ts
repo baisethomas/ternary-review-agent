@@ -3,11 +3,13 @@ import { filterReviewDiff } from "./review-policy-execution";
 import {
   VENDORED_RATCHET_PATHS,
   VENDORED_RATCHET_SKIP_NOTE,
+  droppedVendoredRatchetSections,
   filterVendoredRatchetDiff,
   isRatchetUpstreamRepository,
   isVendoredRatchetPath,
   vendoredRatchetExcludedPaths,
   vendoredRatchetSkipResult,
+  withVendoredRatchetSkipNote,
 } from "./vendored-ratchet";
 
 function fileDiff(path: string, body = "+change") {
@@ -106,6 +108,45 @@ rename to .claude/hooks/check-on-stop.sh
     expect(filtered).toContain("rename from src/auth.ts");
   });
 
+  it("skips deletion and mode-only changes of vendored hook files", () => {
+    const deletion = `diff --git a/.claude/hooks/check-on-stop.sh b/.claude/hooks/check-on-stop.sh
+deleted file mode 100755
+--- a/.claude/hooks/check-on-stop.sh
++++ /dev/null
+@@ -1 +0,0 @@
+-#!/bin/sh
+`;
+    const modeOnly = `diff --git a/.claude/hooks/guard-destructive.sh b/.claude/hooks/guard-destructive.sh
+old mode 100644
+new mode 100755
+`;
+    expect(filterVendoredRatchetDiff(deletion, "acme", "downstream")).toBe("");
+    expect(filterVendoredRatchetDiff(modeOnly, "acme", "downstream")).toBe("");
+  });
+
+  it("keeps both sides of a copy-then-delete whose source is a project file", () => {
+    const copyThenDelete = `diff --git a/src/auth.ts b/.claude/hooks/check-on-stop.sh
+similarity index 100%
+copy from src/auth.ts
+copy to .claude/hooks/check-on-stop.sh
+--- a/src/auth.ts
++++ b/.claude/hooks/check-on-stop.sh
+@@ -1 +1 @@
+-export const check = true
++#!/bin/sh
+diff --git a/src/auth.ts b/src/auth.ts
+deleted file mode 100644
+--- a/src/auth.ts
++++ /dev/null
+@@ -1 +0,0 @@
+-export const check = true
+`;
+    const filtered = filterVendoredRatchetDiff(copyThenDelete, "acme", "downstream");
+    expect(filtered).toContain("copy from src/auth.ts");
+    expect(filtered).toContain("src/auth.ts");
+    expect(filtered).toContain("deleted file mode");
+  });
+
   it("leaves a vendored-only downstream diff empty so the reviewer can return a skip note instead of an error", () => {
     const vendoredOnly = vendoredPaths.map((path) => fileDiff(path, "+vendored")).join("");
     const filtered = filterVendoredRatchetDiff(vendoredOnly, "acme", "downstream");
@@ -134,5 +175,20 @@ rename to .claude/hooks/check-on-stop.sh
     expect(result.verdict).toBe("request_changes");
     expect(result.findings).toEqual([]);
     expect(result.summary.toLowerCase()).toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
+  });
+
+  it("records that mixed diffs dropped vendored sections so the reviewer can attach the skip note", () => {
+    expect(droppedVendoredRatchetSections(mixedDownstreamDiff, filterVendoredRatchetDiff(mixedDownstreamDiff, "acme", "app"))).toBe(true);
+    expect(droppedVendoredRatchetSections(mixedDownstreamDiff, mixedDownstreamDiff)).toBe(false);
+
+    const annotated = withVendoredRatchetSkipNote({
+      verdict: "approve",
+      summary: "No material findings.",
+      findings: [],
+      sandbox: { ok: true, commands: [], durationMs: 10, sandboxId: "sandbox" },
+      authoritativeFindings: true,
+    });
+    expect(annotated.summary.toLowerCase()).toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
+    expect(withVendoredRatchetSkipNote(annotated).summary).toBe(annotated.summary);
   });
 });

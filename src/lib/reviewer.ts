@@ -24,10 +24,12 @@ import { safeReviewPolicy } from "./review-policy";
 import { applyReviewPolicyToResult, filterReviewDiff } from "./review-policy-execution";
 import { checkRunTitleFor, infraReviewResult, isInfraSandboxFailure } from "./sandbox-infra-failure";
 import {
+  droppedVendoredRatchetSections,
   filterVendoredRatchetDiff,
   skippedVendoredRatchetOnly,
   vendoredRatchetExcludedPaths,
   vendoredRatchetSkipResult,
+  withVendoredRatchetSkipNote,
 } from "./vendored-ratchet";
 
 function formatSandboxLines(sandbox: SandboxResult) {
@@ -106,10 +108,13 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
           policy,
           { remainingMs: remainingInvocationBudgetMs(invocationStartedAt) },
         );
-    const result = applyReviewPolicyToResult(generated, {
+    const filtered = applyReviewPolicyToResult(generated, {
       ...policy,
       excludedPaths: [...policy.excludedPaths, ...vendoredRatchetExcludedPaths(request.owner, request.repo)],
     });
+    const result = droppedVendoredRatchetSections(policyDiff, reviewDiff) && !isInfraSandboxFailure(filtered.sandbox)
+      ? withVendoredRatchetSkipNote(filtered)
+      : filtered;
     const marker = request.id ? `\n\n<!-- ternary-review-job:${request.id} -->` : "";
     const markdown = `${formatReview(result)}${marker}`;
     await lease?.assertActive();

@@ -86,3 +86,15 @@ export function vendoredRatchetSkipResult(sandbox: SandboxResult): ReviewResult 
 export function skippedVendoredRatchetOnly(policyDiff: string, reviewDiff: string) {
   return isReviewableDiff(policyDiff) && !isReviewableDiff(reviewDiff);
 }
+
+export function droppedVendoredRatchetSections(policyDiff: string, reviewDiff: string) {
+  return policyDiff !== reviewDiff;
+}
+
+export function withVendoredRatchetSkipNote(result: ReviewResult): ReviewResult {
+  if (result.summary.toLowerCase().includes(VENDORED_RATCHET_SKIP_NOTE.toLowerCase())) return result;
+  return {
+    ...result,
+    summary: `${result.summary.trimEnd()}\n\nVendored Ratchet files skipped.`,
+  };
+}

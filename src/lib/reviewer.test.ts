@@ -414,6 +414,8 @@ describe("runReview", () => {
     expect(reviewedDiff).not.toContain("rrr.sh");
     expect(reviewedDiff).not.toContain("check-on-stop.sh");
     expect(reviewedDiff).not.toContain("+vendored");
+    const [, , , , , , markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(markdown.toLowerCase()).toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
   });
 
   it("reviews vendored Ratchet files when the repository is baisethomas/Ratchet", async () => {
@@ -427,6 +429,8 @@ describe("runReview", () => {
     expect(reviewedDiff).toContain("rrr.sh");
     expect(reviewedDiff).toContain("check-on-stop.sh");
     expect(reviewedDiff).toContain("src/app.ts");
+    const [, , , , , , markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(markdown.toLowerCase()).not.toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
   });
 
   it("approves a downstream PR that only touches vendored Ratchet files, with a skip note", async () => {
