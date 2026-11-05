@@ -271,7 +271,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Last handoff
 
-- Updated: 2026-11-05 (LOO-237: mixed-PR skip note after Ternary on cec2624)
+- Updated: 2026-11-05 (LOO-237: keep rename/copy findings on vendored destinations)
 - By: agent (Cursor cloud agent)
 - Branch: `cursor/loo-237-skip-vendored-ratchet-8240` off main `f060c26`.
 - **The one thing a fresh agent should not misread:** this skip is a

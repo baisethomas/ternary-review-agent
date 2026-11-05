@@ -418,6 +418,46 @@ describe("runReview", () => {
     expect(markdown.toLowerCase()).toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
   });
 
+  it("publishes a finding on a vendored destination when the hunk was kept because the source is a project file", async () => {
+    publishSuccessfulSandbox();
+    const rename = `diff --git a/src/auth.ts b/.claude/hooks/check-on-stop.sh
+similarity index 80%
+rename from src/auth.ts
+rename to .claude/hooks/check-on-stop.sh
+--- a/src/auth.ts
++++ b/.claude/hooks/check-on-stop.sh
+@@ -1 +1 @@
+-export const check = true
++#!/bin/sh
+`;
+    mocks.getPullRequestDiff.mockResolvedValue(rename);
+    mocks.generateRoutedReview.mockResolvedValue({
+      verdict: "request_changes",
+      summary: "Hidden hook rewrite",
+      findings: [{
+        severity: "blocking" as const,
+        file: ".claude/hooks/check-on-stop.sh",
+        line: 1,
+        title: "Executable hook rewrite",
+        explanation: "Project file renamed onto a skipped hook path",
+      }],
+      sandbox: { ok: true, commands: [], durationMs: 100, sandboxId: "sandbox-1" },
+      authoritativeFindings: true,
+    });
+
+    const result = await runReview({ ...request, owner: "loomlogiclabs", repo: "agent-environment" });
+
+    expect(mocks.generateRoutedReview.mock.calls[0][0]).toContain("src/auth.ts");
+    expect(result.findings).toEqual([expect.objectContaining({
+      file: ".claude/hooks/check-on-stop.sh",
+      title: "Executable hook rewrite",
+    })]);
+    expect(result.verdict).toBe("request_changes");
+    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("failure");
+    expect(markdown).toContain("Executable hook rewrite");
+  });
+
   it("reviews vendored Ratchet files when the repository is baisethomas/Ratchet", async () => {
     publishSuccessfulSandbox();
     mocks.getPullRequestDiff.mockResolvedValue(mixedInstallDiff);

@@ -27,7 +27,6 @@ import {
   droppedVendoredRatchetSections,
   filterVendoredRatchetDiff,
   skippedVendoredRatchetOnly,
-  vendoredRatchetExcludedPaths,
   vendoredRatchetSkipResult,
   withVendoredRatchetSkipNote,
 } from "./vendored-ratchet";
@@ -108,10 +107,7 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
           policy,
           { remainingMs: remainingInvocationBudgetMs(invocationStartedAt) },
         );
-    const filtered = applyReviewPolicyToResult(generated, {
-      ...policy,
-      excludedPaths: [...policy.excludedPaths, ...vendoredRatchetExcludedPaths(request.owner, request.repo)],
-    });
+    const filtered = applyReviewPolicyToResult(generated, policy);
     const result = droppedVendoredRatchetSections(policyDiff, reviewDiff) && !isInfraSandboxFailure(filtered.sandbox)
       ? withVendoredRatchetSkipNote(filtered)
       : filtered;

@@ -315,3 +315,15 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 - **Consequences:** Maintainers see the skip on mixed reviews. Overwriting a named hook or `ratchet-*` skill still skips the model for that file; the check now says so.
 - **Revisit when:** a hide via two independent hunks (add at vendored path + delete of a different project file, with no copy/rename header) is observed.
 - **Approved by:** agent, under operator brief (brief PR #75) and in-scope Ternary finding on #76
+
+### D-20261105-1642-keep-findings-on-kept-vendored-destinations — Do not post-filter findings by vendored path
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-05
+- **Decision:** `applyReviewPolicyToResult` uses the dashboard policy `excludedPaths` only. It does not also exclude `VENDORED_RATCHET_PATHS`. The model already receives only kept hunks; a finding on a vendored destination that was kept because the source was a project file must be published.
+- **Why:** Ternary on #76 head `3fd3695` (job `4a0cdf9e-843b-4c96-8415-db0bac34cfb4`) found that adding vendored paths to the post-filter dropped rename/copy destination findings, undoing D-20261105-0305.
+- **Rejected / alternatives:** filtering findings to paths from dropped sections only (more precise, extra bookkeeping the model diff already encodes).
+- **Consequences:** A hallucinated finding on a skipped vendored file could publish. Prefer that over silently dropping a finding on a kept rename.
+- **Revisit when:** leftover-finding noise on skipped hooks is observed live.
+- **Approved by:** agent, under operator brief (brief PR #75) and in-scope Ternary finding on #76
