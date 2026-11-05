@@ -43,23 +43,21 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **TER-50 sandbox outage handling (2026-11-04, branch
-  `cursor/ter-50-sandbox-outage-handling-c8cc`, brief #71, implementation
-  PR #72):** Unavailable, budget-partial, exit 137 / OOM, mid-run
-  command timeout, and mid-command SDK throws are fail-closed and
-  labeled `Sandbox infrastructure failure` (no code findings, no AI).
-  Genuine command failures (test exit 1) keep `Review complete`.
-  Re-run via requested_action, `check_run` rerequested, and
-  `check_suite` rerequested. Re-runs require Ternary's app slug and
-  the current open PR head SHA; draft, closed, and merged PRs are
-  rejected without enqueueing. Check-run idempotency is delivery id
-  plus a check-run-id alias; check-suite idempotency is delivery id
-  only.
-  Infra results sync an empty inline-finding set. Linear tracking
-  rule added to this repo's `AGENTS.md`/`CLAUDE.md`; drop-in templates
-  left alone. GitHub App currently subscribes only to `pull_request`,
-  so re-run webhooks will not fire until the operator adds
-  `check_run` and `check_suite`. Merge/deploy reserved.
+- **LOO-237 skip vendored Ratchet files (2026-11-05, branch
+  `cursor/loo-237-skip-vendored-ratchet-8240`, brief #75):** Downstream
+  GitHub PR reviews omit Ratchet-owned hooks, skills, and scripts
+  written by install.sh / upgrade.sh. `.ratchet/STATE.md`,
+  `.ratchet/DECISIONS.md`, and `.ratchet/guard-destructive.rules` stay
+  in review. Nothing is skipped in `baisethomas/Ratchet`. A
+  vendored-only downstream PR approves with
+  `vendored Ratchet files skipped` and does not call the model.
+  Sandbox and every other review path are unchanged. Merge/deploy
+  reserved. Live replay of loomlogic-agent-environment #4 is
+  Verifier-after-deploy.
+- **TER-50 sandbox outage handling (merged main `f060c26`, #72):**
+  Infra sandbox failures stay fail-closed and labeled
+  `Sandbox infrastructure failure`. GitHub App still needs
+  `check_run` and `check_suite` for the re-run path to fire live.
 - **Sandbox stops failing non-JS repos (merged main `fb817a7`, #69,
   D-20261103-0235):** live worker cap is the Pro target **480 s**.
   Setup/clone/timeout failures block (unlabeled on main — TER-50
@@ -270,12 +268,12 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Last handoff
 
-- Updated: 2026-11-04 (TER-50 follow-up: widen infra classes; check_suite rerequested; draft/merged/stale-SHA suite tests)
+- Updated: 2026-11-05 (LOO-237: skip vendored Ratchet hooks/skills/scripts downstream)
 - By: agent (Cursor cloud agent)
-- Branch: `cursor/ter-50-sandbox-outage-handling-c8cc` off main `fb817a7`.
-- **The one thing a fresh agent should not misread:** §8.9's 100% delivery and
-  80% severity agreement are two-repetition numbers on a 12-seed fixture set
-  under a brand-new prompt. They are evidence the contract behaves as designed,
-  not a benchmark; and the English *check* has still never rejected a real
-  generation — only a scan-clean *outcome* has been observed (no blocked-script
-  characters, 61 reviews running; spot-reads English, no per-run language ID).
+- Branch: `cursor/loo-237-skip-vendored-ratchet-8240` off main `f060c26`.
+- **The one thing a fresh agent should not misread:** this skip is a
+  fixed allowlist of install.sh / upgrade.sh destinations, not a
+  user-policy excluded-path and not a disable of Ternary. Project
+  `.ratchet/` files and the Ratchet repo itself stay fully reviewed.
+  A new Ratchet hook filename outside the five named files would
+  still be reviewed until the list is updated.

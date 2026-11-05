@@ -47,6 +47,7 @@ vi.mock("./review-route-service", () => ({
 }));
 
 import { runReview } from "./reviewer";
+import { VENDORED_RATCHET_SKIP_NOTE } from "./vendored-ratchet";
 
 const request = {
   owner: "ternary",
@@ -363,5 +364,83 @@ describe("runReview", () => {
     expect(mocks.upsertPullRequestComment).toHaveBeenCalledWith(
       "ternary", "agent", 8, "token", markdown, undefined,
     );
+  });
+
+  function fileDiff(path: string, body: string) {
+    return `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-old\n${body}\n`;
+  }
+
+  const vendoredInstallDiff = [
+    fileDiff(".agents/skills/ratchet-handoff/scripts/runlog.sh", "+vendored"),
+    fileDiff(".agents/skills/ratchet-bugfix/scripts/rrr.sh", "+vendored"),
+    fileDiff(".claude/hooks/check-on-stop.sh", "+vendored"),
+  ].join("");
+
+  const mixedInstallDiff = [
+    vendoredInstallDiff,
+    fileDiff("src/app.ts", "+project source"),
+    fileDiff(".ratchet/STATE.md", "+project memory"),
+    fileDiff(".ratchet/DECISIONS.md", "+project memory"),
+    fileDiff(".ratchet/guard-destructive.rules", "+project memory"),
+  ].join("");
+
+  function publishSuccessfulSandbox() {
+    mocks.runInSandbox.mockResolvedValue({ ok: true, commands: [], durationMs: 100, sandboxId: "sandbox-1" });
+    mocks.getRepositoryReviewContext.mockResolvedValue({ text: "ctx", status: "ok", chunks: [], indexedCommitSha: null, latencyMs: 1 });
+    mocks.upsertPullRequestComment.mockResolvedValue(undefined);
+    mocks.syncFindingReviewComments.mockResolvedValue(undefined);
+    mocks.generateRoutedReview.mockResolvedValue({
+      verdict: "approve",
+      summary: "ok",
+      findings: [],
+      sandbox: { ok: true, commands: [], durationMs: 100, sandboxId: "sandbox-1" },
+      authoritativeFindings: true,
+    });
+  }
+
+  it("sends only project source and .ratchet files when a downstream PR also touches vendored Ratchet files", async () => {
+    publishSuccessfulSandbox();
+    mocks.getPullRequestDiff.mockResolvedValue(mixedInstallDiff);
+
+    await runReview({ ...request, owner: "loomlogiclabs", repo: "agent-environment" });
+
+    expect(mocks.generateRoutedReview).toHaveBeenCalled();
+    const [reviewedDiff] = mocks.generateRoutedReview.mock.calls[0];
+    expect(reviewedDiff).toContain("src/app.ts");
+    expect(reviewedDiff).toContain(".ratchet/STATE.md");
+    expect(reviewedDiff).toContain(".ratchet/DECISIONS.md");
+    expect(reviewedDiff).toContain(".ratchet/guard-destructive.rules");
+    expect(reviewedDiff).not.toContain("runlog.sh");
+    expect(reviewedDiff).not.toContain("rrr.sh");
+    expect(reviewedDiff).not.toContain("check-on-stop.sh");
+    expect(reviewedDiff).not.toContain("+vendored");
+  });
+
+  it("reviews vendored Ratchet files when the repository is baisethomas/Ratchet", async () => {
+    publishSuccessfulSandbox();
+    mocks.getPullRequestDiff.mockResolvedValue(mixedInstallDiff);
+
+    await runReview({ ...request, owner: "baisethomas", repo: "Ratchet" });
+
+    const [reviewedDiff] = mocks.generateRoutedReview.mock.calls[0];
+    expect(reviewedDiff).toContain("runlog.sh");
+    expect(reviewedDiff).toContain("rrr.sh");
+    expect(reviewedDiff).toContain("check-on-stop.sh");
+    expect(reviewedDiff).toContain("src/app.ts");
+  });
+
+  it("approves a downstream PR that only touches vendored Ratchet files, with a skip note", async () => {
+    publishSuccessfulSandbox();
+    mocks.getPullRequestDiff.mockResolvedValue(vendoredInstallDiff);
+
+    const result = await runReview({ ...request, owner: "loomlogiclabs", repo: "agent-environment" });
+
+    expect(mocks.generateRoutedReview).not.toHaveBeenCalled();
+    expect(result.verdict).toBe("approve");
+    expect(result.findings).toEqual([]);
+    const [, , , , conclusion, title, markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("success");
+    expect(title).toBe("Review complete");
+    expect(markdown.toLowerCase()).toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
   });
 });

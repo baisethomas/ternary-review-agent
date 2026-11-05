@@ -23,6 +23,12 @@ import { shouldSkipSandboxBuild } from "./review-route-selector";
 import { safeReviewPolicy } from "./review-policy";
 import { applyReviewPolicyToResult, filterReviewDiff } from "./review-policy-execution";
 import { checkRunTitleFor, infraReviewResult, isInfraSandboxFailure } from "./sandbox-infra-failure";
+import {
+  filterVendoredRatchetDiff,
+  skippedVendoredRatchetOnly,
+  vendoredRatchetExcludedPaths,
+  vendoredRatchetSkipResult,
+} from "./vendored-ratchet";
 
 function formatSandboxLines(sandbox: SandboxResult) {
   if (sandbox.status === "unavailable") {
@@ -77,7 +83,9 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
   await announceDashboardChange();
   try {
     const diff = await diffPromise;
-    const reviewDiff = filterReviewDiff(diff, policy.excludedPaths);
+    const policyDiff = filterReviewDiff(diff, policy.excludedPaths);
+    const reviewDiff = filterVendoredRatchetDiff(policyDiff, request.owner, request.repo);
+    const vendoredOnly = skippedVendoredRatchetOnly(policyDiff, reviewDiff);
     const routeConfig = resolveReviewRouteConfig();
     const diffPrep = prepareReviewRouteFromDiff(reviewDiff, routeConfig);
     const skipBuild = shouldSkipSandboxBuild(diffPrep, routeConfig);
@@ -89,14 +97,19 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
     ]);
     const generated = isInfraSandboxFailure(sandbox)
       ? infraReviewResult(sandbox)
-      : await generateRoutedReview(
-        reviewDiff,
-        sandbox,
-        repositoryContext.text,
-        policy,
-        { remainingMs: remainingInvocationBudgetMs(invocationStartedAt) },
-      );
-    const result = applyReviewPolicyToResult(generated, policy);
+      : vendoredOnly
+        ? vendoredRatchetSkipResult(sandbox)
+        : await generateRoutedReview(
+          reviewDiff,
+          sandbox,
+          repositoryContext.text,
+          policy,
+          { remainingMs: remainingInvocationBudgetMs(invocationStartedAt) },
+        );
+    const result = applyReviewPolicyToResult(generated, {
+      ...policy,
+      excludedPaths: [...policy.excludedPaths, ...vendoredRatchetExcludedPaths(request.owner, request.repo)],
+    });
     const marker = request.id ? `\n\n<!-- ternary-review-job:${request.id} -->` : "";
     const markdown = `${formatReview(result)}${marker}`;
     await lease?.assertActive();

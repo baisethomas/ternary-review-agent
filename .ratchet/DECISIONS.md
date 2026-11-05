@@ -279,3 +279,15 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 - **Consequences:** A script that `exit 137` on purpose is now labeled infra. GitHub App still needs `check_run` and `check_suite` events for the re-run path to fire live. `ratchet/drop-in/` unchanged.
 - **Revisit when:** GitHub App `check_run` / `check_suite` subscriptions are confirmed live.
 - **Approved by:** agent, under operator follow-up on TER-50 / PR #72
+
+### D-20261105-0255-skip-vendored-ratchet-downstream — Skip install.sh/upgrade.sh Ratchet files in downstream reviews only
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-05
+- **Decision:** On the GitHub PR review path, after policy `excludedPaths`, Ternary drops Ratchet-owned hook, skill, and script files from the model diff in every repository except `baisethomas/Ratchet` (case-insensitive). The list is the destinations those scripts actually write: the five `.claude/hooks/*.sh` files named in install.sh:73-74 / copied by install.sh:167 and upgrade.sh:320; `.agents/skills/CREDITS.md` and `.agents/skills/ratchet-*/**` from install.sh:159 / upgrade.sh:320; and `.claude/skills/ratchet-*/**` from the install.sh:175 skill links. `.ratchet/STATE.md`, `.ratchet/DECISIONS.md`, and `.ratchet/guard-destructive.rules` stay in review (install.sh:23-25, 122-124, 153-157; upgrade.sh:20, 312-318 classify them `memory` and refuse to write them). A downstream PR whose remaining diff is empty after this filter does not call the model; it approves (or still fails if the sandbox failed) with the note `vendored Ratchet files skipped`. Sandbox, routing, policy, and the AI path for every other file are unchanged.
+- **Why:** Downstream Ratchet install/upgrade PRs were failing on upstream findings (e.g. runlog.sh:122, rrr.sh:140 on loomlogic-agent-environment #4). Those files are reviewed when Ternary reviews baisethomas/Ratchet itself.
+- **Rejected / alternatives:** Skipping all of `.claude/hooks/**` and `.agents/skills/**` (a downstream author could hide arbitrary code there); skipping `AGENTS.md` / `CLAUDE.md` / `CODEX.md` (those are filled-in project contracts, not the motivating scripts); treating this as a default `excludedPaths` policy the dashboard can clear (would let an org turn the skip off or hide other paths); applying the skip inside baisethomas/Ratchet (brief forbids it).
+- **Consequences:** A new Ratchet hook file that is not one of the five named scripts is still reviewed until this list is updated. A downstream author can hide code only by placing it in one of those exact hook filenames or under `.agents/skills/ratchet-*` / `.claude/skills/ratchet-*`. Live confirmation on loomlogic-agent-environment #4 waits for deploy.
+- **Revisit when:** Ratchet adds hook files outside the five named scripts, or a downstream author is observed hiding code under a skipped prefix.
+- **Approved by:** agent, under operator brief (brief PR #75)
