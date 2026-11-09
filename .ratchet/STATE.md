@@ -43,8 +43,9 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **Live Linear home → team LOO / project Ternary (2026-11-09, branch
-  `cursor/ter-to-loo-references-267a`, brief #77):** `AGENTS.md` and
+- **Live Linear home → team LOO / project Ternary (2026-11-09, [open PR
+  #78], branch `cursor/ter-to-loo-references-267a`, brief #77):**
+  `AGENTS.md` and
   `CLAUDE.md` name team LOO, project "Ternary" as the work tracker
   (example issue id LOO-235). Historical TER-* in decisions, ADRs,
   experiments, and code comments left alone. desk
