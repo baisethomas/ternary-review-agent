@@ -43,8 +43,17 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **LOO-237 skip vendored Ratchet files (2026-11-05, [open PR #76], branch
-  `cursor/loo-237-skip-vendored-ratchet-8240`, brief #75):** Downstream
+- **Live Linear home → team LOO / project Ternary (2026-11-09, [open PR
+  #78], branch `cursor/ter-to-loo-references-267a`, brief #77):**
+  `AGENTS.md` and
+  `CLAUDE.md` name team LOO, project "Ternary" as the work tracker
+  (example issue id LOO-235). Historical TER-* in decisions, ADRs,
+  experiments, and code comments left alone. desk
+  `.cursor/rules/chief-of-staff.mdc` out of scope. Merge/deploy
+  reserved. D-20261104-0145 superseded by
+  D-20261109-1755-linear-tracking-loo-ternary.
+- **LOO-237 skip vendored Ratchet files (2026-11-05, merged main
+  `960fa3c`, #76):** Downstream
   GitHub PR reviews omit Ratchet-owned hooks, skills, and scripts
   written by install.sh / upgrade.sh. `.ratchet/STATE.md`,
   `.ratchet/DECISIONS.md`, and `.ratchet/guard-destructive.rules` stay
@@ -142,7 +151,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Next
 
-1. **TER-46 residue after promotion:** log the configured `providerOrder` on
+1. **LOO-231 residue after promotion:** log the configured `providerOrder` on
    the log line (small observability gap); the slugs must track the **served**
    model's endpoint pool (`-latest` alias pool lists neither pinned provider —
    churn risk, bounded by `allow_fallbacks`); Makora and the fallback path
@@ -165,7 +174,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
    1-of-2 runs double-failed strict structured output at a scale where 80+
    fixture-size submissions never did. A repetition series at this input size
    is the follow-up if large-repo `--all` becomes a real workflow.
-5. **Coverage surfacing** (spun off from TER-43): print "content included for
+5. **Coverage surfacing** (spun off from LOO-228): print "content included for
    N of M files (X% of eligible bytes)" in the CLI confirm summary and
    rendered result.
 5. **§7.2 baseline RUN 2026-09-01 (§8.13 + `baseline-72-runs.json`).** Same
@@ -182,7 +191,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
    payloads returned `pass` and `findings` in consecutive runs. Consumers
    should gate on finding class, not verdict or severity boundary (extends
    §8.10.3).
-7. Then TER-42, TER-33; TER-18/TER-13 later.
+7. Then LOO-227, LOO-218; LOO-207/LOO-203 later.
 
 ## Blocked
 
@@ -271,12 +280,10 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Last handoff
 
-- Updated: 2026-11-05 (LOO-237: keep rename/copy findings on vendored destinations)
+- Updated: 2026-11-09 (remap live TER ids in STATE.md `## Next`)
 - By: agent (Cursor cloud agent)
-- Branch: `cursor/loo-237-skip-vendored-ratchet-8240` off main `f060c26`.
-- **The one thing a fresh agent should not misread:** this skip is a
-  fixed allowlist of install.sh / upgrade.sh destinations, not a
-  user-policy excluded-path and not a disable of Ternary. Project
-  `.ratchet/` files and the Ratchet repo itself stay fully reviewed.
-  A new Ratchet hook filename outside the five named files would
-  still be reviewed until the list is updated.
+- Branch: `cursor/ter-to-loo-references-267a` off main `960fa3c` [open PR #78].
+- **The one thing a fresh agent should not misread:** new work uses
+  LOO issue IDs on team LOO / project Ternary. `## Next` now uses the
+  mapped LOO ids. Historical TER-* in completed-work history, DECISIONS,
+  ADRs, and code stay as records. Do not rewrite them on this brief.
