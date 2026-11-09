@@ -246,7 +246,7 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 
 ### D-20261104-0145-linear-tracking-rule — Linear (team TER) is the work tracker, with claim and handoff rules
 
-- **Status:** accepted
+- **Status:** superseded by D-20261109-1755-linear-tracking-loo-ternary
 - **Impact:** medium
 - **Date:** 2026-11-04
 - **Decision:** Agents follow the Linear tracking section in `AGENTS.md` and `CLAUDE.md` (workspace loomlogiclabs, team TER): claim before start, include the issue ID in branch and PR names/titles, file follow-ups as linked Linear issues, and hand off status builder → verifier → Baise. Until Baise adds `In Review` and `Verified` workflow states, keep `In Progress` and record those labels in an issue comment. Do not create Linear states.
@@ -327,3 +327,16 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 - **Consequences:** A hallucinated finding on a skipped vendored file could publish. Prefer that over silently dropping a finding on a kept rename.
 - **Revisit when:** leftover-finding noise on skipped hooks is observed live.
 - **Approved by:** agent, under operator brief (brief PR #75) and in-scope Ternary finding on #76
+
+### D-20261109-1755-linear-tracking-loo-ternary — Linear work for this repo lives on team LOO, project Ternary
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-09
+- **Decision:** Agents follow the Linear tracking section in `AGENTS.md` and `CLAUDE.md`: workspace loomlogiclabs, team LOO, project "Ternary". New branches and PRs use LOO issue IDs (example LOO-235). Claim-before-start, linked follow-up issues, and builder → verifier → Baise handoff are unchanged. `ratchet/drop-in/` copies stay Ratchet templates for other repos.
+- **Why:** Team TER was retired on 2026-11-04 and folded into team LOO as project Ternary. Live agent docs still named TER and cited TER-50. Brief `briefs/2026-11-09-ter-to-loo-references.md` (brief PR #77).
+- **Rejected / alternatives:** remapping historical TER-* in `.ratchet/DECISIONS.md`, ADRs, experiments, or code comments (brief: leave historical records alone); editing `desk/.cursor/rules/chief-of-staff.mdc` (lives in desk, out of scope).
+- **Consequences:** Fresh agents file and name work against LOO / project Ternary. Former TER-N identifiers remain in historical text. The 2026-11-03 workflow-state note still says In Review / Verified are missing; that note was only edited to drop retired team TER from the team list.
+- **Revisit when:** Linear workflow states in the docs no longer match the live LOO team, or Ternary work moves off project Ternary.
+- **Approved by:** agent, under operator brief (brief PR #77)
+

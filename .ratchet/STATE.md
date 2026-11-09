@@ -43,8 +43,16 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **LOO-237 skip vendored Ratchet files (2026-11-05, [open PR #76], branch
-  `cursor/loo-237-skip-vendored-ratchet-8240`, brief #75):** Downstream
+- **Live Linear home → team LOO / project Ternary (2026-11-09, branch
+  `cursor/ter-to-loo-references-267a`, brief #77):** `AGENTS.md` and
+  `CLAUDE.md` name team LOO, project "Ternary" as the work tracker
+  (example issue id LOO-235). Historical TER-* in decisions, ADRs,
+  experiments, and code comments left alone. desk
+  `.cursor/rules/chief-of-staff.mdc` out of scope. Merge/deploy
+  reserved. D-20261104-0145 superseded by
+  D-20261109-1755-linear-tracking-loo-ternary.
+- **LOO-237 skip vendored Ratchet files (2026-11-05, merged main
+  `960fa3c`, #76):** Downstream
   GitHub PR reviews omit Ratchet-owned hooks, skills, and scripts
   written by install.sh / upgrade.sh. `.ratchet/STATE.md`,
   `.ratchet/DECISIONS.md`, and `.ratchet/guard-destructive.rules` stay
@@ -271,12 +279,10 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Last handoff
 
-- Updated: 2026-11-05 (LOO-237: keep rename/copy findings on vendored destinations)
+- Updated: 2026-11-09 (live Linear tracking: team LOO, project Ternary)
 - By: agent (Cursor cloud agent)
-- Branch: `cursor/loo-237-skip-vendored-ratchet-8240` off main `f060c26`.
-- **The one thing a fresh agent should not misread:** this skip is a
-  fixed allowlist of install.sh / upgrade.sh destinations, not a
-  user-policy excluded-path and not a disable of Ternary. Project
-  `.ratchet/` files and the Ratchet repo itself stay fully reviewed.
-  A new Ratchet hook filename outside the five named files would
-  still be reviewed until the list is updated.
+- Branch: `cursor/ter-to-loo-references-267a` off main `960fa3c`.
+- **The one thing a fresh agent should not misread:** new work uses
+  LOO issue IDs on team LOO / project Ternary. Historical TER-*
+  identifiers in this file, DECISIONS, ADRs, and code are records,
+  not the live tracker. Do not rewrite them on this brief.
