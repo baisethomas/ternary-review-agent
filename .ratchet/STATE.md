@@ -43,29 +43,28 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Working on
 
-- **Live Linear home → team LOO / project Ternary (2026-11-09, [open PR
-  #78], branch `cursor/ter-to-loo-references-267a`, brief #77):**
-  `AGENTS.md` and
-  `CLAUDE.md` name team LOO, project "Ternary" as the work tracker
-  (example issue id LOO-235). Historical TER-* in decisions, ADRs,
-  experiments, and code comments left alone. desk
-  `.cursor/rules/chief-of-staff.mdc` out of scope. Merge/deploy
-  reserved. D-20261104-0145 superseded by
-  D-20261109-1755-linear-tracking-loo-ternary.
+- **LOO-237 follow-up: skipped vendored files are present, not
+  missing (2026-11-10, [in flight], branch
+  `cursor/loo-237-vendored-present-3f40`, brief #79):** After #76
+  stripped vendored hook/skill hunks, mixed Ratchet re-sync PRs
+  (loomlogic-agent-environment #6, Ruach-learning-center #13) still
+  called the model on remaining marker/STATE/DECISIONS hunks and
+  FAILed because those skipped files looked missing. Downstream
+  reviews now list dropped vendored paths as present and out of
+  scope, omit findings that allege those files are missing, and
+  keep findings on kept rename destinations and on remaining
+  project files. `baisethomas/Ratchet` is unchanged. Merge/deploy
+  reserved. D-20261110-0006.
+- **Live Linear home → team LOO / project Ternary (2026-11-09,
+  [merged #78], main `d94ca75`, brief #77):** `AGENTS.md` and
+  `CLAUDE.md` name team LOO, project "Ternary". Historical TER-*
+  left alone. D-20261109-1755.
 - **LOO-237 skip vendored Ratchet files (2026-11-05, merged main
-  `960fa3c`, #76):** Downstream
-  GitHub PR reviews omit Ratchet-owned hooks, skills, and scripts
-  written by install.sh / upgrade.sh. `.ratchet/STATE.md`,
-  `.ratchet/DECISIONS.md`, and `.ratchet/guard-destructive.rules` stay
-  in review. Nothing is skipped in `baisethomas/Ratchet`. A
-  vendored-only downstream PR approves with
-  `vendored Ratchet files skipped` and does not call the model.
-  A rename whose source is a project file stays in review even
-  when the destination is a vendored path. Mixed diffs that drop
-  vendored sections include the skip note in the check summary.
-  Sandbox and every other review path are unchanged.
-  Merge/deploy reserved. Live replay of
-  loomlogic-agent-environment #4 is Verifier-after-deploy.
+  `960fa3c`, #76):** Downstream reviews omit install.sh/upgrade.sh
+  hook, skill, and script files. Project-owned `.ratchet/` memory
+  stays in review. Vendored-only PRs skip the model. The remaining
+  false-positive (missing after skip) is the [in flight] follow-up
+  above.
 - **TER-50 sandbox outage handling (merged main `f060c26`, #72):**
   Infra sandbox failures stay fail-closed and labeled
   `Sandbox infrastructure failure`. GitHub App still needs
@@ -280,10 +279,10 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Last handoff
 
-- Updated: 2026-11-09 (remap live TER ids in STATE.md `## Next`)
+- Updated: 2026-11-10 (skipped vendored files present/out of scope)
 - By: agent (Cursor cloud agent)
-- Branch: `cursor/ter-to-loo-references-267a` off main `960fa3c` [open PR #78].
-- **The one thing a fresh agent should not misread:** new work uses
-  LOO issue IDs on team LOO / project Ternary. `## Next` now uses the
-  mapped LOO ids. Historical TER-* in completed-work history, DECISIONS,
-  ADRs, and code stay as records. Do not rewrite them on this brief.
+- Branch: `cursor/loo-237-vendored-present-3f40` off main `d94ca75` [in flight].
+- **The one thing a fresh agent should not misread:** #76 already
+  skips vendored Ratchet hunks. This follow-up only stops the
+  missing-file FAIL after that skip. Do not skip AGENTS.md /
+  STATE.md / DECISIONS.md. Do not merge or deploy.

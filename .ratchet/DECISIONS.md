@@ -340,3 +340,15 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 - **Revisit when:** Linear workflow states in the docs no longer match the live LOO team, or Ternary work moves off project Ternary.
 - **Approved by:** agent, under operator brief (brief PR #77)
 
+### D-20261110-0006-skipped-vendored-present-out-of-scope — Skipped vendored Ratchet files are present and out of scope
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-10
+- **Decision:** After `filterVendoredRatchetDiff` drops vendored hunks, Ternary records those fully skipped paths and treats them as present and out of scope. The model context lists them with that note. Findings whose `file` is a fully skipped path, or whose title/explanation both name a skipped path and allege it is missing/unverified from the diff/review/skip, are omitted and the verdict is recomputed. Findings on kept rename/copy destinations and on remaining marker/STATE/DECISIONS/project files stay published. `baisethomas/Ratchet` still reviews every hunk.
+- **Why:** #76 saved tokens by stripping vendored hook/skill hunks. Mixed Ratchet re-sync PRs (loomlogic-agent-environment #6, Ruach-learning-center #13) still sent remaining marker/STATE/DECISIONS hunks to the model, which FAILed because the skipped files looked missing. Brief `briefs/2026-11-09-vendored-ratchet-false-positive.md` (brief PR #79). This closes the leftover-finding residue of D-20261105-1642 for fully skipped paths only.
+- **Rejected / alternatives:** skipping AGENTS.md / CLAUDE.md / STATE.md / DECISIONS.md from review (LOO-237 forbids it; those stay project-owned); dropping every finding that mentions a skipped path (would hide a real AGENTS.md defect that merely documents a hook); expanding the skip list to `ratchet/**` docs (not what install.sh/upgrade.sh write; out of this brief).
+- **Consequences:** A Ratchet re-sync whose remainder is only marker/STATE/DECISIONS no longer FAILs for missing vendored files. A genuine finding on those remaining files still FAILs. A basename-only "rrr.sh is missing" finding with no full skipped path still publishes (Residue). Production Ternary still runs `main` until deploy.
+- **Revisit when:** a live review FAILs on a basename-only missing-file finding, or a kept-file finding is omitted because it used "missing" plus "skip" while talking about something else.
+- **Approved by:** agent, under operator brief (brief PR #79)
+

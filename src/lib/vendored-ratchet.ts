@@ -1,5 +1,5 @@
 import { isReviewPathExcluded } from "./review-policy-execution";
-import type { ReviewResult, SandboxResult } from "./types";
+import type { ReviewFinding, ReviewResult, SandboxResult } from "./types";
 
 /**
  * Ratchet-owned destinations written by install.sh / upgrade.sh on
@@ -28,6 +28,7 @@ export const VENDORED_RATCHET_PATHS = [
 ] as const;
 
 export const VENDORED_RATCHET_SKIP_NOTE = "vendored Ratchet files skipped";
+export const VENDORED_RATCHET_PRESENT_NOTE = "present and out of scope";
 
 export const RATCHET_UPSTREAM_OWNER = "baisethomas";
 export const RATCHET_UPSTREAM_REPO = "ratchet";
@@ -57,16 +58,33 @@ function diffSectionPaths(section: string) {
   return [...paths];
 }
 
+function diffSections(diff: string) {
+  return diff.split(/(?=^diff --git )/m).filter((section) => section.length > 0);
+}
+
 export function filterVendoredRatchetDiff(diff: string, owner: string, repo: string) {
   if (isRatchetUpstreamRepository(owner, repo)) return diff;
-  return diff
-    .split(/(?=^diff --git )/m)
+  return diffSections(diff)
     .filter((section) => {
       const paths = diffSectionPaths(section);
       if (!paths.length) return true;
       return paths.some((path) => !isVendoredRatchetPath(path));
     })
     .join("");
+}
+
+/** Vendored paths whose hunks were dropped and that do not also appear in a kept hunk. */
+export function droppedVendoredRatchetPaths(policyDiff: string, reviewDiff: string): string[] {
+  const keptSections = new Set(diffSections(reviewDiff));
+  const keptPaths = new Set(diffSections(reviewDiff).flatMap(diffSectionPaths));
+  const skipped = new Set<string>();
+  for (const section of diffSections(policyDiff)) {
+    if (keptSections.has(section)) continue;
+    for (const path of diffSectionPaths(section)) {
+      if (isVendoredRatchetPath(path) && !keptPaths.has(path)) skipped.add(path);
+    }
+  }
+  return [...skipped].sort();
 }
 
 export function isReviewableDiff(diff: string) {
@@ -76,10 +94,54 @@ export function isReviewableDiff(diff: string) {
 export function vendoredRatchetSkipResult(sandbox: SandboxResult): ReviewResult {
   return {
     verdict: sandbox.ok ? "approve" : "request_changes",
-    summary: `Vendored Ratchet files skipped. No project-owned files remained for review.`,
+    summary: `Vendored Ratchet files skipped; they are present and out of scope. No project-owned files remained for review.`,
     findings: [],
     sandbox,
     authoritativeFindings: true,
+  };
+}
+
+export function withVendoredRatchetPresenceNotice(repositoryContext: string, skippedPaths: readonly string[]): string {
+  if (!skippedPaths.length) return repositoryContext;
+  const list = skippedPaths.map((path) => `- ${path}`).join("\n");
+  const notice = `Vendored Ratchet files present and out of scope. Do not report them as missing or unverified:\n${list}`;
+  return repositoryContext ? `${notice}\n\n${repositoryContext}` : notice;
+}
+
+const MISSING_FROM_REVIEW = /\b(missing|unverified|absent|not present)\b/i;
+const REVIEW_ABSENCE_CONTEXT = /\b(diff|review|pull request|\bpr\b|skip(?:ped)?)\b/i;
+
+function normalizeReviewPath(path: string) {
+  return path.replace(/^\.\//, "");
+}
+
+function findingAllegesSkippedVendoredMissing(finding: ReviewFinding, skippedPaths: readonly string[]): boolean {
+  if (skippedPaths.includes(normalizeReviewPath(finding.file))) return true;
+  const text = `${finding.title}\n${finding.explanation}`;
+  if (!MISSING_FROM_REVIEW.test(text) || !REVIEW_ABSENCE_CONTEXT.test(text)) return false;
+  return skippedPaths.some((path) => text.includes(path));
+}
+
+/** Drop findings that treat fully skipped vendored files as missing; keep findings on kept hunks. */
+export function applyVendoredRatchetPresence(result: ReviewResult, skippedPaths: readonly string[]): ReviewResult {
+  if (!skippedPaths.length) return result;
+  const findings = result.findings.filter((finding) => !findingAllegesSkippedVendoredMissing(finding, skippedPaths));
+  const hiddenCount = result.findings.length - findings.length;
+  if (!hiddenCount) return result;
+  const verdict = !result.sandbox.ok || findings.some((finding) => finding.severity === "blocking")
+    ? "request_changes"
+    : findings.length
+      ? "comment"
+      : "approve";
+  const omitted = `${hiddenCount} finding${hiddenCount === 1 ? "" : "s"} on skipped vendored Ratchet files omitted; those files are present and out of scope.`;
+  const summary = findings.length === 0 && verdict === "approve"
+    ? `Vendored Ratchet files skipped; they are present and out of scope. ${omitted}`
+    : `${result.summary.trimEnd()}\n\n${omitted}`;
+  return {
+    ...result,
+    verdict,
+    summary,
+    findings,
   };
 }
 
@@ -92,9 +154,17 @@ export function droppedVendoredRatchetSections(policyDiff: string, reviewDiff: s
 }
 
 export function withVendoredRatchetSkipNote(result: ReviewResult): ReviewResult {
-  if (result.summary.toLowerCase().includes(VENDORED_RATCHET_SKIP_NOTE.toLowerCase())) return result;
-  return {
-    ...result,
-    summary: `${result.summary.trimEnd()}\n\nVendored Ratchet files skipped.`,
-  };
+  const lower = result.summary.toLowerCase();
+  const hasSkip = lower.includes(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
+  const hasPresent = lower.includes(VENDORED_RATCHET_PRESENT_NOTE);
+  if (hasSkip && hasPresent) return result;
+  let summary = result.summary.trimEnd();
+  if (!hasSkip && !hasPresent) {
+    summary = `${summary}\n\nVendored Ratchet files skipped; they are present and out of scope.`;
+  } else if (!hasSkip) {
+    summary = `${summary}\n\nVendored Ratchet files skipped.`;
+  } else {
+    summary = `${summary} They are present and out of scope.`;
+  }
+  return { ...result, summary };
 }

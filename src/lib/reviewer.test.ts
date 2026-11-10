@@ -47,7 +47,7 @@ vi.mock("./review-route-service", () => ({
 }));
 
 import { runReview } from "./reviewer";
-import { VENDORED_RATCHET_SKIP_NOTE } from "./vendored-ratchet";
+import { VENDORED_RATCHET_PRESENT_NOTE, VENDORED_RATCHET_SKIP_NOTE } from "./vendored-ratchet";
 
 const request = {
   owner: "ternary",
@@ -529,5 +529,57 @@ rename to .claude/hooks/check-on-stop.sh
     expect(markdown).toContain("❌ `test`");
     expect(markdown).not.toMatch(/infrastructure failure/i);
     expect(markdown.toLowerCase()).toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
+  });
+
+  const loomlogicStyleResyncDiff = [
+    fileDiff(".agents/skills/ratchet-handoff/scripts/runlog.sh", "+vendored"),
+    fileDiff(".agents/skills/ratchet-bugfix/scripts/rrr.sh", "+vendored"),
+    fileDiff(".agents/skills/CREDITS.md", "+vendored"),
+    fileDiff(".claude/hooks/check-on-stop.sh", "+vendored"),
+    fileDiff(".claude/hooks/guard-destructive.sh", "+vendored"),
+    fileDiff("AGENTS.md", "+# ratchet-version: 1.3.2"),
+    fileDiff(".ratchet/STATE.md", "+Ratchet upgraded"),
+    fileDiff(".ratchet/DECISIONS.md", "+upgrade decision"),
+  ].join("");
+
+  it("does not FAIL a loomlogic-#6-style Ratchet re-sync when the model reports skipped vendored files as missing", async () => {
+    publishSuccessfulSandbox();
+    mocks.getPullRequestDiff.mockResolvedValue(loomlogicStyleResyncDiff);
+    mocks.generateRoutedReview.mockResolvedValue({
+      verdict: "request_changes",
+      summary: "Ratchet skill files are missing from the review.",
+      findings: [
+        {
+          severity: "blocking" as const,
+          file: ".agents/skills/ratchet-bugfix/scripts/rrr.sh",
+          title: "rrr.sh missing",
+          explanation: "The upgrade claims to refresh ratchet-bugfix but rrr.sh is missing from the diff.",
+        },
+        {
+          severity: "blocking" as const,
+          file: "AGENTS.md",
+          title: "Vendored hooks unverified",
+          explanation: ".claude/hooks/check-on-stop.sh is missing or unverified after the skip.",
+        },
+      ],
+      sandbox: { ok: true, commands: [], durationMs: 100, sandboxId: "sandbox-1" },
+      authoritativeFindings: true,
+    });
+
+    const result = await runReview({ ...request, owner: "baisethomas", repo: "loomlogic-agent-environment" });
+
+    expect(result.verdict).toBe("approve");
+    expect(result.findings).toEqual([]);
+    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("success");
+    expect(mocks.generateRoutedReview).toHaveBeenCalled();
+    const [reviewedDiff, , context] = mocks.generateRoutedReview.mock.calls[0];
+    expect(reviewedDiff).toContain("AGENTS.md");
+    expect(reviewedDiff).toContain(".ratchet/STATE.md");
+    expect(reviewedDiff).not.toContain("+vendored");
+    expect(String(context).toLowerCase()).toContain(VENDORED_RATCHET_PRESENT_NOTE);
+    expect(String(context)).toContain(".agents/skills/ratchet-bugfix/scripts/rrr.sh");
+    expect(markdown.toLowerCase()).toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
+    expect(markdown.toLowerCase()).toContain(VENDORED_RATCHET_PRESENT_NOTE);
   });
 });
