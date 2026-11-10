@@ -44,7 +44,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 ## Working on
 
 - **LOO-237 follow-up: skipped vendored files are present, not
-  missing (2026-11-10, [in flight], branch
+  missing (2026-11-10, [open PR #80], branch
   `cursor/loo-237-vendored-present-3f40`, brief #79):** After #76
   stripped vendored hook/skill hunks, mixed Ratchet re-sync PRs
   (loomlogic-agent-environment #6, Ruach-learning-center #13) still
@@ -63,7 +63,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
   `960fa3c`, #76):** Downstream reviews omit install.sh/upgrade.sh
   hook, skill, and script files. Project-owned `.ratchet/` memory
   stays in review. Vendored-only PRs skip the model. The remaining
-  false-positive (missing after skip) is the [in flight] follow-up
+  false-positive (missing after skip) is the [open PR #80] follow-up
   above.
 - **TER-50 sandbox outage handling (merged main `f060c26`, #72):**
   Infra sandbox failures stay fail-closed and labeled
@@ -281,7 +281,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 - Updated: 2026-11-10 (skipped vendored files present/out of scope)
 - By: agent (Cursor cloud agent)
-- Branch: `cursor/loo-237-vendored-present-3f40` off main `d94ca75` [in flight].
+- Branch: `cursor/loo-237-vendored-present-3f40` off main `d94ca75` [open PR #80].
 - **The one thing a fresh agent should not misread:** #76 already
   skips vendored Ratchet hunks. This follow-up only stops the
   missing-file FAIL after that skip. Do not skip AGENTS.md /
