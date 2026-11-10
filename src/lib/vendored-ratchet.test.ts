@@ -5,6 +5,7 @@ import {
   VENDORED_RATCHET_PRESENT_NOTE,
   VENDORED_RATCHET_SKIP_NOTE,
   applyVendoredRatchetPresence,
+  droppedDeletedVendoredRatchetPaths,
   droppedVendoredRatchetPaths,
   droppedVendoredRatchetSections,
   filterVendoredRatchetDiff,
@@ -289,6 +290,63 @@ describe("skipped vendored files count as present and out of scope", () => {
 
     expect(result.verdict).toBe("request_changes");
     expect(result.findings).toEqual([expect.objectContaining({ file: "AGENTS.md", title: "Missing preflight clause" })]);
+  });
+
+  it("keeps a kept-file finding that uses missing plus a review word while only documenting a skipped path", () => {
+    const remaining = filterVendoredRatchetDiff(loomlogicStyleResyncDiff, "acme", "app");
+    const skipped = droppedVendoredRatchetPaths(loomlogicStyleResyncDiff, remaining);
+    const result = applyVendoredRatchetPresence({
+      verdict: "request_changes",
+      summary: "The remaining marker file dropped a required clause",
+      findings: [{
+        severity: "blocking",
+        file: "AGENTS.md",
+        title: "Preflight clause absent from the remaining diff",
+        explanation: "The diff is missing the new preflight; AGENTS.md still documents .claude/hooks/check-on-stop.sh.",
+      }],
+      sandbox: { ok: true, commands: [], durationMs: 10, sandboxId: "sandbox" },
+      authoritativeFindings: true,
+    }, skipped);
+
+    expect(result.verdict).toBe("request_changes");
+    expect(result.findings).toEqual([expect.objectContaining({ file: "AGENTS.md" })]);
+  });
+
+  it("does not tell the model a deleted vendored hook is present", () => {
+    const deletion = `diff --git a/.claude/hooks/guard-destructive.sh b/.claude/hooks/guard-destructive.sh
+deleted file mode 100755
+--- a/.claude/hooks/guard-destructive.sh
++++ /dev/null
+@@ -1 +0,0 @@
+-#!/bin/sh
+`;
+    const mixed = [deletion, fileDiff(".ratchet/STATE.md", "+Ratchet upgraded")].join("");
+    const remaining = filterVendoredRatchetDiff(mixed, "acme", "app");
+    const skipped = droppedVendoredRatchetPaths(mixed, remaining);
+    const deleted = droppedDeletedVendoredRatchetPaths(mixed, remaining);
+    const notice = withVendoredRatchetPresenceNotice("ctx", skipped.filter((path) => !deleted.includes(path)), deleted);
+
+    expect(skipped).toEqual([".claude/hooks/guard-destructive.sh"]);
+    expect(deleted).toEqual([".claude/hooks/guard-destructive.sh"]);
+    expect(notice.toLowerCase()).not.toContain("present and out of scope");
+    expect(notice).toContain(".claude/hooks/guard-destructive.sh");
+    expect(notice).toMatch(/deleted/i);
+    expect(notice).toContain("ctx");
+
+    const result = applyVendoredRatchetPresence({
+      verdict: "request_changes",
+      summary: "Hook deleted without review",
+      findings: [{
+        severity: "blocking",
+        file: ".claude/hooks/guard-destructive.sh",
+        title: "Destructive-guard hook removed",
+        explanation: "The PR deletes the vendored guard hook.",
+      }],
+      sandbox: { ok: true, commands: [], durationMs: 10, sandboxId: "sandbox" },
+      authoritativeFindings: true,
+    }, skipped);
+    expect(result.findings).toEqual([]);
+    expect(result.verdict).toBe("approve");
   });
 
   it("keeps a blocking finding on a kept rename destination and on remaining project files", () => {

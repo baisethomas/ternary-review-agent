@@ -342,7 +342,7 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 
 ### D-20261110-0006-skipped-vendored-present-out-of-scope — Skipped vendored Ratchet files are present and out of scope
 
-- **Status:** accepted
+- **Status:** superseded by D-20261110-0021
 - **Impact:** medium
 - **Date:** 2026-11-10
 - **Decision:** After `filterVendoredRatchetDiff` drops vendored hunks, Ternary records those fully skipped paths and treats them as present and out of scope. The model context lists them with that note. Findings whose `file` is a fully skipped path, or whose title/explanation both name a skipped path and allege it is missing/unverified from the diff/review/skip, are omitted and the verdict is recomputed. Findings on kept rename/copy destinations and on remaining marker/STATE/DECISIONS/project files stay published. `baisethomas/Ratchet` still reviews every hunk.
@@ -351,4 +351,16 @@ ID format: `D-YYYYMMDD-HHMM-short-slug` (UTC). On collision at integration, keep
 - **Consequences:** A Ratchet re-sync whose remainder is only marker/STATE/DECISIONS no longer FAILs for missing vendored files. A genuine finding on those remaining files still FAILs. A basename-only "rrr.sh is missing" finding with no full skipped path still publishes (Residue). Production Ternary still runs `main` until deploy.
 - **Revisit when:** a live review FAILs on a basename-only missing-file finding, or a kept-file finding is omitted because it used "missing" plus "skip" while talking about something else.
 - **Approved by:** agent, under operator brief (brief PR #79)
+
+### D-20261110-0021-vendored-presence-clause-and-deletes — Missing-file drop is clause-local; deletions are not labeled present
+
+- **Status:** accepted
+- **Impact:** medium
+- **Date:** 2026-11-10
+- **Decision:** Replaces D-20261110-0006. Fully skipped vendored add/edit paths stay present and out of scope. A finding is omitted only when its `file` is a fully skipped path, or a skipped path and a missing/unverified/absent word share the same clause (split on `!?;`, newlines, and `.` followed by space or end — never a bare `.`, which would break `.claude/...` paths). A kept-file finding that mentions a skipped path in a different clause still publishes. Deleted skipped paths are listed as deleted and out of scope, not present; findings on those paths are still omitted.
+- **Why:** Ternary on #80 head `d2eeafe` (job `a6af0507-99b5-4144-96a5-eff6e3abdc22`) found the previous text filter dropped genuine kept-file findings whenever "missing" and a review word appeared anywhere with a skipped path, and that deletion hunks were labeled present.
+- **Rejected / alternatives:** dropping only findings whose `file` is a skipped path (would miss the loomlogic-#6 AGENTS.md "hook is missing after the skip" false FAIL); a character-window proximity check (the motivating counterexample keeps "missing" within ~80 characters of the path across a semicolon).
+- **Consequences:** The loomlogic-#6 regression still approves. A kept-file finding like "The diff is missing the new preflight; AGENTS.md still documents .claude/hooks/check-on-stop.sh" still FAILs. A basename-only "rrr.sh is missing" finding with no full skipped path still publishes (Residue).
+- **Revisit when:** a live review FAILs on a basename-only missing-file finding, or a same-clause kept-file finding is omitted because it named a skipped path while describing a different defect.
+- **Approved by:** agent, under operator brief (brief PR #79) and in-scope Ternary finding on #80
 

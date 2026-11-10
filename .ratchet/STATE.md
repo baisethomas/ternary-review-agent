@@ -50,11 +50,15 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
   (loomlogic-agent-environment #6, Ruach-learning-center #13) still
   called the model on remaining marker/STATE/DECISIONS hunks and
   FAILed because those skipped files looked missing. Downstream
-  reviews now list dropped vendored paths as present and out of
-  scope, omit findings that allege those files are missing, and
-  keep findings on kept rename destinations and on remaining
-  project files. `baisethomas/Ratchet` is unchanged. Merge/deploy
-  reserved. D-20261110-0006.
+  reviews list dropped add/edit vendored paths as present and out
+  of scope, omit findings that allege those files are missing in
+  the same clause, and keep genuine findings on remaining files.
+  Deleted skipped paths are out of scope, not labeled present.
+  `baisethomas/Ratchet` is unchanged. Merge/deploy reserved.
+  D-20261110-0021 (supersedes D-20261110-0006). Ternary on
+  `d2eeafe` found the first heuristic too broad; HEAD
+  `bb004c7` then hit a sandbox infra skip (time budget) — report,
+  do not empty-commit.
 - **Live Linear home → team LOO / project Ternary (2026-11-09,
   [merged #78], main `d94ca75`, brief #77):** `AGENTS.md` and
   `CLAUDE.md` name team LOO, project "Ternary". Historical TER-*
@@ -279,10 +283,11 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Last handoff
 
-- Updated: 2026-11-10 (skipped vendored files present/out of scope)
+- Updated: 2026-11-10 (clause-local missing-file drop; deletions not labeled present)
 - By: agent (Cursor cloud agent)
 - Branch: `cursor/loo-237-vendored-present-3f40` off main `d94ca75` [open PR #80].
 - **The one thing a fresh agent should not misread:** #76 already
   skips vendored Ratchet hunks. This follow-up only stops the
   missing-file FAIL after that skip. Do not skip AGENTS.md /
-  STATE.md / DECISIONS.md. Do not merge or deploy.
+  STATE.md / DECISIONS.md. Do not merge, deploy, or empty-commit
+  to re-run Ternary after an infra skip.

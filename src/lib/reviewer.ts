@@ -25,6 +25,7 @@ import { applyReviewPolicyToResult, filterReviewDiff } from "./review-policy-exe
 import { checkRunTitleFor, infraReviewResult, isInfraSandboxFailure } from "./sandbox-infra-failure";
 import {
   applyVendoredRatchetPresence,
+  droppedDeletedVendoredRatchetPaths,
   droppedVendoredRatchetPaths,
   droppedVendoredRatchetSections,
   filterVendoredRatchetDiff,
@@ -90,6 +91,8 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
     const policyDiff = filterReviewDiff(diff, policy.excludedPaths);
     const reviewDiff = filterVendoredRatchetDiff(policyDiff, request.owner, request.repo);
     const skippedPaths = droppedVendoredRatchetPaths(policyDiff, reviewDiff);
+    const deletedVendoredPaths = droppedDeletedVendoredRatchetPaths(policyDiff, reviewDiff);
+    const presentVendoredPaths = skippedPaths.filter((path) => !deletedVendoredPaths.includes(path));
     const vendoredOnly = skippedVendoredRatchetOnly(policyDiff, reviewDiff);
     const routeConfig = resolveReviewRouteConfig();
     const diffPrep = prepareReviewRouteFromDiff(reviewDiff, routeConfig);
@@ -107,7 +110,7 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
         : await generateRoutedReview(
           reviewDiff,
           sandbox,
-          withVendoredRatchetPresenceNotice(repositoryContext.text, skippedPaths),
+          withVendoredRatchetPresenceNotice(repositoryContext.text, presentVendoredPaths, deletedVendoredPaths),
           policy,
           { remainingMs: remainingInvocationBudgetMs(invocationStartedAt) },
         );
