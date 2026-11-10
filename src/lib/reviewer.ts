@@ -24,10 +24,14 @@ import { safeReviewPolicy } from "./review-policy";
 import { applyReviewPolicyToResult, filterReviewDiff } from "./review-policy-execution";
 import { checkRunTitleFor, infraReviewResult, isInfraSandboxFailure } from "./sandbox-infra-failure";
 import {
+  applyVendoredRatchetPresence,
+  droppedDeletedVendoredRatchetPaths,
+  droppedVendoredRatchetPaths,
   droppedVendoredRatchetSections,
   filterVendoredRatchetDiff,
   skippedVendoredRatchetOnly,
   vendoredRatchetSkipResult,
+  withVendoredRatchetPresenceNotice,
   withVendoredRatchetSkipNote,
 } from "./vendored-ratchet";
 
@@ -86,6 +90,9 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
     const diff = await diffPromise;
     const policyDiff = filterReviewDiff(diff, policy.excludedPaths);
     const reviewDiff = filterVendoredRatchetDiff(policyDiff, request.owner, request.repo);
+    const skippedPaths = droppedVendoredRatchetPaths(policyDiff, reviewDiff);
+    const deletedVendoredPaths = droppedDeletedVendoredRatchetPaths(policyDiff, reviewDiff);
+    const presentVendoredPaths = skippedPaths.filter((path) => !deletedVendoredPaths.includes(path));
     const vendoredOnly = skippedVendoredRatchetOnly(policyDiff, reviewDiff);
     const routeConfig = resolveReviewRouteConfig();
     const diffPrep = prepareReviewRouteFromDiff(reviewDiff, routeConfig);
@@ -99,17 +106,21 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
     const generated = isInfraSandboxFailure(sandbox)
       ? infraReviewResult(sandbox)
       : vendoredOnly
-        ? vendoredRatchetSkipResult(sandbox)
+        ? vendoredRatchetSkipResult(sandbox, deletedVendoredPaths)
         : await generateRoutedReview(
           reviewDiff,
           sandbox,
-          repositoryContext.text,
+          withVendoredRatchetPresenceNotice(repositoryContext.text, presentVendoredPaths, deletedVendoredPaths),
           policy,
           { remainingMs: remainingInvocationBudgetMs(invocationStartedAt) },
         );
-    const filtered = applyReviewPolicyToResult(generated, policy);
+    const filtered = applyVendoredRatchetPresence(
+      applyReviewPolicyToResult(generated, policy),
+      skippedPaths,
+      deletedVendoredPaths,
+    );
     const result = droppedVendoredRatchetSections(policyDiff, reviewDiff) && !isInfraSandboxFailure(filtered.sandbox)
-      ? withVendoredRatchetSkipNote(filtered)
+      ? withVendoredRatchetSkipNote(filtered, deletedVendoredPaths)
       : filtered;
     const marker = request.id ? `\n\n<!-- ternary-review-job:${request.id} -->` : "";
     const markdown = `${formatReview(result)}${marker}`;
