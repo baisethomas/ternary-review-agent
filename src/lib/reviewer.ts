@@ -106,7 +106,7 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
     const generated = isInfraSandboxFailure(sandbox)
       ? infraReviewResult(sandbox)
       : vendoredOnly
-        ? vendoredRatchetSkipResult(sandbox)
+        ? vendoredRatchetSkipResult(sandbox, deletedVendoredPaths)
         : await generateRoutedReview(
           reviewDiff,
           sandbox,
@@ -114,9 +114,13 @@ export async function runReview(request: ReviewRequest & { id?: string }, lease?
           policy,
           { remainingMs: remainingInvocationBudgetMs(invocationStartedAt) },
         );
-    const filtered = applyVendoredRatchetPresence(applyReviewPolicyToResult(generated, policy), skippedPaths);
+    const filtered = applyVendoredRatchetPresence(
+      applyReviewPolicyToResult(generated, policy),
+      skippedPaths,
+      deletedVendoredPaths,
+    );
     const result = droppedVendoredRatchetSections(policyDiff, reviewDiff) && !isInfraSandboxFailure(filtered.sandbox)
-      ? withVendoredRatchetSkipNote(filtered)
+      ? withVendoredRatchetSkipNote(filtered, deletedVendoredPaths)
       : filtered;
     const marker = request.id ? `\n\n<!-- ternary-review-job:${request.id} -->` : "";
     const markdown = `${formatReview(result)}${marker}`;

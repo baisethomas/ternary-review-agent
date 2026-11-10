@@ -582,4 +582,34 @@ rename to .claude/hooks/check-on-stop.sh
     expect(markdown.toLowerCase()).toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
     expect(markdown.toLowerCase()).toContain(VENDORED_RATCHET_PRESENT_NOTE);
   });
+
+  it("does not tell the published check that a deleted vendored hook is present", async () => {
+    publishSuccessfulSandbox();
+    const mixedDeletion = [
+      `diff --git a/.claude/hooks/guard-destructive.sh b/.claude/hooks/guard-destructive.sh
+deleted file mode 100755
+--- a/.claude/hooks/guard-destructive.sh
++++ /dev/null
+@@ -1 +0,0 @@
+-#!/bin/sh
+`,
+      fileDiff(".ratchet/STATE.md", "+Ratchet upgraded"),
+    ].join("");
+    mocks.getPullRequestDiff.mockResolvedValue(mixedDeletion);
+    mocks.generateRoutedReview.mockResolvedValue({
+      verdict: "approve",
+      summary: "STATE.md records the upgrade.",
+      findings: [],
+      sandbox: { ok: true, commands: [], durationMs: 100, sandboxId: "sandbox-1" },
+      authoritativeFindings: true,
+    });
+
+    const result = await runReview({ ...request, owner: "acme", repo: "app" });
+
+    expect(result.verdict).toBe("approve");
+    const [, , , , conclusion, , markdown] = mocks.finishCheckRun.mock.calls[0];
+    expect(conclusion).toBe("success");
+    expect(String(markdown).toLowerCase()).not.toContain(VENDORED_RATCHET_PRESENT_NOTE);
+    expect(String(markdown).toLowerCase()).toContain(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
+  });
 });

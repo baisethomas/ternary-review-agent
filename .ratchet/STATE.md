@@ -53,12 +53,11 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
   reviews list dropped add/edit vendored paths as present and out
   of scope, omit findings that allege those files are missing in
   the same clause, and keep genuine findings on remaining files.
-  Deleted skipped paths are out of scope, not labeled present.
-  `baisethomas/Ratchet` is unchanged. Merge/deploy reserved.
-  D-20261110-0021 (supersedes D-20261110-0006). Ternary on
-  `d2eeafe` found the first heuristic too broad; HEAD
-  `bb004c7` then hit a sandbox infra skip (time budget) — report,
-  do not empty-commit.
+  Deleted skipped paths are out of scope, not labeled present,
+  including the published check summary and vendored-to-vendored
+  rename sources. `baisethomas/Ratchet` is unchanged.
+  Merge/deploy reserved. D-20261110-0021 (supersedes
+  D-20261110-0006).
 - **Live Linear home → team LOO / project Ternary (2026-11-09,
   [merged #78], main `d94ca75`, brief #77):** `AGENTS.md` and
   `CLAUDE.md` name team LOO, project "Ternary". Historical TER-*
@@ -283,7 +282,7 @@ flapped warning↔blocking; S09 was missed once and graded `suggestion` once).
 
 ## Last handoff
 
-- Updated: 2026-11-10 (clause-local missing-file drop; deletions not labeled present)
+- Updated: 2026-11-10 (published summary and rename sources do not label deletions present)
 - By: agent (Cursor cloud agent)
 - Branch: `cursor/loo-237-vendored-present-3f40` off main `d94ca75` [open PR #80].
 - **The one thing a fresh agent should not misread:** #76 already

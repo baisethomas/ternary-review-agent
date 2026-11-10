@@ -344,9 +344,39 @@ deleted file mode 100755
       }],
       sandbox: { ok: true, commands: [], durationMs: 10, sandboxId: "sandbox" },
       authoritativeFindings: true,
-    }, skipped);
+    }, skipped, deleted);
     expect(result.findings).toEqual([]);
     expect(result.verdict).toBe("approve");
+    expect(result.summary.toLowerCase()).not.toContain(VENDORED_RATCHET_PRESENT_NOTE);
+    expect(withVendoredRatchetSkipNote(result, deleted).summary.toLowerCase()).not.toContain(VENDORED_RATCHET_PRESENT_NOTE);
+    expect(vendoredRatchetSkipResult({
+      ok: true,
+      commands: [],
+      durationMs: 10,
+      sandboxId: "sandbox",
+    }, deleted).summary.toLowerCase()).not.toContain(VENDORED_RATCHET_PRESENT_NOTE);
+  });
+
+  it("classifies a dropped vendored-to-vendored rename source as deleted, not present", () => {
+    const rename = `diff --git a/.claude/hooks/check-on-stop.sh b/.claude/hooks/guard-destructive.sh
+similarity index 100%
+rename from .claude/hooks/check-on-stop.sh
+rename to .claude/hooks/guard-destructive.sh
+--- a/.claude/hooks/check-on-stop.sh
++++ b/.claude/hooks/guard-destructive.sh
+`;
+    const remaining = filterVendoredRatchetDiff(rename, "acme", "app");
+    const skipped = droppedVendoredRatchetPaths(rename, remaining);
+    const deleted = droppedDeletedVendoredRatchetPaths(rename, remaining);
+    const present = skipped.filter((path) => !deleted.includes(path));
+    const notice = withVendoredRatchetPresenceNotice("ctx", present, deleted);
+
+    expect(deleted).toEqual([".claude/hooks/check-on-stop.sh"]);
+    expect(present).toEqual([".claude/hooks/guard-destructive.sh"]);
+    expect(notice).toMatch(/deleted/i);
+    expect(notice).toContain(".claude/hooks/check-on-stop.sh");
+    expect(notice).toContain(VENDORED_RATCHET_PRESENT_NOTE);
+    expect(notice).toContain(".claude/hooks/guard-destructive.sh");
   });
 
   it("keeps a blocking finding on a kept rename destination and on remaining project files", () => {

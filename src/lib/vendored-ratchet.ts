@@ -85,10 +85,15 @@ function classifyDroppedVendoredRatchetPaths(policyDiff: string, reviewDiff: str
   for (const section of diffSections(policyDiff)) {
     if (keptSections.has(section)) continue;
     const deletion = isDeletionSection(section);
+    const renameFrom = section.match(/^rename from (.+)$/m)?.[1];
     for (const path of diffSectionPaths(section)) {
       if (!isVendoredRatchetPath(path) || keptPaths.has(path)) continue;
       if (deletion) deleted.add(path);
       else present.add(path);
+    }
+    if (renameFrom && isVendoredRatchetPath(renameFrom) && !keptPaths.has(renameFrom)) {
+      present.delete(renameFrom);
+      deleted.add(renameFrom);
     }
   }
   for (const path of present) deleted.delete(path);
@@ -110,10 +115,14 @@ export function isReviewableDiff(diff: string) {
   return /(?:^|\n)diff --git /m.test(diff);
 }
 
-export function vendoredRatchetSkipResult(sandbox: SandboxResult): ReviewResult {
+function outOfScopeLabel(deletedPaths: readonly string[]) {
+  return deletedPaths.length ? "skipped and out of scope" : VENDORED_RATCHET_PRESENT_NOTE;
+}
+
+export function vendoredRatchetSkipResult(sandbox: SandboxResult, deletedPaths: readonly string[] = []): ReviewResult {
   return {
     verdict: sandbox.ok ? "approve" : "request_changes",
-    summary: `Vendored Ratchet files skipped; they are present and out of scope. No project-owned files remained for review.`,
+    summary: `Vendored Ratchet files skipped; they are ${outOfScopeLabel(deletedPaths)}. No project-owned files remained for review.`,
     findings: [],
     sandbox,
     authoritativeFindings: true,
@@ -156,7 +165,11 @@ function findingAllegesSkippedVendoredMissing(finding: ReviewFinding, skippedPat
 }
 
 /** Drop findings that treat fully skipped vendored files as missing; keep findings on kept hunks. */
-export function applyVendoredRatchetPresence(result: ReviewResult, skippedPaths: readonly string[]): ReviewResult {
+export function applyVendoredRatchetPresence(
+  result: ReviewResult,
+  skippedPaths: readonly string[],
+  deletedPaths: readonly string[] = [],
+): ReviewResult {
   if (!skippedPaths.length) return result;
   const findings = result.findings.filter((finding) => !findingAllegesSkippedVendoredMissing(finding, skippedPaths));
   const hiddenCount = result.findings.length - findings.length;
@@ -166,9 +179,10 @@ export function applyVendoredRatchetPresence(result: ReviewResult, skippedPaths:
     : findings.length
       ? "comment"
       : "approve";
-  const omitted = `${hiddenCount} finding${hiddenCount === 1 ? "" : "s"} on skipped vendored Ratchet files omitted; those files are present and out of scope.`;
+  const label = outOfScopeLabel(deletedPaths);
+  const omitted = `${hiddenCount} finding${hiddenCount === 1 ? "" : "s"} on skipped vendored Ratchet files omitted; those files are ${label}.`;
   const summary = findings.length === 0 && verdict === "approve"
-    ? `Vendored Ratchet files skipped; they are present and out of scope. ${omitted}`
+    ? `Vendored Ratchet files skipped; they are ${label}. ${omitted}`
     : `${result.summary.trimEnd()}\n\n${omitted}`;
   return {
     ...result,
@@ -186,18 +200,19 @@ export function droppedVendoredRatchetSections(policyDiff: string, reviewDiff: s
   return policyDiff !== reviewDiff;
 }
 
-export function withVendoredRatchetSkipNote(result: ReviewResult): ReviewResult {
+export function withVendoredRatchetSkipNote(result: ReviewResult, deletedPaths: readonly string[] = []): ReviewResult {
   const lower = result.summary.toLowerCase();
   const hasSkip = lower.includes(VENDORED_RATCHET_SKIP_NOTE.toLowerCase());
-  const hasPresent = lower.includes(VENDORED_RATCHET_PRESENT_NOTE);
-  if (hasSkip && hasPresent) return result;
+  const label = outOfScopeLabel(deletedPaths);
+  const hasLabel = lower.includes(label);
+  if (hasSkip && hasLabel) return result;
   let summary = result.summary.trimEnd();
-  if (!hasSkip && !hasPresent) {
-    summary = `${summary}\n\nVendored Ratchet files skipped; they are present and out of scope.`;
+  if (!hasSkip && !hasLabel) {
+    summary = `${summary}\n\nVendored Ratchet files skipped; they are ${label}.`;
   } else if (!hasSkip) {
     summary = `${summary}\n\nVendored Ratchet files skipped.`;
   } else {
-    summary = `${summary} They are present and out of scope.`;
+    summary = `${summary} They are ${label}.`;
   }
   return { ...result, summary };
 }
